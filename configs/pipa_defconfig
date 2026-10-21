@@ -1,0 +1,26 @@
+# Kernel configuration of the first pipa image: the generic CPU, interrupt, timer and platform expert path, the source
+# corecrypto and pthread providers and NativeAES, enough to reach the root mount. CONFIG_XNU_<NAME> becomes XNU_<NAME>
+# for the kernel build.
+#
+# Left out until their board or image inputs exist: NATIVE_UFS (SM8550 registers), the owner root chain
+# (VERIFIED_ROOT_PROBE, OWNER_*; it needs owner-signed volume policies), BOOT_PROGRESS (it requires that chain),
+# NATIVE_LEGACY_DISPLAY (its archive carries the sheng board probes), NATIVE_RAM_BLOCK and SOURCE_MOCKFS (no Data or
+# fixture root yet), SHENG_PMGR and NATIVE_ADRENO. The kernel log appears on the frame buffer through XNU's own video
+# console (-v).
+
+CONFIG_XNU_SOURCE_CORECRYPTO14=y
+CONFIG_XNU_SOURCE_PTHREAD=y
+CONFIG_XNU_ARM_DT_PLATFORM=y
+CONFIG_XNU_ARMCPU=y
+CONFIG_XNU_NATIVE_AES=y
+CONFIG_XNU_TRUST_CACHE_RUNTIME=y
+CONFIG_XNU_NATIVE_CS_HASH_CACHE=y
+CONFIG_XNU_DT_PANIC_REGION=y
+CONFIG_XNU_NATIVE_ARCH_TIMER=y
+CONFIG_XNU_NATIVE_PAN=y
+
+CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
+# No-op hooks for probes of the left-out components (scripts/build-link-stubs.py).
+CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a"
+CONFIG_XNU_NATIVE_MOBILE_DISPLAY=n
+CONFIG_XNU_ARMVIRT_PLATFORM=n

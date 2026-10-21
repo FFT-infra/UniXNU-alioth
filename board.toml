@@ -25,6 +25,62 @@ fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustC
 "044-76040-038.dmg" = "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d"
 "044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
 
+[kernel]
+defconfig = "pipa_defconfig"
+# Archive builders of the kernel step, in order; the ones pipa_defconfig links. build-arm-driver.py is the generic
+# driver builder of UniXNU-sheng.
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "build-arm-driver.py ArmDTPlatform",
+  "build-arm-driver.py ArmCpu",
+  "build-arm-driver.py NativeAES",
+  "build-native-aes-bindings.py",
+  "build-libpthread-kernel.py",
+  "build-link-stubs.py",
+]
+
+# The same original kernelcache and prelink selection as UniXNU-sheng: the target image is the same.
+[kernel.prelink]
+tool = "kits/NativePrelink/emit_prelink.py"
+kernel = "build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf"
+kernelcache_sha256 = "f18b4df865405f2a287b84977d7aca745e056d656d9fc9df1662970ce2969de7"
+slide = "-0x1000000"
+early_security_init = "com.apple.driver.AppleMobileFileIntegrity=0xfffffff005ab4ae0"
+roots = [
+  "com.apple.AppleFSCompression.AppleFSCompressionTypeZlib",
+  "com.apple.driver.AppleARMPlatform",
+  "com.apple.driver.AppleARMWatchdogTimer",
+  "com.apple.driver.AppleAudioClockLibs",
+  "com.apple.driver.AppleEffaceableStorage",
+  "com.apple.driver.AppleIISController",
+  "com.apple.driver.AppleM2ScalerCSCDriver",
+  "com.apple.driver.AppleMobileFileIntegrity",
+  "com.apple.driver.ApplePMGR",
+  "com.apple.driver.IODARTFamily",
+  "com.apple.filesystems.apfs",
+  "com.apple.iokit.CoreAnalyticsFamily",
+  "com.apple.iokit.IOAVFamily",
+  "com.apple.iokit.IOAudio2Family",
+  "com.apple.iokit.IOCECFamily",
+  "com.apple.iokit.IOCryptoAcceleratorFamily",
+  "com.apple.iokit.IOGPUFamily",
+  "com.apple.iokit.IOHDCPFamily",
+  "com.apple.iokit.IOMobileGraphicsFamily",
+  "com.apple.iokit.IOReportFamily",
+  "com.apple.iokit.IOSlowAdaptiveClockingFamily",
+  "com.apple.iokit.IOStorageFamily",
+  "com.apple.iokit.IOSurface",
+  "com.apple.kec.Libm",
+  "com.apple.kec.corecrypto",
+  "com.apple.kext.AppleMatch",
+  "com.apple.kext.CoreTrust",
+  "com.apple.security.AppleImage4",
+  "com.apple.security.sandbox",
+  "com.apple.iokit.IOHIDFamily",
+  "com.apple.iokit.IOHIDEventDriver",
+]
+
 # The firmware is the Mu-Silicium pipa port (pipaPkg, Kona SM8250) of the uefi-pipa checkout, with UniXNU, the ramdisk
 # block device driver and DarwinBoot added. It keeps the upstream vendor driver set, which upstream lists as working for
 # display, internal storage and the side buttons.
@@ -63,8 +119,8 @@ BUILDID_STRING = "pipa-research"
 # The ramdisk of the boot image: a FAT volume with the UniXNU config, the kernel, its device tree and the optional
 # trust cache and Data seed. DarwinBoot is part of the firmware volume.
 #
-# The first kernel comes from the UniXNU-sheng configuration (unixnu build payload --kernel FILE): its board drivers
-# start only on their sheng-* boot arguments, and none of them is passed here.
+# The kernel is the one pipa_defconfig builds. It has no storage, Data or display driver yet, so the expected end is the
+# root mount, with the kernel log on the frame buffer.
 [payload]
 volume = "PIPAESP"
 size_mib = 192
@@ -80,33 +136,14 @@ trust_cache_sha256 = [
   "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
   "8900d6a93d7a59ce1a872a5c081e559f4240a218f97e12d44d22dda46644d68f",
 ]
-# The generic part of the sheng arguments. Left out on purpose: native-ufs-root and sheng-pmgr (no SM8250 UFS driver
-# yet), sheng-data-persist (writes the end of userdata), sheng-cpufreq, sheng-touch*, sheng-gpu-*, sheng-fb-gpu,
-# sheng-aks and armcpu-spi-ipi (SM8550 registers or quirks), sheng-smp (one core for the first boot).
+# The generic arguments of the sheng image that apply to this kernel. The display, HID, boot progress and sheng-*
+# arguments belong to components pipa_defconfig leaves out; armcpu-spi-ipi is an SM8550 quirk.
 kernel_args = [
   "-v",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
-  "offline-legacy-register=1",
-  "offline-legacy-gop=1",
-  "offline-legacy-unit-scale=2",
-  "offline-legacy-pm=1",
-  "offline-legacy-validate=1",
-  "offline-legacy-transfer=1",
-  "offline-legacy-cpu-present=1",
-  "offline-hid-home=1",
-  "offline-hid-input=1",
-  "offline-legacy-phase=4",
-  "offline-mobile-graphics-client=1",
-  "offline-mobile-graphics-load=1",
-  "offline-apfs-load=1",
-  "boot-progress=2",
-  "-apfs_shared_datavolume",
-  "offline-key-events=1",
   "armcpu-diagnostics=1",
-  "boot-ui-focus3=Preferences",
-  "boot-ui-focus4=SpringBoard",
   "-no_slto_panic",
   "ml-timeout-lock-panic-scale=40",
 ]
