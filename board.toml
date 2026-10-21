@@ -38,6 +38,7 @@ archives = [
   "build-native-aes-bindings.py",
   "build-libpthread-kernel.py",
   "build-link-stubs.py",
+  "build-platform-power.py",
 ]
 
 # The same original kernelcache and prelink selection as UniXNU-sheng: the target image is the same.
@@ -137,13 +138,15 @@ trust_cache_sha256 = [
   "8900d6a93d7a59ce1a872a5c081e559f4240a218f97e12d44d22dda46644d68f",
 ]
 # The generic arguments of the sheng image that apply to this kernel. The display, HID, boot progress and sheng-*
-# arguments belong to components pipa_defconfig leaves out; armcpu-spi-ipi is an SM8550 quirk.
+# arguments belong to components pipa_defconfig leaves out; armcpu-spi-ipi is an SM8550 quirk. sheng-pmgr=2 publishes
+# the original PMGR nub through the bridge, which reads and writes no hardware.
 kernel_args = [
   "-v",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
   "armcpu-diagnostics=1",
+  "sheng-pmgr=2",
   "-no_slto_panic",
   "ml-timeout-lock-panic-scale=40",
 ]
