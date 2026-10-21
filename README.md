@@ -1,5 +1,7 @@
 # UniXNU-pipa
 
+> **Work in progress.** Prepared without the tablet; nothing here has run on a pipa yet.
+
 Device repository for the Xiaomi Pad 6 (pipa, SM8250), laid out like [UniXNU-sheng](https://github.com/UniXNU/UniXNU-sheng). Firmware: `uefi-pipa`, branch `pipa`, a fork of [uefi-sheng](https://github.com/UniXNU/uefi-sheng) whose upstream Mu-Silicium tree already carries `pipaPkg`.
 
 **State: prepared without the tablet. Nothing here has run on a pipa.** The static checks pass (see [Checks](#checks)); every hardware value names its public source.
@@ -40,8 +42,8 @@ Homebrew ships `lld-link` in `lld`, separate from `llvm`; the CLANGPDB tool chai
 ## Stage 1 to 3: firmware, menu and payload volume
 
 ```sh
-export UNIXNU_UEFI=~/agents-home/uefi-pipa      # the preflight reads the checkout from here
-cd ~/agents-home/UniXNU
+export UNIXNU_UEFI=$PWD/uefi-pipa      # the preflight reads the checkout from here
+cd UniXNU                              # cloned beside this repository
 git submodule update --init --recursive
 
 ./unixnu fetch -D ../UniXNU-pipa
@@ -58,10 +60,10 @@ fastboot boot out/pipa/boot/boot.img
 
 `configs/pipa_defconfig` builds the generic kernel path only: CPU, GIC, timer, the device-tree platform expert, the source corecrypto and pthread providers and NativeAES. Storage, Data, display and the owner root chain stay out until their inputs exist (see the file).
 
-A first kernel build from a clean tree needs the bootstrap fix of [UniXNU#4](https://github.com/UniXNU/UniXNU/issues/4) (branch `fix/kernel-bootstrap` of the local UniXNU checkout) until upstream has one.
+A first kernel build from a clean tree needs the bootstrap pass of [UniXNU#5](https://github.com/UniXNU/UniXNU/pull/5) ([UniXNU#4](https://github.com/UniXNU/UniXNU/issues/4)), which UniXNU's main has.
 
 ```sh
-export UNIXNU_IPSW=~/agents-home/UniXNU/out/ipsw/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw   # a local copy of [ipsw] url
+export UNIXNU_IPSW=$PWD/out/ipsw/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw   # a local copy of [ipsw] url
 ./unixnu defconfig pipa_defconfig -D ../UniXNU-pipa
 ./unixnu ipsw fetch -D ../UniXNU-pipa
 ./unixnu build kernel -D ../UniXNU-pipa
@@ -75,7 +77,7 @@ The platform seed is any nonzero 64-bit value kept for this tablet, for example 
 
 On a new tree the PMGR bridge has no reference kernel yet: the first `build kernel` links a no-op in its place and says so, and the second links the bridge.
 
-Expected: DarwinBoot hands over, the entry probe bars (green, blue, magenta) appear at the top of the screen, and the panic screen shows `Failed to mount root device`, as there is no storage driver yet. XNU's video console does not draw the kernel log despite `-v`. The same kernel configuration reaches that point on the QEMU board of [UniXNU-qemu](../UniXNU-qemu).
+Expected: DarwinBoot hands over, the entry probe bars (green, blue, magenta) appear at the top of the screen, and the panic screen shows `Failed to mount root device`, as there is no storage driver yet. XNU's video console does not draw the kernel log despite `-v`. The same kernel configuration reaches that point on the QEMU board of [UniXNU-qemu](https://github.com/xVanTuring/UniXNU-qemu).
 
 ## Values to take from the tablet
 
@@ -106,4 +108,4 @@ Run `android-devinfo` (`python3 devinfo.py --firmware`) on the tablet and compar
 
 ## License
 
-BSD-2-Clause-Patent. See [LICENSE](LICENSE). `make-pipa-adt.py` is derived from `make-sheng-adt.py` of UniXNU-sheng; `build-arm-driver.py` and the two panic-screen files are copies from it.
+BSD-2-Clause-Patent. See [LICENSE](LICENSE). `make-pipa-adt.py` is derived from `make-sheng-adt.py` of UniXNU-sheng; `build-arm-driver.py` and the two panic-screen files are copies from it. `ShengPlatformPower.cpp` comes from it under MIT (its SPDX header).
