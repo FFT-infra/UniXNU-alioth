@@ -1,8 +1,7 @@
 # Board description of the Xiaomi Pad 6 (pipa, SM8250), read by the unixnu build driver.
 #
 # Prepared without the tablet: every value names its public source and none has been observed through UniXNU on a
-# pipa yet. [userdata] is left out until the tablet's GPT has been read, so "unixnu build userdata" cannot produce an
-# image for a guessed partition.
+# pipa yet. The memory banks and [userdata] were read from the tablet under Android (android-devinfo, 2026-10-21).
 
 [board]
 name = "pipa"
@@ -24,6 +23,18 @@ fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustC
 [ipsw.sha256]
 "044-76040-038.dmg" = "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d"
 "044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
+
+# Android's userdata (sda34 on the UFS LUN 0, 106.6 GiB), from the tablet's GPT, which agrees with sysfs. "unixnu build
+# userdata" writes the image for it; flashing it erases Android's data. The windows are those of UniXNU-sheng: the same
+# target image.
+[userdata]
+first_lba = 0x293000
+last_lba = 0x1d387fa
+lba_bytes = 4096
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS" },
+]
 
 [kernel]
 defconfig = "pipa_defconfig"
@@ -127,9 +138,11 @@ volume = "PIPAESP"
 size_mib = 192
 loader = "firmware"
 title = "pipa first boot: source 4K XNU to the panic screen"
-# This tablet was upgraded to 16 GB. The 8 GB tree in Resources/DTBs/pipa.dtb has the banks 0x80000000+0x3bb00000 and
-# 0xc0000000+0x1c0000000; with the same layout 16 GB gives 0x3bb00000 + 0x3c0000000. Inferred, not read from the tablet.
-dram_size = "0x3fbb00000"
+# This tablet was upgraded to 16 GB. Android's /memory has the banks 0x80000000+0x37700000, 0xc0000000+0x1c0000000 and
+# 0x800000000+0x200000000: the added 8 GiB is a bank of its own at 32 GiB. XNU takes dram-base and dram-size as one
+# range (is_dram_addr, which only picks the attribute of device mappings), so it spans from the base to the end of the
+# last bank; every register block lies below 0x80000000.
+dram_size = "0x980000000"
 skip_setup_tool = "scripts/seed-data-skip-setup.py"
 panic_screen = true                  # patch panic() screen output into the payload copy of the kernel
 # The original static/System trust caches of the same IPSW, as accepted by UniXNU-sheng.
@@ -154,7 +167,9 @@ kernel_args = [
 [payload.adt]
 tool = "scripts/make-pipa-adt.py"
 chip_id = "207"
-owned_memory_size = "0x100000000"    # 4 GiB, as the iPad7,1; the second bank of a 16 GB tablet leaves ample room
+# 4 GiB, as the iPad7,1. DarwinBoot takes the first free run of the firmware's map that holds it; Android finds
+# 0xffc20000..0x27fffffff (6 GiB) free in the second bank, and the third bank has 8 GiB.
+owned_memory_size = "0x100000000"
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"   # the OS volume of the same IPSW
 cpu_regs = "0"                       # the boot CPU only; all eight are 0,0x100,0x200,0x300,0x400,0x500,0x600,0x700
 packed_data_ramdisk = true
