@@ -1,0 +1,122 @@
+# Board description of the Xiaomi Pad 6 (pipa, SM8250), read by the unixnu build driver.
+#
+# Prepared without the tablet: every value names its public source and none has been observed through UniXNU on a
+# pipa yet. [userdata] is left out until the tablet's GPT has been read, so "unixnu build userdata" cannot produce an
+# image for a guessed partition.
+
+[board]
+name = "pipa"
+soc = "SM8250"
+description = "Xiaomi Pad 6"
+kit = "pipa"                       # a package/ of this repository would appear as kits/pipa in the build tree
+
+# The same target OS image as UniXNU-sheng: the unchanged iPad7,1 iPadOS 17.7.11 restore image.
+[ipsw]
+url = "https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw"
+product = "iPad7,1"
+version = "17.7.11"
+build = "21H461"
+device_class = "j120ap"
+chip_id = 0x8011
+board_id = 12
+fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]
+
+[ipsw.sha256]
+"044-76040-038.dmg" = "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d"
+"044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
+
+# The firmware is the Mu-Silicium pipa port (pipaPkg, Kona SM8250) of the uefi-pipa checkout, with UniXNU, the ramdisk
+# block device driver and DarwinBoot added. It keeps the upstream vendor driver set, which upstream lists as working for
+# display, internal storage and the side buttons.
+[firmware]
+config = "pipa"                    # Resources/Configs/pipa.toml in the Mu-Silicium checkout (--uefi or UNIXNU_UEFI)
+dsc = "Platforms/Xiaomi/pipaPkg/pipa.dsc"
+fd = "Build/pipaPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+preflight = ["scripts/check-pipa.py"]   # reads the checkout from UNIXNU_UEFI
+submodules = ["Binaries", "Common/Mu", "Common/Mu_OEM_Sample", "Silicium-ACPI", "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl"]
+# Masks a GIC interrupt that has no handler instead of taking it forever (found on sheng with a leftover IPCC interrupt).
+patches = ["Resources/MuPatches/Gic-Spurious.patch"]
+packages = [
+  "{uefi}",
+  "{uefi}/Platforms/Xiaomi",
+  "{tree}/package",
+  "{tree}/drivers/DarwinBoot",
+  "{edk2}",
+  "{uefi}/Common/Mu",
+  "{uefi}/Common/Mu_OEM_Sample",
+  "{uefi}/Silicon/Qualcomm",
+  "{uefi}/Silicon/Silicium",
+  "{uefi}/Silicium-ACPI",
+  "{uefi}/Silicium-ACPI/Platforms/Xiaomi",
+  "{uefi}/Silicium-ACPI/Silicon/Qualcomm",
+]
+
+[firmware.defines]
+ENABLE_SECUREBOOT = "1"
+MEMORY_PROTECTION = "TRUE"
+SHIP_MODE = "FALSE"
+BUILDID_STRING = "pipa-research"
+
+# Image parameters come from Resources/Configs/pipa.toml of the checkout. Resources/DTBs/pipa.dtb already carries
+# /reserved-memory/cont_splash_region@9c000000, so no [[bootimg.dtb_node]] is added.
+
+# The ramdisk of the boot image: a FAT volume with the UniXNU config, the kernel, its device tree and the optional
+# trust cache and Data seed. DarwinBoot is part of the firmware volume.
+#
+# The first kernel comes from the UniXNU-sheng configuration (unixnu build payload --kernel FILE): its board drivers
+# start only on their sheng-* boot arguments, and none of them is passed here.
+[payload]
+volume = "PIPAESP"
+size_mib = 192
+loader = "firmware"
+title = "pipa first boot: source 4K XNU to the panic screen"
+# This tablet was upgraded to 16 GB. The 8 GB tree in Resources/DTBs/pipa.dtb has the banks 0x80000000+0x3bb00000 and
+# 0xc0000000+0x1c0000000; with the same layout 16 GB gives 0x3bb00000 + 0x3c0000000. Inferred, not read from the tablet.
+dram_size = "0x3fbb00000"
+skip_setup_tool = "scripts/seed-data-skip-setup.py"
+panic_screen = true                  # patch panic() screen output into the payload copy of the kernel
+# The original static/System trust caches of the same IPSW, as accepted by UniXNU-sheng.
+trust_cache_sha256 = [
+  "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
+  "8900d6a93d7a59ce1a872a5c081e559f4240a218f97e12d44d22dda46644d68f",
+]
+# The generic part of the sheng arguments. Left out on purpose: native-ufs-root and sheng-pmgr (no SM8250 UFS driver
+# yet), sheng-data-persist (writes the end of userdata), sheng-cpufreq, sheng-touch*, sheng-gpu-*, sheng-fb-gpu,
+# sheng-aks and armcpu-spi-ipi (SM8550 registers or quirks), sheng-smp (one core for the first boot).
+kernel_args = [
+  "-v",
+  "serial=3",
+  "debug=0x14e",
+  "kt_fixed_zones=120",
+  "offline-legacy-register=1",
+  "offline-legacy-gop=1",
+  "offline-legacy-unit-scale=2",
+  "offline-legacy-pm=1",
+  "offline-legacy-validate=1",
+  "offline-legacy-transfer=1",
+  "offline-legacy-cpu-present=1",
+  "offline-hid-home=1",
+  "offline-hid-input=1",
+  "offline-legacy-phase=4",
+  "offline-mobile-graphics-client=1",
+  "offline-mobile-graphics-load=1",
+  "offline-apfs-load=1",
+  "boot-progress=2",
+  "-apfs_shared_datavolume",
+  "offline-key-events=1",
+  "armcpu-diagnostics=1",
+  "boot-ui-focus3=Preferences",
+  "boot-ui-focus4=SpringBoard",
+  "-no_slto_panic",
+  "ml-timeout-lock-panic-scale=40",
+]
+
+[payload.adt]
+tool = "scripts/make-pipa-adt.py"
+chip_id = "207"
+owned_memory_size = "0x100000000"    # 4 GiB, as the iPad7,1; the second bank of a 16 GB tablet leaves ample room
+root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"   # the OS volume of the same IPSW
+cpu_regs = "0"                       # the boot CPU only; all eight are 0,0x100,0x200,0x300,0x400,0x500,0x600,0x700
+packed_data_ramdisk = true
+ipad_identity = true
+unique_chip_id = "required"          # the platform seed is not stored in any repository
