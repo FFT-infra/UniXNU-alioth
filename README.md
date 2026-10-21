@@ -9,6 +9,8 @@ Device repository for the Xiaomi Pad 6 (pipa, SM8250), laid out like [UniXNU-she
 | File | Contents |
 | --- | --- |
 | `board.toml` | Board, IPSW, firmware, payload and ADT settings |
+| `configs/pipa_defconfig` | Kernel configuration of the first image |
+| `scripts/build-arm-driver.py` | The generic driver archive builder, copied unchanged from UniXNU-sheng |
 | `scripts/make-pipa-adt.py` | Apple device tree for SM8250: GICv3 0x17a00000/0x17a60000, stride 0x20000, Cortex-A55/A77 cores, 19.2 MHz timebase |
 | `scripts/check-pipa.py` | Firmware preflight: UniXNU integration, FD and stack against the memory map, vendor inputs, splash region |
 | `scripts/patch-xnu-entry-probe.py`, `scripts/xnu-panic-screen.c` | Copied unchanged from UniXNU-sheng; the payload uses them for the on-screen panic text (there is no UART) |
@@ -53,22 +55,22 @@ fastboot boot out/pipa/boot/boot.img
 
 ## Stage 4 and 5: kernel entry
 
-The first kernel is the one the UniXNU-sheng configuration builds. Its board drivers start only on `sheng-*` boot arguments, and `board.toml` passes none of them; the pipa ADT names `qcom,sm8250-ufshc`, which the SM8550 UFS driver does not match.
+`configs/pipa_defconfig` builds the generic kernel path only: CPU, GIC, timer, the device-tree platform expert, the source corecrypto and pthread providers and NativeAES. Storage, Data, display and the owner root chain stay out until their inputs exist (see the file).
+
+A first kernel build from a clean tree needs the bootstrap fix of [UniXNU#4](https://github.com/UniXNU/UniXNU/issues/4) (branch `fix/kernel-bootstrap` of the local UniXNU checkout) until upstream has one.
 
 ```sh
-git clone --recurse-submodules https://github.com/UniXNU/UniXNU-sheng ../UniXNU-sheng
-./unixnu defconfig sheng_defconfig -D ../UniXNU-sheng
-./unixnu fetch -D ../UniXNU-sheng
-(cd ../UniXNU-sheng && python3 scripts/extract-files.py)   # sheng's GPU and touch firmware from its public mirror
-./unixnu ipsw fetch -D ../UniXNU-sheng
-./unixnu build kernel -D ../UniXNU-sheng
+export UNIXNU_IPSW=~/agents-home/UniXNU/out/ipsw/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw   # a local copy of [ipsw] url
+./unixnu defconfig pipa_defconfig -D ../UniXNU-pipa
+./unixnu ipsw fetch -D ../UniXNU-pipa
+./unixnu build kernel -D ../UniXNU-pipa
 
-./unixnu build payload -D ../UniXNU-pipa --kernel out/sheng/kernel/kernel.macho --unique-chip-id <16 hex digits>
+./unixnu build payload -D ../UniXNU-pipa --unique-chip-id <16 hex digits>
 ./unixnu bootimg -D ../UniXNU-pipa --dtb "$UNIXNU_UEFI/Resources/DTBs/pipa.dtb"
 fastboot boot out/pipa/boot/boot.img
 ```
 
-The platform seed is any nonzero 64-bit value kept for this tablet, for example from `openssl rand -hex 8`. Expected: DarwinBoot hands over, the kernel prints on the frame buffer and stops at the root mount, with the panic text on screen.
+The platform seed is any nonzero 64-bit value kept for this tablet, for example from `openssl rand -hex 8`. Expected: DarwinBoot hands over, XNU's video console shows the kernel log (`-v`), and the kernel waits for its root device or stops with the panic text on screen.
 
 ## Values to take from the tablet
 
@@ -94,9 +96,9 @@ Run `android-devinfo` (`python3 devinfo.py --firmware`) on the tablet and compar
 
 1. NativeUfs for SM8250: the compatible, GCC offsets from `gcc-sm8250.c`, SMMU stream 0x0e0, the DMA window; `[userdata]` from the tablet's GPT.
 2. Touch: NT36532 over GENI SPI with SM8250 QUP, GCC and TLMM constants (`TouchBoard.h` of sheng is the template).
-3. A pipa kernel configuration of its own once the shared scripts of UniXNU-sheng are generalized.
+3. Display, Data and boot progress: the legacy display archive and the boot progress page live in UniXNU-sheng's package together with sheng board probes; they need separating, and the boot progress page needs the owner root chain.
 4. GPU: Adreno 650 needs its own GMU, HFI and PM4 work.
 
 ## License
 
-BSD-2-Clause-Patent. See [LICENSE](LICENSE). `make-pipa-adt.py` is derived from `make-sheng-adt.py` of UniXNU-sheng, and the two panic-screen files are copies of it.
+BSD-2-Clause-Patent. See [LICENSE](LICENSE). `make-pipa-adt.py` is derived from `make-sheng-adt.py` of UniXNU-sheng; `build-arm-driver.py` and the two panic-screen files are copies from it.
