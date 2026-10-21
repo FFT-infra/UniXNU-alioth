@@ -11,6 +11,7 @@ Device repository for the Xiaomi Pad 6 (pipa, SM8250), laid out like [UniXNU-she
 | `board.toml` | Board, IPSW, firmware, payload and ADT settings |
 | `configs/pipa_defconfig` | Kernel configuration of the first image |
 | `scripts/build-arm-driver.py` | The generic driver archive builder, copied unchanged from UniXNU-sheng |
+| `scripts/build-platform-power.py`, `package/ShengPlatformPower.cpp` | The original-PMGR bridge of UniXNU-sheng, which accesses no hardware; the builder takes this board's previous kernel as its reference |
 | `scripts/make-pipa-adt.py` | Apple device tree for SM8250: GICv3 0x17a00000/0x17a60000, stride 0x20000, Cortex-A55/A77 cores, 19.2 MHz timebase |
 | `scripts/check-pipa.py` | Firmware preflight: UniXNU integration, FD and stack against the memory map, vendor inputs, splash region |
 | `scripts/patch-xnu-entry-probe.py`, `scripts/xnu-panic-screen.c` | Copied unchanged from UniXNU-sheng; the payload uses them for the on-screen panic text (there is no UART) |
@@ -70,7 +71,11 @@ export UNIXNU_IPSW=~/agents-home/UniXNU/out/ipsw/iPad_Pro_HFR_17.7.11_21H461_Res
 fastboot boot out/pipa/boot/boot.img
 ```
 
-The platform seed is any nonzero 64-bit value kept for this tablet, for example from `openssl rand -hex 8`. Expected: DarwinBoot hands over, XNU's video console shows the kernel log (`-v`), and the kernel waits for its root device or stops with the panic text on screen.
+The platform seed is any nonzero 64-bit value kept for this tablet, for example from `openssl rand -hex 8`; `.cache/platform-seed` holds the one of this checkout.
+
+On a new tree the PMGR bridge has no reference kernel yet: the first `build kernel` links a no-op in its place and says so, and the second links the bridge.
+
+Expected: DarwinBoot hands over, XNU's video console shows the kernel log (`-v`), and the kernel stops with `Failed to mount root device`, as there is no storage driver yet. The same kernel configuration reaches that point on the QEMU board of [UniXNU-qemu](../UniXNU-qemu).
 
 ## Values to take from the tablet
 
