@@ -6,8 +6,8 @@
 # (VERIFIED_ROOT_PROBE, OWNER_*; it needs owner-signed volume policies), BOOT_PROGRESS (it requires that chain),
 # NATIVE_LEGACY_DISPLAY (its archive carries the sheng board probes), NATIVE_RAM_BLOCK and SOURCE_MOCKFS (no Data or
 # fixture root yet) and NATIVE_ADRENO. SHENG_PMGR links the original-PMGR bridge (scripts/build-platform-power.py),
-# without which the original AMFI panics with "No PMGR". The kernel log appears on the frame buffer through XNU's own
-# video console (-v).
+# without which the original AMFI panics with "No PMGR". On the QEMU board the same kernel draws nothing through XNU's
+# video console despite -v: after the entry probe bars, the panic screen is the only kernel output on the frame buffer.
 
 CONFIG_XNU_SOURCE_CORECRYPTO14=y
 CONFIG_XNU_SOURCE_PTHREAD=y

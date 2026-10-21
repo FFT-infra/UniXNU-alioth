@@ -75,7 +75,7 @@ The platform seed is any nonzero 64-bit value kept for this tablet, for example 
 
 On a new tree the PMGR bridge has no reference kernel yet: the first `build kernel` links a no-op in its place and says so, and the second links the bridge.
 
-Expected: DarwinBoot hands over, XNU's video console shows the kernel log (`-v`), and the kernel stops with `Failed to mount root device`, as there is no storage driver yet. The same kernel configuration reaches that point on the QEMU board of [UniXNU-qemu](../UniXNU-qemu).
+Expected: DarwinBoot hands over, the entry probe bars (green, blue, magenta) appear at the top of the screen, and the panic screen shows `Failed to mount root device`, as there is no storage driver yet. XNU's video console does not draw the kernel log despite `-v`. The same kernel configuration reaches that point on the QEMU board of [UniXNU-qemu](../UniXNU-qemu).
 
 ## Values to take from the tablet
 
