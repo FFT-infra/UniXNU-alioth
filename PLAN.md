@@ -170,3 +170,48 @@ Run both layers:
    `_native_aes_kat_status=1`.
 3. The run is accepted only when no provider panic occurs before the intended
    root-device failure. The target terminal state is the XNU
+   `Failed to mount root device` panic.
+4. If a different provider or platform panic appears, stop and diagnose that
+   panic. Do not proceed to hardware merely because the green entry bars ran.
+
+### 5. Hardware Full-Payload Test
+
+1. First complete the initrd/BlockIo check without flashing or changing a slot.
+2. If the screen goes black before the UniXNU menu, reopen the UEFI stage; if
+   it goes black only after kernel handoff, treat it as a kernel display/panic
+   issue.
+3. Use only `fastboot boot` with the complete payload image.
+4. Require UniXNU menu, payload discovery, DarwinBoot handoff, entry probe and
+   the same XNU terminal state observed in QEMU.
+5. Any earlier panic, reboot or missing display output blocks persistence.
+
+### 6. Persistence Gate
+
+Persistence is a separate change and requires explicit user approval after
+Stage 3 passes. Immediately before writing, re-read the slot and partition
+variables and verify that `boot_a` still boots Android.
+
+For the current artifact, the only allowed write sequence is:
+
+```sh
+fastboot flash boot_b out/alioth/boot/alioth-full-reserved.img
+fastboot --set-active=b
+```
+
+After a rebuild, substitute the newly accepted image for
+`alioth-full-reserved.img`.
+A cold boot must reproduce the accepted panic. Rollback is:
+
+```sh
+fastboot --set-active=a
+```
+
+No command in this plan may format or resize a partition.
+
+## Deferred Work
+
+- Native UFS and root publication
+- `SHNGROOT`, owner-root, verified root and Data
+- `boot-progress`
+- Legacy display, Adreno and userland
+- Any `userdata` log or persistent Data store

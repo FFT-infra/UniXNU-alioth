@@ -134,4 +134,4 @@ is `fastboot flash boot_b out/alioth/boot/alioth-full-reserved.img` followed by
 ## License
 
 BSD-2-Clause-Patent. See [LICENSE](LICENSE). The generic archive builder and panic-screen files are
-derived from UniXNU-sheng; `ShengPlatformPower.cpp` remains under its MIT SPDX hea
+derived from UniXNU-sheng; `ShengPlatformPower.cpp` remains under its MIT SPDX header.
