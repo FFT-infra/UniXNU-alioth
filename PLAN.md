@@ -65,9 +65,9 @@ Latest Stage 3 evidence:
   extent from every SystemMemory hole as a failure-safe guard. Reserved RAM is
   visible to the CPU but cannot be allocated by DXE.
 - The latest firmware FD has SHA-256
-  `e906a0cd50d899dcc014ecb97d574239cbf1022d510a2c90611f52c00a5fdb63`.
+  `12d8ffdede0a662ed124f2070515e4ca7e9e338a757b0a092fcef3d6857441b2`.
   `alioth-full-reserved.img` is 187,068,416 bytes with SHA-256
-  `03bcde44a88d97ee1aa0467d2a85e84dd2299c40b88f18cdfa1926a35e35f76a`.
+  `bdb193bab5bcd3fb858b321d22d5fb722735e039533551033e173f79f63bd479`.
   It still requires a hardware screen check for `i=Success m=Success b=Success`
   and a mounted `ALIOTHESP`.
 
