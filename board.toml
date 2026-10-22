@@ -39,6 +39,7 @@ archives = [
   "build-libpthread-kernel.py",
   "build-link-stubs.py",
   "build-platform-power.py",
+  "build-arm-driver.py NativeUfs --ufs-probe-only",
 ]
 
 # The same original kernelcache and prelink selection as UniXNU-sheng: the target image is the same.
@@ -119,8 +120,8 @@ BUILDID_STRING = "alioth-research"
 # The ramdisk of the boot image: a FAT volume with the UniXNU config, the kernel, its device tree and the optional
 # trust cache and Data seed. DarwinBoot is part of the firmware volume.
 #
-# The kernel is the one alioth_defconfig builds. It has no storage, Data or display driver yet, so the expected end is the
-# root mount, with the kernel log on the frame buffer.
+# The kernel is the one alioth_defconfig builds. It has no Data or display driver yet; probe 10 gathers raw GPT and
+# first-block evidence before the userdata image is built. The kernel log is rendered on the frame buffer.
 [payload]
 volume = "ALIOTHESP"
 # boot_b is 192 MiB. A 192 MiB FAT ramdisk plus the boot shim, FD and DTB does
@@ -150,6 +151,11 @@ kernel_args = [
   "sheng-pmgr=2",
   "-no_slto_panic",
   "ml-timeout-lock-panic-scale=40",
+  "native-ufs-stream=0xe0",
+  "native-ufs-stream2=0x4e0",
+  # Probe 10 is non-data-mutating: it reads the GPT and selected userdata blocks and records UFS/SMMU state. It is
+  # not an absolute read-only claim, because transport setup may alter controller/device state.
+  "native-ufs-probe=10",
 ]
 
 [payload.adt]

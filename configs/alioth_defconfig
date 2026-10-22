@@ -2,7 +2,7 @@
 # corecrypto and pthread providers and NativeAES, enough to reach the root mount. CONFIG_XNU_<NAME> becomes XNU_<NAME>
 # for the kernel build.
 #
-# Left out until their board or image inputs exist: NATIVE_UFS (SM8550 registers), the owner root chain
+# Left out until their board or image inputs exist: the owner root chain
 # (VERIFIED_ROOT_PROBE, OWNER_*; it needs owner-signed volume policies), BOOT_PROGRESS (it requires that chain),
 # NATIVE_LEGACY_DISPLAY (its archive carries the sheng board probes), NATIVE_RAM_BLOCK and SOURCE_MOCKFS (no Data or
 # fixture root yet) and NATIVE_ADRENO. SHENG_PMGR links the original-PMGR bridge (scripts/build-platform-power.py),
@@ -20,6 +20,7 @@ CONFIG_XNU_DT_PANIC_REGION=y
 CONFIG_XNU_NATIVE_ARCH_TIMER=y
 CONFIG_XNU_NATIVE_PAN=y
 CONFIG_XNU_SHENG_PMGR=y
+CONFIG_XNU_NATIVE_UFS=y
 CONFIG_XNU_BUILD_ARCHIVES=y
 
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
