@@ -6,15 +6,19 @@ The first milestone is complete on hardware: UEFI, UniXNU, `ALIOTHESP`,
 DarwinBoot and the 4 KiB XNU entry reach `Failed to mount root device` on
 alioth. The current milestone is the NativeUfs storage gate: prove the UFS
 stream, SMMU mapping, GPT geometry and raw first-block state before building
-the reviewed userdata artifact. The selected root-image route is upstream
+the reviewed userdata artifact. Probe 10 has now cleared that gate; the current
+milestone is the reviewed userdata artifact, a narrow post-flash manifest probe
+and the owner-verified root path. The selected root-image route is upstream
 UniXNU's `SHNGROOT` manifest plus the IPSW `OS` and `Cryptex1,SystemOS` windows.
 Do not pursue Android F2FS metadata decryption or reconstruct an F2FS root as a
 substitute for that route. Owner-root, Data and userland remain later work.
 
 ## Invariants
 
-- Do not write, erase, format or resize `userdata`, `metadata`, `super` or GPT
-  until the storage gate below passes and the userdata artifact is reviewed.
+- The user has explicitly authorized overwriting `userdata` after confirming a
+  backup. Do not write, erase, format or resize it before the generated image,
+  manifest and preflight record have been reviewed. Never write, erase, format
+  or resize `metadata`, `super` or GPT.
 - Do not use `fastboot erase userdata` as a diagnostic. An empty partition has
   no root image; the accepted route is an explicitly reviewed `SHNGROOT`
   overwrite.
@@ -49,8 +53,8 @@ substitute for that route. Owner-root, Data and userland remain later work.
 | 2. UniXNU | Passed on hardware | Menu, timer, side buttons, payload and firmware return work |
 | 3. Payload and DarwinBoot | Passed on hardware | `ALIOTHESP`, DarwinBoot handoff and entry probe work |
 | 4. XNU entry | Passed on hardware | The 4 KiB kernel reaches `Failed to mount root device` |
-| 5. NativeUfs storage evidence | Current gate | Probe 7 observed reusable `sid00e0` and `sid04e0`; probe 10 found the real `userdata` GPT geometry, but the raw-window/before-after snapshot build is not yet on hardware |
-| 6. Root and userdata | Blocked behind stage 5 | Build the official `SHNGROOT` image only after probe 10 raw evidence and artifact review |
+| 5. NativeUfs storage evidence | Passed on hardware | Probe 7 verified reusable `sid00e0` and `sid04e0`; probe 10 verified GPT, capacity, three raw windows, repeated-read equality and unchanged SMMU state |
+| 6. Root and userdata | Current gate | GPT geometry is pinned in `board.toml`; build and audit `SHNGROOT`, preflight and write `userdata`, then require probe 11 and an owner-verified root mount |
 | 7. Userland | Out of scope | No Linux userland or partition scheme is adopted |
 
 UEFI, UniXNU, DarwinBoot and XNU entry are closed stages. Do not reopen them
@@ -80,7 +84,7 @@ failure.
   `SCTLR` is `0x9f00e0` with `M=0`. This is the safe bypass shape; both
   firmware mappings can be reused without takeover. The earlier `0x60` and
   `0x10` values were board hypotheses, not alioth stream facts.
-- Probe 10 on alioth found one `userdata` GPT entry with:
+- Probe 10 on alioth found exactly one `userdata` GPT entry with:
   `first=0x2a8000`, `last=0x3b037fa`, `lba_bytes=4096`, capacity
   `242053263360` bytes, type GUID `e6e7811b-0df5-9b41-a739-2aeef8da3335`
   and unique GUID `cbaca77f-dea7-c784-cd96-20bc64379313`.
@@ -90,6 +94,14 @@ failure.
   transformed user data. `SHNGROOT` absence is not an error for an untouched
   Android partition; the raw hex probe must distinguish ciphertext from a bad
   read projection before any persistent overwrite.
+- The hardware raw probe showed the first-block windows
+  `0x000..0x07f`, `0x3f0..0x43f` and the second-block window
+  `0x13f0..0x143f`, with `repeat status=0` and `match=1`. The device reported
+  `last=61880319`, `bytes=4096`, `total=253461790720`.
+- Probe 10 before, after and final snapshots preserved
+  `sid00e0=800000e0/00000003` and `sid04e0=800004e0/00000002`,
+  `gfsr=0`, and UFS `hcs=0x101f`; only the expected `rsr` transition was
+  observed.
 
 ## Supplemental Material Decisions
 
@@ -97,6 +109,7 @@ failure.
 | --- | --- | --- |
 | `https://github.com/yzddmr6/android-mainline-port` | Read-only reference; selective adoption | It is an MIT Agent Skill/experience library for Qualcomm Android to mainline Linux and Ubuntu. It has no alioth, SM8250, UniXNU, NativeUfs, DarwinBoot or XNU implementation. Do not install it as a global skill and do not apply its Linux boot path to this port |
 | `https://github.com/torvalds/linux/blob/master/arch/arm64/boot/dts/qcom/sm8250.dtsi` and `https://github.com/UniXNU/NativeUfs/issues/1` | Adopt as stream-identity evidence only | Linux names UFS SMMU streams `0x0e0` and `0x4e0` for SM8250. The NativeUfs issue confirms stream IDs are board parameters. Neither source authorizes a Linux partition or userland path |
+| `FFT-infra/NativeUfs-alioth` | Keep as the writable alioth fork | The upstream `UniXNU/NativeUfs` remote remains read-only. The core submodule pins the alioth commit through this fork so a clean clone can reproduce the tested driver |
 | Seven-stage bring-up order | Adopt | It keeps acceptance local and evidence-driven |
 | Official QEMU runner and assertions | Adopt | It provides repeatable menu, payload and DarwinBoot checks |
 | `probe-darwinboot-xnu.py` real-entry fixture | Keep as an XNU regression gate | It observes the actual 4K MMU and kernel globals |
@@ -251,14 +264,14 @@ Other community repositories remain read-only:
 - [ ] `fastboot OKAY` is backed by a next-stage screen, log or probe output.
 - [x] Probe 7 reports `sid00e0` and `sid04e0` with exact SMR/S2CR/context
       evidence and both existing mappings satisfy the reuse criterion.
-- [ ] Probe 10 reports before/after UFS and SMMU state for both streams.
-- [ ] GPT `userdata` is identified by name and GUID, not `sdX`.
-- [ ] `first_lba`, `last_lba`, `lba_bytes`, capacity and first-block magic are
+- [x] Probe 10 reports before/after UFS and SMMU state for both streams.
+- [x] GPT `userdata` is identified by name and GUID, not `sdX`.
+- [x] `first_lba`, `last_lba`, `lba_bytes`, capacity and first-block magic are
       recorded.
-- [ ] The requested raw windows are captured and two first-block reads agree.
-- [ ] F2FS magic and manifest status are recorded as diagnostics, not treated
+- [x] The requested raw windows are captured and two first-block reads agree.
+- [x] F2FS magic and manifest status are recorded as diagnostics, not treated
       as required signatures for untouched Android data.
-- [ ] No `[userdata]` section exists before real GPT evidence is available.
+- [x] `[userdata]` was added only after real GPT evidence was available.
 - [ ] No write to `userdata`, `metadata`, `super`, GPT or `boot_a` occurred.
 - [ ] Every artifact has SHA-256, inputs and a verification result.
 - [x] The next hardware command is recorded before it is run:
@@ -276,20 +289,19 @@ Other community repositories remain read-only:
 | 2026-10-22 | Probe payload | `out/alioth/payload/payload.img` | `9c419687c5b4226c6fc6128e07b9609c88f696410ce60b21dfac35649380f78a` | Payload kernel after panic-screen patch: `bfbf3aa6dc8f5adf3b8e93befb0769acecf126f61850016617b76a642f64b3aa` |
 | 2026-10-22 | Probe 7 boot image | `out/alioth/boot/alioth-probe7.img` | `78a6c670b366d355f5b9b7f0ae7c8cb06fbf082fa082b83a1b2178a7b5ced2bb` | `187068416` bytes; `fastboot boot` only |
 | 2026-10-22 | Probe 7 | NativeUfs dual-stream SMMU survey | `sid00e0` and `sid04e0` reuse safe bypass contexts | Persistent writes remain blocked |
-| 2026-10-23 | Probe 10 | NativeUfs GPT and first-block survey | Real `userdata` geometry and GUIDs recorded; F2FS magic mismatch is non-fatal on encrypted Android data | Raw-window and repeated-read evidence still pending |
+| 2026-10-23 | Probe 10 | NativeUfs GPT and first-block survey | Real `userdata` geometry and GUIDs recorded; F2FS magic mismatch is non-fatal on encrypted Android data | Raw-window and repeated-read evidence passed in the final hardware run below |
 | 2026-10-22 | NativeUfs host validation | `RootLayout`, `RootWindowRead`, `RootDiagnostics`, `RootPublication`, `SmmuTakeover` | All host tests pass on orb | Archive is ready to link; no hardware acceptance yet |
 | 2026-10-23 | Kernel rebuild | `out/alioth/kernel/kernel.macho` | `b30958f2f130687d58867ed84c54c0ac13501b408400b3a179d82be7597f4973` | Apple clang ARM64/iOS 17 Mach-O; entry `0xfffffff0073f0488`; NativeUfs compile log has no warnings or errors |
 | 2026-10-23 | Kernel record | `out/alioth/kernel/kernel.json` | `7f42cdc225238a7b6efabf53b60976d0ea38e740e7b955887d259f5d62072351` | Native candidate equals the rebuilt kernel; prelink runtime qualification remains false as expected |
 | 2026-10-23 | NativeUfs archive | `out/alioth/tree/build/native-ufs/libNativeUfs.a` | `fe1a6efc05da0477e82741e12db47f4e0e90878ac9ae1cc8ddfb52910a9a97b6` | Apple clang `-Werror` archive; probe-only build contains no root-publication dependency |
 | 2026-10-23 | Probe payload | `out/alioth/payload/payload.img` | `50ebca73a26e528659f461498ccd29b5716d0fecc825daca78821717542c6940` | Payload kernel `06f68dee1c2347b652e4022f4c499b47bc0af62b41e26b0f362ad09f0ba387a9`; ADT `89646ee2232c740df73442229e981fe8ef798b5c30baed3111ca59daaa3ead1f` |
 | 2026-10-23 | Preserved pre-readcap payload | `out/alioth/payload/payload-20261023-pre-readcap.img` | `736e906f8f19cf2644488dfad05cf578cb3924967c2afe4baeba29287d454ffc` | Previous payload retained before the default output was replaced |
-| 2026-10-23 | Probe 10 read-capacity boot image | `out/alioth/boot/alioth-probe10-readcap.img` | `5212ee6d89081fb4422968887d53df8c246742c07e71042327368beb6a7923eb` | `187068416` bytes; boot manifest `cb70e2b12e66cbd0ea0af0554e15b45447924a2c06276205142a95d39e108f51`; hardware run pending |
+| 2026-10-23 | Probe 10 read-capacity boot image | `out/alioth/boot/alioth-probe10-readcap.img` | `5212ee6d89081fb4422968887d53df8c246742c07e71042327368beb6a7923eb` | `187068416` bytes; boot manifest `cb70e2b12e66cbd0ea0af0554e15b45447924a2c06276205142a95d39e108f51` |
 | 2026-10-23 | Regression tests | Host root tests, QEMU UFS commands, ARM64 TCG | Host `PASS` 4/4; QEMU `0x40010000` and `0x8cb5e9000` pass; ARM64 TCG 5/5 | Exercised current source after the warning-only edit |
-| 2026-10-23 | Hardware Probe 10 readback | `alioth-probe10-readcap.img` | `fastboot` command recorded above | Pending: require capacity, three raw windows, repeat `match=1`, and before/after/final state for both streams |
+| 2026-10-23 | Hardware Probe 10 readback | `alioth-probe10-readcap.img` | GPT `0x2a8000..0x3b037fa`; three raw windows; repeat `match=1`; both SMMU streams unchanged | Passed on hardware |
 
 ## Deferred Work
 
 - Owner-root, verified root and Data
 - `boot-progress`
 - Legacy display, Adreno and userland
-- Any userdata image until the raw probe and repeated-read gate passes

@@ -1,7 +1,7 @@
 # Board description of the Redmi K40 (alioth, SM8250-AC), read by the unixnu build driver.
 #
-# Hardware values are taken from the alioth device tree and the Mu-Silicium SM8250 platform package. This repository
-# deliberately has no [userdata] section: the Android data partition is not an input to this bring-up.
+# Hardware values are taken from the alioth device tree and the Mu-Silicium SM8250 platform package. The [userdata]
+# geometry below comes from NativeUfs probe 10 on hardware and still requires a reviewed image before any write.
 
 [board]
 name = "alioth"
@@ -169,3 +169,14 @@ cpu_regs = "0"                       # the boot CPU only; all eight are 0,0x100,
 packed_data_ramdisk = true
 ipad_identity = true
 unique_chip_id = "required"          # the platform seed is not stored in any repository
+
+# Probe 10 measured this GPT entry on alioth. Capacity is 242053263360 bytes. The two windows are copied
+# unchanged from the IPSW behind an upstream SHNGROOT manifest; this is not an Android F2FS/ext4 root.
+[userdata]
+first_lba = 0x2a8000
+last_lba = 0x3b037fa
+lba_bytes = 4096
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS" },
+]
