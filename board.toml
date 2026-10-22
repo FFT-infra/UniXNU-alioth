@@ -1,13 +1,13 @@
-# Board description of the Xiaomi Pad 6 (pipa, SM8250), read by the unixnu build driver.
+# Board description of the Redmi K40 (alioth, SM8250-AC), read by the unixnu build driver.
 #
-# Prepared without the tablet: every value names its public source and none has been observed through UniXNU on a
-# pipa yet. The memory banks and [userdata] were read from the tablet under Android (android-devinfo, 2026-10-21).
+# Hardware values are taken from the alioth device tree and the Mu-Silicium SM8250 platform package. This repository
+# deliberately has no [userdata] section: the Android data partition is not an input to this bring-up.
 
 [board]
-name = "pipa"
-soc = "SM8250"
-description = "Xiaomi Pad 6"
-kit = "pipa"                       # a package/ of this repository would appear as kits/pipa in the build tree
+name = "alioth"
+soc = "SM8250-AC"
+description = "Redmi K40"
+kit = "alioth"                       # a package/ of this repository would appear as kits/alioth in the build tree
 
 # The same target OS image as UniXNU-sheng: the unchanged iPad7,1 iPadOS 17.7.11 restore image.
 [ipsw]
@@ -24,21 +24,10 @@ fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustC
 "044-76040-038.dmg" = "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d"
 "044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
 
-# Android's userdata (sda34 on the UFS LUN 0, 106.6 GiB), from the tablet's GPT, which agrees with sysfs. "unixnu build
-# userdata" writes the image for it; flashing it erases Android's data. The windows are those of UniXNU-sheng: the same
-# target image.
-[userdata]
-first_lba = 0x293000
-last_lba = 0x1d387fa
-lba_bytes = 4096
-windows = [
-  { name = "OS", component = "OS" },
-  { name = "SystemOS", component = "Cryptex1,SystemOS" },
-]
 
 [kernel]
-defconfig = "pipa_defconfig"
-# Archive builders of the kernel step, in order; the ones pipa_defconfig links. build-arm-driver.py is the generic
+defconfig = "alioth_defconfig"
+# Archive builders of the kernel step, in order; the ones alioth_defconfig links. build-arm-driver.py is the generic
 # driver builder of UniXNU-sheng.
 archives = [
   "build-corecrypto-14.py",
@@ -93,17 +82,15 @@ roots = [
   "com.apple.iokit.IOHIDEventDriver",
 ]
 
-# The firmware is the Mu-Silicium pipa port (pipaPkg, Kona SM8250) of the uefi-pipa checkout, with UniXNU, the ramdisk
+# The firmware is the Mu-Silicium alioth port (aliothPkg, Kona SM8250-AC) of the uefi-alioth checkout, with UniXNU, the ramdisk
 # block device driver and DarwinBoot added. It keeps the upstream vendor driver set, which upstream lists as working for
 # display, internal storage and the side buttons.
 [firmware]
-config = "pipa"                    # Resources/Configs/pipa.toml in the Mu-Silicium checkout (--uefi or UNIXNU_UEFI)
-dsc = "Platforms/Xiaomi/pipaPkg/pipa.dsc"
-fd = "Build/pipaPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
-preflight = ["scripts/check-pipa.py"]   # reads the checkout from UNIXNU_UEFI
+config = "alioth"                    # Resources/Configs/alioth.toml in the Mu-Silicium checkout (--uefi or UNIXNU_UEFI)
+dsc = "Platforms/Xiaomi/aliothPkg/alioth.dsc"
+fd = "Build/aliothPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+preflight = ["scripts/check-alioth.py"]   # reads the checkout from UNIXNU_UEFI
 submodules = ["Binaries", "Common/Mu", "Common/Mu_OEM_Sample", "Silicium-ACPI", "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl"]
-# Masks a GIC interrupt that has no handler instead of taking it forever (found on sheng with a leftover IPCC interrupt).
-patches = ["Resources/MuPatches/Gic-Spurious.patch"]
 packages = [
   "{uefi}",
   "{uefi}/Platforms/Xiaomi",
@@ -123,27 +110,28 @@ packages = [
 ENABLE_SECUREBOOT = "1"
 MEMORY_PROTECTION = "TRUE"
 SHIP_MODE = "FALSE"
-BUILDID_STRING = "pipa-research"
+DEVICE_MODEL = "1"                  # Redmi K40 / M2012K11AC
+BUILDID_STRING = "alioth-research"
 
-# Image parameters come from Resources/Configs/pipa.toml of the checkout. Resources/DTBs/pipa.dtb already carries
+# Image parameters come from Resources/Configs/alioth.toml of the checkout. Resources/DTBs/alioth.dtb already carries
 # /reserved-memory/cont_splash_region@9c000000, so no [[bootimg.dtb_node]] is added.
 
 # The ramdisk of the boot image: a FAT volume with the UniXNU config, the kernel, its device tree and the optional
 # trust cache and Data seed. DarwinBoot is part of the firmware volume.
 #
-# The kernel is the one pipa_defconfig builds. It has no storage, Data or display driver yet, so the expected end is the
+# The kernel is the one alioth_defconfig builds. It has no storage, Data or display driver yet, so the expected end is the
 # root mount, with the kernel log on the frame buffer.
 [payload]
-volume = "PIPAESP"
-size_mib = 192
+volume = "ALIOTHESP"
+# boot_b is 192 MiB. A 192 MiB FAT ramdisk plus the boot shim, FD and DTB does
+# not fit; 184 MiB also leaves less than the required 8 MiB safety margin.
+size_mib = 176
 loader = "firmware"
-title = "pipa first boot: source 4K XNU to the panic screen"
-# This tablet was upgraded to 16 GB. Android's /memory has the banks 0x80000000+0x37700000, 0xc0000000+0x1c0000000 and
-# 0x800000000+0x200000000: the added 8 GiB is a bank of its own at 32 GiB. XNU takes dram-base and dram-size as one
-# range (is_dram_addr, which only picks the attribute of device mappings), so it spans from the base to the end of the
-# last bank; every register block lies below 0x80000000.
-dram_size = "0x980000000"
-skip_setup_tool = "scripts/seed-data-skip-setup.py"
+title = "alioth first boot: source 4K XNU to the panic screen"
+# Resources/DTBs/alioth.dtb describes two memory banks: 0x80000000+0x3bb00000 and
+# 0xc0000000+0x1c0000000. XNU takes dram-base and dram-size as one address span, so use the distance from
+# the first bank to the inclusive end of the last bank. This is the DTB value, not a rounded RAM part number.
+dram_size = "0x200000000"
 panic_screen = true                  # patch panic() screen output into the payload copy of the kernel
 # The original static/System trust caches of the same IPSW, as accepted by UniXNU-sheng.
 trust_cache_sha256 = [
@@ -151,7 +139,7 @@ trust_cache_sha256 = [
   "8900d6a93d7a59ce1a872a5c081e559f4240a218f97e12d44d22dda46644d68f",
 ]
 # The generic arguments of the sheng image that apply to this kernel. The display, HID, boot progress and sheng-*
-# arguments belong to components pipa_defconfig leaves out; armcpu-spi-ipi is an SM8550 quirk. sheng-pmgr=2 publishes
+# arguments belong to components alioth_defconfig leaves out; armcpu-spi-ipi is an SM8550 quirk. sheng-pmgr=2 publishes
 # the original PMGR nub through the bridge, which reads and writes no hardware.
 kernel_args = [
   "-v",
@@ -165,10 +153,10 @@ kernel_args = [
 ]
 
 [payload.adt]
-tool = "scripts/make-pipa-adt.py"
+tool = "scripts/make-alioth-adt.py"
 chip_id = "207"
-# 4 GiB, as the iPad7,1. DarwinBoot takes the first free run of the firmware's map that holds it; Android finds
-# 0xffc20000..0x27fffffff (6 GiB) free in the second bank, and the third bank has 8 GiB.
+# 4 GiB, as the iPad7,1. DarwinBoot takes the first free run of the firmware's map that holds it; the second
+# alioth DRAM bank is 7 GiB and the reserved-memory nodes describe what is unavailable.
 owned_memory_size = "0x100000000"
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"   # the OS volume of the same IPSW
 cpu_regs = "0"                       # the boot CPU only; all eight are 0,0x100,0x200,0x300,0x400,0x500,0x600,0x700

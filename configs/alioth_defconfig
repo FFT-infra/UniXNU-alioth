@@ -1,4 +1,4 @@
-# Kernel configuration of the first pipa image: the generic CPU, interrupt, timer and platform expert path, the source
+# Kernel configuration of the first alioth image: the generic CPU, interrupt, timer and platform expert path, the source
 # corecrypto and pthread providers and NativeAES, enough to reach the root mount. CONFIG_XNU_<NAME> becomes XNU_<NAME>
 # for the kernel build.
 #
@@ -20,6 +20,7 @@ CONFIG_XNU_DT_PANIC_REGION=y
 CONFIG_XNU_NATIVE_ARCH_TIMER=y
 CONFIG_XNU_NATIVE_PAN=y
 CONFIG_XNU_SHENG_PMGR=y
+CONFIG_XNU_BUILD_ARCHIVES=y
 
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
 # No-op hooks for probes of the left-out components (scripts/build-link-stubs.py).

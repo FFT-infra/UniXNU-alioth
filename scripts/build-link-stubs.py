@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Archive the no-op probe hooks of kits/pipa/LinkStubs.c for the kernel link (CONFIG_XNU_EXTRA_LD_ARCHIVES)."""
+"""Archive the no-op probe hooks of kits/alioth/LinkStubs.c for the kernel link (CONFIG_XNU_EXTRA_LD_ARCHIVES)."""
 from pathlib import Path
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
-source = ROOT / 'kits/pipa/LinkStubs.c'
+source = ROOT / 'kits/alioth/LinkStubs.c'
 out = ROOT / 'build/link-stubs'
 out.mkdir(parents=True, exist_ok=True)
 obj, archive = out / 'LinkStubs.o', out / 'libLinkStubs.a'
