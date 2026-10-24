@@ -1,0 +1,2 @@
+# Required firmware inputs: relative path | source | SHA-256 | consumer
+# Fill each entry from this board's firmware package.

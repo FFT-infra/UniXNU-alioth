@@ -1,0 +1,12 @@
+[[source]]
+name = "sm8250"
+kind = "soc"
+git = "https://github.com/FFT-infra/UniXNU-sm8250-common"
+commit = "6bb9b025704764a662728dce1a30557a35e082d8"
+
+# The UFS driver fork that carries the alioth SM8250 stream configuration.
+[[source]]
+name = "ShengUfs"
+kind = "driver"
+git = "https://github.com/FFT-infra/NativeUfs-alioth"
+commit = "b351d727865b814639f87af2a8960fc01125b7c3"

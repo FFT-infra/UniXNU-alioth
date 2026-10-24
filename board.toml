@@ -1,0 +1,104 @@
+schema_version = 2
+
+[board]
+name = "alioth"
+soc = "SM8250"
+soc_source = "sm8250"
+os_profile = "ipados-17.7.11-21H461"
+description = "Xiaomi Redmi K40 (alioth, M2012K11AC)"
+kit = "alioth"
+
+[components]
+include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "ShengUfs", "VirtioMmioBlock", "RamBlock", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState"]
+
+[userdata]
+# Android's userdata on UFS LUN 0, read from the phone's GPT.
+first_lba = 0x2a8000
+last_lba = 0x3b037fa
+lba_bytes = 4096
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS" },
+]
+
+[kernel]
+defconfig = "alioth_defconfig"
+config_fragments = ["arch:configs/common.config", "soc:configs/sm8250.config", "os:configs/ipados.config"]
+patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches/xnu/series", "device:patches/xnu/series"]
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "component:ArmDTPlatform",
+  "component:ArmCpu",
+  "component:SoftwareAES",
+  "build-software-aes-bindings.py",
+  "component:ShengUfs",
+  "component:VirtioMmioBlock",
+  "component:RamBlock",
+  "build-virtio-mmio-bindings.py --component VirtioMmioBlock",
+  "build-virtio-mmio-bindings.py --component RamBlock --directory build/ram-block",
+  "build-sheng-platform-power.py",
+  "build-boot-progress.py",
+  "build-libpthread-kernel.py",
+  "component:AppleKeyStoreState",
+  "build-gop-legacy-display.py",
+]
+
+[firmware]
+config = "alioth"
+dsc = "Platforms/Xiaomi/aliothPkg/alioth.dsc"
+fd = "Build/aliothPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+preflight = ["scripts/check-alioth.py"]
+submodules = ["Common/Mu", "Common/Mu_OEM_Sample", "Silicium-ACPI", "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl"]
+patches = ["Resources/MuPatches/Gic-Spurious.patch"]
+packages = [
+  "{uefi}",
+  "{uefi}/Platforms/Xiaomi",
+  "{tree}/package",
+  "{tree}/drivers/DarwinBoot",
+  "{edk2}",
+  "{uefi}/Common/Mu",
+  "{uefi}/Common/Mu_OEM_Sample",
+  "{uefi}/Silicon/Qualcomm",
+  "{uefi}/Silicon/Silicium",
+  "{uefi}/Silicium-ACPI",
+  "{uefi}/Silicium-ACPI/Platforms/Xiaomi",
+  "{uefi}/Silicium-ACPI/Silicon/Qualcomm",
+]
+
+[firmware.defines]
+ENABLE_SECUREBOOT = "1"
+DEVICE_MODEL = "alioth"
+MEMORY_PROTECTION = "TRUE"
+SHIP_MODE = "FALSE"
+BUILDID_STRING = "alioth-research"
+
+[payload]
+volume = "ALIOTHESP"
+size_mib = 192
+loader = "firmware"
+title = "Boot"
+# The board's DRAM from 0x80000000 to the end of the last bank.
+dram_size = "0x200000000"
+skip_setup_tool = "scripts/seed-data-skip-setup.py"
+panic_screen = true
+kernel_args = [
+  "-v",
+  "serial=3",
+  "debug=0x14e",
+  "kt_fixed_zones=120",
+  "armcpu-diagnostics=1",
+  "sheng-pmgr=2",
+  "-no_slto_panic",
+  "ml-timeout-lock-panic-scale=40",
+]
+
+[payload.adt]
+chip_id = "207"
+owned_memory_size = "0x100000000"
+packed_data_ramdisk = true
+unique_chip_id = "required"
+
+[device_tree]
+source = "device:dts/alioth.dts"
+include_dirs = ["soc:dts"]

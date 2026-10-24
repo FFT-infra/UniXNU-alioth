@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: BSD-3-Clause
+// Xiaomi Redmi K40 (alioth, M2012K11AC), Qualcomm SM8250-AC.
+//
+// Memory banks, reserved regions and enabled peripherals come from the
+// phone's own device tree under Android and from the Mu-Silicium alioth port.
+
+/dts-v1/;
+/include/ "sm8250.dtsi"
+
+/ {
+    model = "Xiaomi Redmi K40";
+    compatible = "xiaomi,alioth", "qcom,sm8250";
+
+    memory@80000000 {
+        device_type = "memory";
+        // The 8 GiB model: one bank from 0x80000000.
+        reg = <0 0x80000000 0x2 0x00000000>;
+    };
+
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        // The firmware hands this region to UniXNU as the initrd payload.
+        splash_region: splash_region@9c000000 {
+            reg = <0 0x9c000000 0 0x2b00000>;
+            label = "cont_splash_region";
+        };
+    };
+};
+
+// Enable the CPUs the board runs, the UFS controller and PHY, and the QUPv3
+// serial engine the touch controller is wired to. Leave the GPU disabled until
+// a component with A650 scope is selected.
+&cpu0 { status = "okay"; };
+&cpu1 { status = "okay"; };
+&cpu2 { status = "okay"; };
+&cpu3 { status = "okay"; };
+&cpu4 { status = "okay"; };
+&cpu5 { status = "okay"; };
+&cpu6 { status = "okay"; };
+&cpu7 { status = "okay"; };
