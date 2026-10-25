@@ -106,6 +106,12 @@ kernel_args = [
   # UFS host through 0x0e0 and 0x4e0.
   "native-ufs-stream=0xe0",
   "native-ufs-stream2=0x4e0",
+  # The unattended-test pair (package/BootLog.c). sheng-log=1 starts the UFS log writer
+  # once the monitor ticks; sheng-autoreset=<seconds> writes the IMEM restart reason and
+  # resets, so a run comes back to fastboot on its own. Both are read by BootLog.c, which
+  # keeps its upstream argument names until the reader side is ported (PLAN 1.5.6).
+  "sheng-log=1",
+  "sheng-autoreset=180",
 ]
 
 [payload.adt]

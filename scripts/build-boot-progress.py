@@ -109,9 +109,22 @@ fw_obj = OUT / 'AdspFirmware.o'
 fw_command = [str(fw_source) if arg == str(policy_source) else str(fw_obj) if arg == str(policy_obj) else arg for arg in policy_command]
 subprocess.run(fw_command, cwd=policy_record['directory'], check=True, timeout=90)
 
+# The UFS diagnostic log writer (boot argument sheng-log=1) and the guarded fastboot reset
+# (sheng-autoreset=<seconds>). BootLog.c reaches the board only through weak imports, so the
+# sheng copy is used unchanged; BootReset.c is this board's own (IMEM, not the SPMI arbiter).
+log_source = PACKAGE / 'BootLog.c'
+log_obj = OUT / 'BootLog.o'
+log_command = [str(log_source) if arg == str(source) else str(log_obj) if arg == str(obj) else arg for arg in command]
+subprocess.run(log_command, cwd=record['directory'], check=True, timeout=90)
+reset_source = PACKAGE / 'BootReset.c'
+reset_obj = OUT / 'BootReset.o'
+reset_command = [str(reset_source) if arg == str(source) else str(reset_obj) if arg == str(obj) else arg for arg in command]
+subprocess.run(reset_command, cwd=record['directory'], check=True, timeout=90)
+
 archive = OUT / 'libBootProgress.a'
 archive.unlink(missing_ok=True)
-subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(obj), str(fault_obj), str(policy_obj), str(diag_obj), str(fw_obj)], check=True, timeout=30)
+subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(obj), str(fault_obj), str(policy_obj), str(diag_obj), str(fw_obj),
+                str(log_obj), str(reset_obj)], check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'watchdog_policy_sha256': hashlib.sha256(policy_source.read_bytes()).hexdigest(),
     'diag_sha256': hashlib.sha256(diag_source.read_bytes()).hexdigest(),
@@ -121,6 +134,9 @@ subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(obj), str(fault_obj), st
     'core_sha256': hashlib.sha256((source.parent / 'BootProgressCore.h').read_bytes()).hexdigest(),
     'display_sha256': hashlib.sha256((source.parent / 'BootProgressDisplay.h').read_bytes()).hexdigest(),
     'pulse_sha256': hashlib.sha256((source.parent / 'BootProgressPulse.h').read_bytes()).hexdigest(),
+    'boot_log_sha256': hashlib.sha256(log_source.read_bytes()).hexdigest(),
+    'boot_reset_sha256': hashlib.sha256(reset_source.read_bytes()).hexdigest(),
+    'boot_reset_core_sha256': hashlib.sha256((source.parent / 'BootResetCore.h').read_bytes()).hexdigest(),
     'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
     'hardware_execution': False,
 }, indent=2) + '\n')
