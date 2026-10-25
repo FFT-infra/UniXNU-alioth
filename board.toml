@@ -96,7 +96,79 @@ title = "Boot"
 # The board's DRAM from 0x80000000 to the end of the last bank.
 dram_size = "0x200000000"
 skip_setup_tool = "scripts/seed-data-skip-setup.py"
+# The panic screen and the reset probe share the zero padding after _start, and there is room for
+# only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
+# below the PANIC_CAVE_END guard (0x...8ff0), so a third cave pushes the panic screen past it and
+# scripts/patch-xnu-entry-probe.py refuses the kernel. Set panic_screen back to true to go past the
+# MMU, but drop the stage 4 keys first.
+#
+# There is no serial console to read on this board (the ADT has no `aux` node for the only
+# backend XNU compiles in, PI3_UART). The frame buffer is not reachable here either: DarwinBoot's
+# video base is 0x9C000000 while the kernel's physical base is about 0xC2E04000, so the panel lies
+# outside the physical map and phystokv() panics on it. Until a site past kernel_bootstrap (where
+# ml_io_map works) is hooked, stage 4 reports by time: it makes the call, waits this many seconds,
+# then resets. A reset means _arm_vm_init returned; no reset means the kernel died inside it.
+# 22:28 read the last binary verdict this way and it was the right answer: the probe at
+# _PE_init_platform call #2 reset, so PE_init_platform(TRUE) returned and the death is after
+# line 590. A binary reset/no-reset cannot name that death. The panic screen can: it redirects
+# panic() and the common panic funnel into a blob that draws on the kernel's own vinfo mapping.
+#
+# It was refused before because vinfo was still zero at the sites under test - initialize_screen()
+# runs from PE_create_console() at arm_init.c:577, and the death was upstream of that. It is not
+# upstream any more: the 22:28 probe proves line 590 was reached, so every remaining candidate
+# (ml_map_cpu_pio, cpu_timebase_init, PE_init_cpu, fiq_context_init, the /chosen dram lookup,
+# machine_startup and kernel_bootstrap) runs with a live _vinfo.
+#
+# The probe is dropped for this run: one panic cave and one stage-4 probe cave do not both fit in
+# the padding after _start. --no-reset keeps stages 1 and 2, so the bars still prove the kernel
+# reached the MMU.
 panic_screen = true
+# One probe, one question, one boot. A reset means the answer is yes; the verdict is read from the
+# screen, not from timing: a reset drops the device back to slot b, whose ARCHIVE image draws its
+# own "Failed to mount root device"; no reset leaves this image's frame frozen.
+#
+# entry_probe_reset_before is OFF on purpose. With it on, the cave never calls the target, so a reset
+# only proved "control reached the call site" - which is what 20:35 showed for _PE_init_platform and
+# what 20:39 failed to show for _ml_parse_cpu_topology. With it off the cave does `bl callee` first
+# and resets after it returns, so this run answers a different question: does _PE_init_platform
+# RETURN? Yes leaves the death in the configure_* block between the two call sites, no puts it
+# inside _PE_init_platform.
+# The identity-window fix is in the kernel, and the bars-only run at 21:44 froze on the same NEW
+# frame as the 20:18 control. That frame cannot separate "fix failed" from "fix worked and the
+# kernel died further on", because the frame buffer is unreachable once the MMU is on.
+#
+# 21:46 answered the identity-window question: the _ml_parse_cpu_topology probe DID reset (the
+# screen fell through to slot b's ARCHIVE image, entry pa 0xC31EC488), where the 20:39 probe at
+# the same site did not fire. The wfe_timeout_configure / wfe_timeout_init block is passed.
+#
+# 21:53 did the same for _arm_vm_init, the 20:28 site: it reset too. The CPU topology assert,
+# the BootCpuData wiring, thread_bootstrap, cpu_bootstrap, rtclock_early_init,
+# kernel_startup_bootstrap, timer_call_init, cpu_init and processor_bootstrap all ran, and
+# arm_vm_init built the tables and returned.
+#
+# _PE_init_platform is called twice in _arm_init: FALSE at line 371 (already known to return,
+# 20:46) and TRUE at line 590. The second one runs the vm_initialized branch: ml_page_protection-
+# free startup, SecureDT re-init is skipped, and pe_arm_init_interrupts maps the GIC and the timer
+# through ml_io_map. That is the first point where a real mapping of SoC registers happens, so a
+# reset here means the interrupt controller and timer came up.
+# 22:07 reset-before at _PE_init_platform call #2 did NOT reset, which settles the earlier
+# ambiguity: control never reaches line 590. The death is between arm_vm_init returning
+# (0x…6da4) and that site (0x…6f0c).
+#
+# The binary pins it down. The only occurrence of the constant 0x3C0FC000 in the kernel is at the
+# top of _PE_create_console, 0xfffffff0079a61a8/61ac (movz x0,#0x8000; movk x0,#0x3c0f,lsl 16),
+# immediately followed by BL ml_io_map_wcomb at 0x…61b4. That is check_for_panic_log()'s
+# #ifdef PLATFORM_PANIC_LOG_PADDR branch, taken because board_config.h includes BCM2837.h for
+# this target. SM8250 has nothing at 0x3c0fc000; the mapped result is dereferenced as an
+# embedded_panic_header while the MMU is on and no exception vectors are installed.
+#
+# alioth_defconfig now sets CONFIG_XNU_DT_PANIC_REGION=y, which selects the device-tree branch,
+# and the ADT has no pram node, so the function returns without mapping. The probe is dropped so
+# this run can show how far the kernel gets with that out of the way.
+# entry_probe_reset_after = "_PE_init_platform"
+# entry_probe_reset_occurrence = 2
+# entry_probe_reset_in = "_arm_init"
+# entry_probe_reset_delay = 10
 kernel_args = [
   "-v",
   "serial=3",
@@ -110,12 +182,16 @@ kernel_args = [
   # UFS host through 0x0e0 and 0x4e0.
   "native-ufs-stream=0xe0",
   "native-ufs-stream2=0x4e0",
-  # The unattended-test pair (package/BootLog.c). sheng-log=1 starts the UFS log writer
-  # once the monitor ticks; sheng-autoreset=<seconds> writes the IMEM restart reason and
-  # resets, so a run comes back to fastboot on its own. Both are read by BootLog.c, which
-  # keeps its upstream argument names until the reader side is ported (PLAN 1.5.6).
-  "sheng-log=1",
-  "sheng-autoreset=180",
+  # The driver's admission gate (NativeUfs.cpp start()): without this the root-device
+  # personality returns before it touches the controller, so no IOMedia is ever published and
+  # IOFindBSDRoot waits ROOTDEVICETIMEOUT ten times and panics. It is the same key sheng sets.
+  "native-ufs-root=1",
+  # The unattended-test pair (package/BootLog.c) is left out while the probe work runs: with
+  # sheng-autoreset=<seconds> the kernel resets on its own after that many seconds, which looks
+  # exactly like a reset probe firing and cannot be told apart from one. Add both back when
+  # running unattended (PLAN 1.5.6).
+  # "sheng-log=1",
+  # "sheng-autoreset=180",
 ]
 
 [payload.adt]

@@ -9,6 +9,14 @@ CONFIG_XNU_NATIVE_PAN=y
 CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"
 CONFIG_XNU_NATIVE_UFS=y
 CONFIG_XNU_SHENG_PMGR=y
+# Without this, check_for_panic_log() takes the #ifdef PLATFORM_PANIC_LOG_PADDR branch: the
+# BCM2837 board header is the one board_config.h includes for this target, so it hardcodes
+# 0x3c0fc000, an address in the Raspberry Pi's peripheral space. On SM8250 that mapping is
+# unmapped device space, and PE_create_console() dereferences it as an embedded_panic_header
+# with the MMU already on and no exception vectors installed, which hangs the boot CPU.
+# With the flag set, native-dt-panic-region.patch reads the region from the ADT instead, and a
+# DT with no pram node makes the function return without mapping anything.
+CONFIG_XNU_DT_PANIC_REGION=y
 CONFIG_XNU_BUILD_ARCHIVES=y
 CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a"
 # The A650 GPU path is not provided by a catalog component yet.
