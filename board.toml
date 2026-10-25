@@ -35,14 +35,26 @@ archives = [
   "component:ShengUfs",
   "component:VirtioMmioBlock",
   "component:RamBlock",
-  "build-virtio-mmio-bindings.py --component VirtioMmioBlock",
-  "build-virtio-mmio-bindings.py --component RamBlock --directory build/ram-block",
+  # Out for stage 2 for the same reason as build-boot-progress.py below, and one
+  # more: both bindings steps read build/storage-abi/interface-audit.json, which
+  # audit-storage-interface.py derives from a live GDB stop on hardware. alioth
+  # leaves CONFIG_XNU_NATIVE_VIRTIO_BLOCK and CONFIG_XNU_NATIVE_RAM_BLOCK unset,
+  # so the objects these bind never link.
+  # "build-virtio-mmio-bindings.py --component VirtioMmioBlock",
+  # "build-virtio-mmio-bindings.py --component RamBlock --directory build/ram-block",
+  # The OS profile sets CONFIG_XNU_SOURCE_MOCKFS, and build-xnu-4k-baseline.sh:739
+  # force-loads build/mockfs-fixture/libmockfs_fixture.a when it is on. Only this
+  # archive builds that library, so it must stay in the list.
+  "build-mockfs-fixture.py",
   "build-platform-power.py",
-  "build-boot-progress.py",
+  # Temporarily out for stage 2. kernel.py:188 runs every entry in this list,
+  # whether or not the defconfig enables the component, and both scripts still
+  # reach into kits/sheng. Stage 4 ports them and adds them back.
+  # "build-boot-progress.py",
   "build-link-stubs.py",
   "build-libpthread-kernel.py",
   "component:AppleKeyStoreState",
-  "build-gop-legacy-display.py",
+  # "build-gop-legacy-display.py",
 ]
 
 [firmware]
@@ -92,6 +104,10 @@ kernel_args = [
   "sheng-pmgr=2",
   "-no_slto_panic",
   "ml-timeout-lock-panic-scale=40",
+  # NativeUfs defaults to stream 0x60, which is sheng's board. SM8250 routes the
+  # UFS host through 0x0e0 and 0x4e0.
+  "native-ufs-stream=0xe0",
+  "native-ufs-stream2=0x4e0",
 ]
 
 [payload.adt]
