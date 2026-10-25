@@ -22,9 +22,10 @@
         #size-cells = <2>;
         ranges;
 
-        // The firmware hands this region to UniXNU as the initrd payload.
+        // The firmware hands this region to UniXNU as the initrd payload. Size is the
+        // phone's own cont_splash_region, so the stock ABL keeps the panel powered.
         splash_region: splash_region@9c000000 {
-            reg = <0 0x9c000000 0 0x2b00000>;
+            reg = <0 0x9c000000 0 0x2300000>;
             label = "cont_splash_region";
         };
     };
@@ -41,3 +42,8 @@
 &cpu5 { status = "okay"; };
 &cpu6 { status = "okay"; };
 &cpu7 { status = "okay"; };
+
+// Storage: the UFS host controller and PHY are disabled in sm8250.dtsi and the
+// board enables them for its ShengUfs component.
+&ufs { status = "okay"; };
+&ufsphy { status = "okay"; };

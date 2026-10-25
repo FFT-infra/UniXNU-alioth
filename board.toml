@@ -37,8 +37,9 @@ archives = [
   "component:RamBlock",
   "build-virtio-mmio-bindings.py --component VirtioMmioBlock",
   "build-virtio-mmio-bindings.py --component RamBlock --directory build/ram-block",
-  "build-sheng-platform-power.py",
+  "build-platform-power.py",
   "build-boot-progress.py",
+  "build-link-stubs.py",
   "build-libpthread-kernel.py",
   "component:AppleKeyStoreState",
   "build-gop-legacy-display.py",
@@ -68,7 +69,7 @@ packages = [
 
 [firmware.defines]
 ENABLE_SECUREBOOT = "1"
-DEVICE_MODEL = "alioth"
+DEVICE_MODEL = "1"
 MEMORY_PROTECTION = "TRUE"
 SHIP_MODE = "FALSE"
 BUILDID_STRING = "alioth-research"
@@ -94,7 +95,7 @@ kernel_args = [
 ]
 
 [payload.adt]
-chip_id = "207"
+chip_id = "0x164"
 owned_memory_size = "0x100000000"
 packed_data_ramdisk = true
 unique_chip_id = "required"
