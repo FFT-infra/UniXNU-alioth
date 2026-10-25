@@ -33,6 +33,12 @@ archives = [
   "component:SoftwareAES",
   "build-software-aes-bindings.py",
   "component:ShengUfs",
+  # ShengUfs imports the original IOBlockStorageDevice and IOMedia symbols. IOStorageFamily is
+  # prelinked and exports none of them, so this step binds each name to its original absolute
+  # address: from the qualified audit when it exists, else from the recorded static derivation
+  # in scripts/data/native-storage-original-bindings.S. It must run after the component recipes,
+  # because it adds its object to the archive they produce.
+  "build-storage-bindings.py --component NativeUfs --archive libShengUfs.a --directory build/sheng-ufs",
   "component:VirtioMmioBlock",
   "component:RamBlock",
   # Out for stage 2. Both bindings steps read build/storage-abi/interface-audit.json, which
