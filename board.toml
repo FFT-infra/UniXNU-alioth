@@ -86,7 +86,11 @@ BUILDID_STRING = "alioth-research"
 
 [payload]
 volume = "ALIOTHESP"
-size_mib = 192
+# boot_a and boot_b are 192 MiB (0xC000000). A 192 MiB FAT ramdisk plus the
+# boot shim, the firmware volume and the appended device tree does not fit;
+# 184 MiB also leaves less than the required 8 MiB safety margin. 176 MiB is
+# the value the archived alioth port booted on hardware.
+size_mib = 176
 loader = "firmware"
 title = "Boot"
 # The board's DRAM from 0x80000000 to the end of the last bank.
@@ -117,7 +121,12 @@ kernel_args = [
 [payload.adt]
 chip_id = "0x164"
 owned_memory_size = "0x100000000"
-packed_data_ramdisk = true
+# The Data seed is dense. scripts/prepare-owner-data-fixture.py:62 requires its output to be a raw
+# APFS container (NXSB at 0x20, no DBRDISK1 header), so the ADT must reserve RAMDisk, not
+# PackedRAMDisk. DarwinBoot refuses a mismatch at DarwinBoot.c:558 with EFI_COMPROMISED_DATA.
+# Packed is not reachable here yet either: alioth leaves CONFIG_XNU_NATIVE_RAM_BLOCK unset, so
+# nothing in this kernel reads a DBRDISK1 extent table.
+packed_data_ramdisk = false
 unique_chip_id = "required"
 
 [device_tree]
