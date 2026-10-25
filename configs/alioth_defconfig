@@ -17,6 +17,12 @@ CONFIG_XNU_SHENG_PMGR=y
 # With the flag set, native-dt-panic-region.patch reads the region from the ADT instead, and a
 # DT with no pram node makes the function return without mapping anything.
 CONFIG_XNU_DT_PANIC_REGION=y
+# Owner-verified root publication. Without this the UFS driver compiles as a probe-only
+# transport (-DNATIVE_UFS_PROBE_ONLY=1): start() brings the link up but publishes no
+# IOMedia, so IOFindBSDRoot waits ROOTDEVICETIMEOUT ten times and panics. Turning it on
+# selects -DNATIVE_VERIFIED_BLOCK=1 and force-loads libVerifiedRootProbe.a, whose signed
+# hash table and key come from the unchanged original OS image.
+CONFIG_XNU_VERIFIED_ROOT_PROBE=y
 CONFIG_XNU_BUILD_ARCHIVES=y
 CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a"
 # The A650 GPU path is not provided by a catalog component yet.

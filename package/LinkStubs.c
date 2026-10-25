@@ -7,3 +7,11 @@ void native_legacy_display_probe(void);
 void native_legacy_display_probe(void)
 {
 }
+
+// ShengUfs imports this as a weak reference, which a kernel link still has to resolve.
+// alioth leaves CONFIG_XNU_BOOT_PROGRESS unset, so libBootProgress.a is not linked.
+// Weak here, so enabling that option later keeps the real definition.
+__attribute__((weak)) void boot_progress_poll(void);
+__attribute__((weak)) void boot_progress_poll(void)
+{
+}
