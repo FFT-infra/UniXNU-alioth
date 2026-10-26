@@ -721,7 +721,7 @@ void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t
   bp_exit_add(&exit_records,pid,name,status,ns,code);
   unsigned signal=(unsigned)status&127;
   if(signal>=3 && signal<=12 && signal!=9 && boot_progress_exit_fault)
-    boot_progress_exit_fault(pid,signal,exit_records.crash[(exit_records.crashes-1)%3],400);
+    boot_progress_exit_fault(pid,signal,exit_records.crash[(exit_records.crashes-1)%3],sizeof(exit_records.crash[0]));
   if(signal==6 && boot_progress_exit_reason) {
     if(&boot_progress_throw_text)boot_progress_throw_text[0]=0;
     boot_progress_exit_reason(pid,signal,exit_records.reason,sizeof(exit_records.reason));
@@ -736,8 +736,9 @@ void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t
     unsigned idx = exit_records.crashes ? (exit_records.crashes-1)%3 : 0;
     const char *row = exit_records.crash[idx];
     if (&qcom_usb_debug_write && row[0]) {
-      char log[448];
-      int n = snprintf(log,sizeof(log),"EXITCRASH pid=%d name=%s %s\n",pid,name?name:"?",row);
+      char log[768];
+      /* row begins with a newline of its own. */
+      int n = snprintf(log,sizeof(log),"EXITCRASH pid=%d name=%s%s\n",pid,name?name:"?",row);
       if (n > 0) qcom_usb_debug_write(log,(size_t)n < sizeof(log) ? (size_t)n : sizeof(log)-1);
     }
   }

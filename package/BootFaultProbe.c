@@ -94,9 +94,36 @@ void boot_progress_critical_exit(int pid, char *out, unsigned long capacity) {
  if(pid==proc_selfpid()) {
   instruction_error=copyin(f.pc,&instruction,sizeof(instruction));
   image_error=copyin(task_get_all_image_info_addr(current_task()),&info,sizeof(info));
+  /* Find the image whose __TEXT covers the faulting PC, not image 0: image 0 is the main
+   * executable, and a crash inside a framework otherwise reports only that main binary. dyld
+   * publishes one base per image and no size, so one pass records the lowest base above the PC
+   * as its upper bound, and a second pass names the image at the highest base at or below it.
+   * The count is bounded because a corrupt array must not walk user memory. */
   if(!image_error && info.infoArrayCount && info.infoArray) {
-   image_error=copyin(info.infoArray,&image,sizeof(image));
-   if(!image_error && copyinstr(image.imageFilePath,image_path,sizeof(image_path),&copied))image_path[0]=0;
+   uint32_t count=info.infoArrayCount>1024?1024:info.infoArrayCount;
+   uint64_t best_base=0,best_limit=0;
+   for(uint32_t k=0;k<count;++k) {
+    struct user64_dyld_image_info candidate={0};
+    if(copyin(info.infoArray+k,&candidate,sizeof(candidate)))continue;
+    uint64_t base=candidate.imageLoadAddress;
+    if(base<=f.pc && base>=best_base)best_base=base;
+    if(base>f.pc && (best_limit==0 || base<best_limit))best_limit=base;
+   }
+   if(best_base) {
+    for(uint32_t k=0;k<count;++k) {
+     struct user64_dyld_image_info candidate={0};
+     if(copyin(info.infoArray+k,&candidate,sizeof(candidate)))continue;
+     if(candidate.imageLoadAddress==best_base) {
+      image=candidate;
+      if(!copyinstr(candidate.imageFilePath,image_path,sizeof(image_path),&copied))image_path[0]=0;
+      break;
+     }
+    }
+   }
+   if(!image_path[0]) {
+    image_error=copyin(info.infoArray,&image,sizeof(image));
+    if(!image_error && copyinstr(image.imageFilePath,image_path,sizeof(image_path),&copied))image_path[0]=0;
+   }
   }
   for(;depth<3 && frame && !(frame&15);++depth) {
    uint64_t pair[2];
@@ -114,10 +141,10 @@ void boot_progress_critical_exit(int pid, char *out, unsigned long capacity) {
   "\nINSN=%x err=%d x0=%llx x1=%llx x2=%llx x3=%llx"
   "\nx19=%llx x20=%llx x21=%llx x22=%llx x23=%llx"
   "\nframes=%u %llx/%llx %llx/%llx %llx/%llx"
-  "\nx0str err=%d %.160s\nimage0=%llx err=%d %.80s",
+  "\nx0str err=%d %.160s\nimage=%llx off=%llx err=%d %.80s",
   f.name,f.pc,f.lr,f.sp,f.fp,f.esr,f.slide,instruction,instruction_error,
   f.x[0],f.x[1],f.x[2],f.x[3],f.x[19],f.x[20],f.x[21],f.x[22],f.x[23],
-  depth,frames[0],frames[1],frames[2],frames[3],frames[4],frames[5],message_error,message,image.imageLoadAddress,image_error,image_path);
+  depth,frames[0],frames[1],frames[2],frames[3],frames[4],frames[5],message_error,message,image.imageLoadAddress,image.imageLoadAddress&&f.pc>=image.imageLoadAddress?f.pc-image.imageLoadAddress:0,image_error,image_path);
 }
 
 // REASON-SCAN (kernel-only; excluded from the host formatting test)
