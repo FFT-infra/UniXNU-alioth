@@ -27,6 +27,7 @@ extern int proc_selfpid(void);
 #include "BootProgressPulse.h"
 #include "BootProgressLifecycle.h"
 static struct bp_exits exit_records,exit_snapshot;
+static volatile unsigned ld_exits;
 static unsigned exit_lock,exit_dropped;
 // Every process name that was exec'd, with its starts, its exits and the second of its first start. The exit records keep only failed exits,
 // so a service that starts, works and ends quietly (or never starts) was invisible; this says which of the system's helpers ran at all (int-201:
@@ -309,8 +310,12 @@ static void draw(unsigned now) {
     for (unsigned i=0;i<7;++i) line(17+i,visible->logs[(last+BP_LOGS-6+i)%BP_LOGS],0xffffffff);
   }
   if(exit_snapshot.total) {
-    snprintf(b,sizeof(b)," Process exits: total=%u nonzero-status-or-reason=%u dropped=%u; FAIL rows persist across normal exits",
-      exit_snapshot.total,exit_snapshot.failed,__atomic_load_n(&exit_dropped,__ATOMIC_RELAXED));
+    /* ld is reported here rather than in its own row: the page is 48 rows and every row is
+     * spoken for. ld is the dynamic loader, so if it ever faulted every later failure is
+     * downstream of it, and that has to stay visible after the four-row window has moved on. */
+    snprintf(b,sizeof(b)," Process exits: total=%u nonzero-status-or-reason=%u dropped=%u ld=%u; FAIL rows persist across normal exits",
+      exit_snapshot.total,exit_snapshot.failed,__atomic_load_n(&exit_dropped,__ATOMIC_RELAXED),
+      __atomic_load_n(&ld_exits,__ATOMIC_RELAXED));
     bar(16,b,0xffffff00,BP_BAR_SECTION);
     for(unsigned i=0;i<3;++i) {
       unsigned n=exit_snapshot.failed>3?exit_snapshot.failed-3:0;
@@ -636,6 +641,12 @@ void boot_progress_process_stage(int pid,const char *name,const char *text) {
 void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t code) {
   if(!enabled)return;
   census_note(name,1);
+  /* ld is the dynamic loader, so a fault in it makes every later failure downstream. Counted
+   * here rather than in a separate kernel hook because this is the function whose `name` is
+   * already proven correct: the exit rows this same call fills show "ld" on the panel. The count
+   * is never reset, so it survives the four-row window and answers "has ld ever faulted" at any
+   * time in the boot. */
+  if(name && !strcmp(name,"ld"))__atomic_fetch_add(&ld_exits,1,__ATOMIC_RELAXED);
   if(name && !strcmp(name,"xpcproxy") && pid==proc_selfpid())xpc_fail_note(status,ns,code);
   if(__atomic_exchange_n(&exit_lock,1,__ATOMIC_ACQUIRE)) {
     __atomic_fetch_add(&exit_dropped,1,__ATOMIC_RELAXED);return;

@@ -10,6 +10,7 @@ as UNIXNU_UEFI, rather than from a sibling repository's fixed path.
 import hashlib
 import json
 import os
+import pathlib
 from pathlib import Path
 import subprocess
 
@@ -50,6 +51,21 @@ def font_dir():
 
 record = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json').read_text().strip().rstrip(','))
 source = PACKAGE / 'BootProgress.c'
+# Compile from a private copy on local disk. Reading straight off the virtiofs mount makes
+# clang-24 abort with `MemoryBuffer::init: Buffer is not null terminated` when the shared
+# directory's cached size and content disagree for a moment, which happens while this workspace is
+# edited from the other side. The copy pins one consistent inode; the hash check proves it is the
+# same file. build-gop-legacy-display.py does the same for the same reason.
+import hashlib
+import shutil
+import tempfile
+def _sha(path):
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+_staged = pathlib.Path(tempfile.mkdtemp(prefix='unixnu-boot-progress-')) / 'BootProgress.c'
+shutil.copyfile(source, _staged)
+if _sha(_staged) != _sha(source):
+    raise SystemExit(f'{source} changed while it was copied for compilation; rerun the build')
+source = _staged
 obj = OUT / 'BootProgress.o'
 command = []
 args = record['arguments']

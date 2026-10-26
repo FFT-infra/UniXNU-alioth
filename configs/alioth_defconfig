@@ -23,8 +23,87 @@ CONFIG_XNU_DT_PANIC_REGION=y
 # selects -DNATIVE_VERIFIED_BLOCK=1 and force-loads libVerifiedRootProbe.a, whose signed
 # hash table and key come from the unchanged original OS image.
 CONFIG_XNU_VERIFIED_ROOT_PROBE=y
+# Root authentication. bsd_init.c calls FSIOC_KERNEL_ROOTAUTH on the mounted root vnode and
+# panics at "rootvp not authenticated after mounting" unless owner_authorized is set. That value
+# comes only from the XNU_OWNER_ROOT_AUDIT block, and it becomes the decision only under
+# XNU_OWNER_ROOT_TRUST. APFS answers the ioctl by checking its own seal and system-volume-auth-blob,
+# which needs Apple SEP; SM8250 has none, so the ioctl fails and this path is the only way past.
+# build-xnu-4k-baseline.sh requires TRUST to come with AUDIT and NATIVE_VIRTIO_BLOCK, so the
+# VirtioMmioBlock component is selected below. Its transport never probes on this board - the DTS
+# has no virtio,mmio node - so it stays a read-only authentication library: it exports
+# native_verified_block_root_authorized(), which walks the IOMedia provider chain, and calls the
+# weak native_ufs_block_authenticates() that ShengUfs exports to authenticate the UFS window.
+CONFIG_XNU_OWNER_ROOT_AUDIT=y
+CONFIG_XNU_OWNER_ROOT_TRUST=y
+CONFIG_XNU_NATIVE_VIRTIO_BLOCK=y
+# The userspace chain that launchd needs before its first instruction. Each switch is checked
+# by scripts/build-xnu-4k-baseline.sh:373-475, and the order is fixed: CACHE_MOUNT needs
+# ROOT_TRUST, CACHE_STARTUP needs CACHE_MOUNT, BOOT_MANIFEST needs CACHE_STARTUP, DATA_MOUNT
+# needs BOOT_MANIFEST, and UNION_SYSTEMOS needs CACHE_STARTUP with CRYPTEX_FILES off.
+#
+# CACHE_MOUNT mounts the SystemOS volume over / as a read-only union. Measured on the supplied
+# 21H461 images: the OS volume carries no System/Library/Caches/com.apple.dyld at all (0 files
+# in 044-76040-038.dmg) while Cryptex1,SystemOS carries the shared cache (54 files, 3.99 GB,
+# 044-76034-038.dmg). Without the union dyld finds no cache and initproc dies after exec.
+# The volume UUID is the one the verified-root-systemos policy is signed for.
+CONFIG_XNU_OWNER_CACHE_MOUNT=y
+# Selects the cache at startup instead of through a dyld environment variable, and sets
+# commpage dyld_flags bit 3 so dyld does not demand an ignition ticket: there is no SEP here.
+CONFIG_XNU_OWNER_CACHE_STARTUP=y
+# Publishes /chosen/boot-manifest-hash, a SHA-384 over both authenticated volume envelopes.
+CONFIG_XNU_OWNER_BOOT_MANIFEST=y
+CONFIG_XNU_OWNER_UNION_SYSTEMOS=y
+# Mounts the embedded Data seed as the writable /private/var. The seed is
+# build/owner-data-fixture/owner-data-32.cdr (32 MiB, the original private/var), which the
+# payload already carries as scratch-data.img; its volume UUID is from that seed's report.
+# CONFIG_XNU_NATIVE_RAM_BLOCK is set below: the md0 route is measured to fail.
+CONFIG_XNU_OWNER_DATA_MOUNT=y
+CONFIG_XNU_OWNER_DATA_VOLUME_UUID="B0B12459-4F23-4E03-9B64-A902959309AA"
+# The Data mount must go through the RamBlock IOKit device, not /dev/md0. Measured on hardware
+# (2026-10-26, panic screen): with DATA_MOUNT but without this switch the kernel panics
+# "offline scratch Data mount failed: 2" - APFS refuses to mount /dev/md0 with ENOENT.
+# native_owner_data_prepare() reaches that branch because without NATIVE_RAM_BLOCK it calls
+# mdevlookup(0), the memory device IOKitBSDInit makes from /chosen/memory-map/RAMDisk, and the
+# original APFS cannot mount a bare memdev as a volume. scripts/check-scratch-data-checkpoints.py
+# records the same status 2 at stage 2, and the qualified path it qualifies instead is this one:
+# native_ram_block_volume_seed() publishes a real IOMedia whose UUID matches the seed, so
+# /private/var mounts writable from /dev/diskN sM (status 0, stage 4).
+# The driver reads the same RAMDisk property, so the payload's seed is still the source; no
+# virtio provider is involved. Requires the qualified original storage/AES closure (the build
+# script checks it) and the RAM transport's storage bindings step in board.toml.
+CONFIG_XNU_NATIVE_RAM_BLOCK=y
+CONFIG_XNU_BOOT_PROGRESS=y
+# Was unset. It is on now because BootWatchdogPolicy.c, which reads sheng-lite and
+# sheng-disable-watchdogd, is called only from inside `#if XNU_BOOT_PROGRESS` in
+# load_init_program, so those arguments were dead keys while this stayed off. sheng sets both and
+# reaches the desktop; alioth does not, and a 2026-10-26 measurement found processes dying with
+# libsystem faults, fewer than ten alive.
+# The cost is paid in package/BootProgressStubs.c: BootProgress.c and BootLog.c reference 118
+# diagnostics of sheng-only components (Adreno, DPU, touch, Wi-Fi, backlight) as weak_import, and
+# a static kernel link refuses to leave a weak_import undefined, so each needs a zero-valued
+# definition. Those stubs are weak, so a component that later defines the real symbol wins.
+# The watchdog panic is still also stopped by panic_on_crash_disabled=1: kern_exit.c declares it
+# as TUNABLE(bool, ..., false), kernel_startup_tunable_init() reads it through
+# PE_parse_boot_argn, and proc_should_trigger_panic() returns false on it before it looks at
+# POSIX_SPAWN_PANIC_ON_CRASH, which is the path watchdogd's _PanicOnCrash sets.
+CONFIG_XNU_VERIFIED_ROOT_ARCHIVE="{tree}/build/verified-root-os-xnu-bundle/libVerifiedRootProbe.a"
+CONFIG_XNU_NATIVE_VIRTIO_BLOCK_ARCHIVE="{tree}/build/virtio-mmio-block-verified-bundle/libVirtioMmioBlock.a"
 CONFIG_XNU_BUILD_ARCHIVES=y
 CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a"
 # The A650 GPU path is not provided by a catalog component yet.
 # CONFIG_XNU_NATIVE_ADRENO is not set
+# The GOP framebuffer path. bsd_init.c calls native_legacy_display_late_probe() inside
+# `#if DEVELOPMENT || DEBUG` on this switch, and offline-component-load-probes.patch calls
+# native_legacy_display_probe() on offline-legacy-register=1, so both symbols must resolve or the
+# kernel link fails. build-xnu-4k-baseline.sh:642 then force-loads
+# build/native-legacy-display/libNativeLegacyDisplay.late.a and re-verifies the archive and every
+# source hash in its report, so a stale archive stops the link instead of shipping.
+# The archive binds the original IOMobileFramebufferLegacy to absolute addresses in the prelinked
+# family, which is why scripts/build-gop-legacy-display.py re-proves each address against this
+# kernel before it links: the family is prelinked here, not exported.
+CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
+# NATIVE_MOBILE_DISPLAY stays off. offline-component-load-probes.patch calls
+# native_mobile_display_provider_probe() under that switch, and the definition lives in
+# NativeMobileDisplay.cpp, which this archive does not carry. Turning it on adds an undefined
+# symbol to the kernel link; it belongs with that file's own qualification.
 # CONFIG_XNU_NATIVE_MOBILE_DISPLAY is not set

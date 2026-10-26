@@ -9,7 +9,7 @@ description = "Xiaomi Redmi K40 (alioth, M2012K11AC)"
 kit = "alioth"
 
 [components]
-include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "ShengUfs", "VirtioMmioBlock", "RamBlock", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState"]
+include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "ShengUfs", "VirtioMmioBlock", "RamBlock", "GopFramebuffer", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState"]
 
 [userdata]
 # Android's userdata on UFS LUN 0, read from the phone's GPT.
@@ -39,14 +39,23 @@ archives = [
   # in scripts/data/native-storage-original-bindings.S. It must run after the component recipes,
   # because it adds its object to the archive they produce.
   "build-storage-bindings.py --component NativeUfs --archive libShengUfs.a --directory build/sheng-ufs",
+  # Selected for root authentication, not for its transport: alioth's DTS has no virtio,mmio node,
+  # so the driver never probes. It provides native_verified_block_root_authorized(), which
+  # OWNER_ROOT_AUDIT calls, and that function reaches ShengUfs through the weak
+  # native_ufs_block_authenticates(). The archive that the kernel links is overridden by
+  # CONFIG_XNU_NATIVE_VIRTIO_BLOCK_ARCHIVE (the verified bundle); this step builds the plain one.
   "component:VirtioMmioBlock",
+  # Same 12 original storage symbols as ShengUfs, but this object imports only 11 of them, so the
+  # recorded file is read as a superset (--subset) instead of requiring an exact match.
+  "build-storage-bindings.py --component NativeVirtioBlock --archive libVirtioMmioBlock.a --directory build/virtio-mmio-block --subset",
   "component:RamBlock",
-  # Out for stage 2. Both bindings steps read build/storage-abi/interface-audit.json, which
-  # audit-storage-interface.py derives from a live GDB stop on hardware. alioth
-  # leaves CONFIG_XNU_NATIVE_VIRTIO_BLOCK and CONFIG_XNU_NATIVE_RAM_BLOCK unset,
-  # so the objects these bind never link.
-  # "build-virtio-mmio-bindings.py --component VirtioMmioBlock",
-  # "build-virtio-mmio-bindings.py --component RamBlock --directory build/ram-block",
+  # The RAM transport publishes the Data volume, so its storage bindings must be present:
+  # alioth now sets CONFIG_XNU_NATIVE_RAM_BLOCK, and the kernel link force-loads this archive.
+  # With NATIVE_VIRTIO_BLOCK also on, build-xnu-4k-baseline.sh links the bare NativeRamBlock.o
+  # and requires this report (bindings.json) to agree with the Virtio one on all 11 shared
+  # original symbols. The audit itself comes from scripts/data/native-storage-original-bindings.S,
+  # the broadcast static derivation, because no live GDB interface audit exists here yet.
+  "build-storage-bindings.py --component NativeRamBlock --archive libRamBlock.a --directory build/ram-block --subset",
   # The OS profile sets CONFIG_XNU_SOURCE_MOCKFS, and build-xnu-4k-baseline.sh:739
   # force-loads build/mockfs-fixture/libmockfs_fixture.a when it is on. Only this
   # archive builds that library, so it must stay in the list.
@@ -58,7 +67,10 @@ archives = [
   "build-link-stubs.py",
   "build-libpthread-kernel.py",
   "component:AppleKeyStoreState",
-  # "build-gop-legacy-display.py",
+  # The GOP display path. Builds libNativeLegacyDisplay.late.a, whose absolute bindings to the
+  # prelinked IOMobileFramebufferLegacy are re-proven against this kernel on every run. It must
+  # run after the driver recipes above, because it reads their compile records.
+  "build-gop-legacy-display.py",
 ]
 
 [firmware]
@@ -102,6 +114,18 @@ title = "Boot"
 # The board's DRAM from 0x80000000 to the end of the last bank.
 dram_size = "0x200000000"
 skip_setup_tool = "scripts/seed-data-skip-setup.py"
+# The accepted trust cache bundle. Without one, DarwinBoot writes no
+# /chosen/memory-map/TrustCache, load_static_trust_cache() finds a zero-length segment,
+# and AMFI refuses the first exec: launchd's code signature is not in any loaded cache,
+# so mpo_cred_label_update_execve sets ip_mac_return and the kernel kills initproc with
+# OS_REASON_EXEC (9) / EXEC_EXIT_REASON_SECURITY_POLICY (0x8).
+# The bundle is the two unchanged 21H461 modules, StaticTrustCache then
+# Cryptex1,SystemTrustCache, exactly as scripts/build-original-system-trust.py builds them.
+# Measured: launchd's cdhash 1d52c69747dffc4b1937d241bdbc9cee3b22df18 is one of the 2478
+# StaticTrustCache entries and is absent from the 76-entry SystemTrustCache.
+trust_cache_sha256 = [
+  "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
+]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
 # below the PANIC_CAVE_END guard (0x...8ff0), so a third cave pushes the panic screen past it and
@@ -192,6 +216,142 @@ kernel_args = [
   # personality returns before it touches the controller, so no IOMedia is ever published and
   # IOFindBSDRoot waits ROOTDEVICETIMEOUT ten times and panics. It is the same key sheng sets.
   "native-ufs-root=1",
+  # Stops the watchdogd panic without touching the kernel. Measured on hardware (2026-10-26,
+  # second panic screen): watchdogd[107] executed BRK #1, the kernel raised SIGTRAP (namespace 2
+  # subcode 0x5), and com.apple.watchdogd.plist sets _PanicOnCrash {PanicOnConsecutiveCrash:
+  # true}, so that one crash panicked the kernel. The cause is that watchdogd wants a Data volume
+  # in the root volume group, while this root is NativeUfs and the Data seed is a separate 32 MiB
+  # NativeRamBlock container whose volume reports "No specific role"; the supplied OS image has
+  # no Data volume at all (044-76040-038.dmg holds disk11s1, Role System, only).
+  # kern_exit.c declares panic_on_crash_disabled as TUNABLE(bool, ..., false) and
+  # proc_should_trigger_panic() returns false on it before it reaches the
+  # POSIX_SPAWN_PANIC_ON_CRASH branch that _PanicOnCrash takes. watchdogd still crashes, and the
+  # kernel then prints "panic-on-crash disabled via boot-arg" and keeps running.
+  # This is the bring-up answer, not the qualified one: it suppresses every job's crash panic,
+  # launchd included, so initproc's own exit no longer stops the boot either.
+  "panic_on_crash_disabled=1",
+  # Records whether the prelinked apfs kext loads offline. The gate is in bsd_init.c's
+  # #if DEVELOPMENT || DEBUG native_apfs_load_probe(): without this key it returns before
+  # calling OSKextLoadKextWithIdentifier, so native_apfs_load_status stays -1. The kext itself
+  # starts through the prelink path either way - probe 12 already showed its media
+  # (Content 41504653/EF57347C), so this key is for the checkpoint value, not for availability.
+  # sheng sets it, and so does this board now.
+  "offline-apfs-load=1",
+  # The GOP display path. Each key is read by drivers/GopFramebuffer/NativeLegacyDisplay.cpp
+  # or by kits/alioth/LegacyDisplayProbe.cpp, not by a board file, so the list is those two
+  # files' documented interface:
+  #   offline-mobile-graphics-load=1 gates native_mobile_graphics_load_probe() in bsd_init.c.
+  #                              Without it that function returns at its first line
+  #                              (offline-component-load-probes.patch:545), so neither
+  #                              native_legacy_display_probe() nor anything after it runs and
+  #                              every offline-legacy-* key below does nothing. It also loads
+  #                              com.apple.iokit.IOMobileGraphicsFamily; that identifier is one of
+  #                              the kernel's 30 prelinked components, so the load returns
+  #                              success without user space.
+  #   offline-legacy-pm=1        runs the logical power-management lifecycle in startDisplay().
+  #                              validateSwap() and kickOnce() both require logicalPM, so without
+  #                              it the display maps, registers and sends vsyncs but no swap is
+  #                              ever accepted or copied: no frame reaches the panel. It also
+  #                              requires offline-legacy-phase=4, which is set below.
+  #   offline-legacy-register=1  lets registerService() publish the display. Without it the
+  #                              owned registerService() calls native_legacy_backend_guard(84)
+  #                              and panics with the lifecycle point, which is the intended
+  #                              behaviour for an unpublished backend, not a bring-up state.
+  #   offline-legacy-gop=1       lets startHardware() map the firmware framebuffer. Without it
+  #                              startHardware() returns false and no scanout buffer is installed.
+  #   offline-legacy-phase=4     selects the attach-to-device-tree branch that probe() and start()
+  #                              take, and is also the phase the unit-scale policy requires.
+  #   offline-legacy-validate=1  accepts a submitted swap surface. Without it every swap is
+  #                              rejected at validation and nothing is ever presented.
+  #   offline-legacy-transfer=1  performs the CPU copy into the scanout buffer. Without it the
+  #                              validated swap is never transferred, so no frame reaches memory.
+  #   offline-legacy-cpu-present=1 retires the swap after the copy. Without it the client's wait
+  #                              never completes and the compositor stops after one frame.
+  #   sheng-vsync=60             arms the work-loop refresh tick. The GOP scanout has no vblank
+  #                              interrupt, and no platform subclass calls the original vsync
+  #                              sender, so without this the render server never receives a vsync
+  #                              message and CoreAnimation cannot present its first frame. 60 is
+  #                              this panel's rate; the component rejects 0 and anything over 240.
+  #   offline-legacy-verdict=1   makes a failed path in LegacyDisplayProbe.cpp panic with its
+  #                              stage instead of returning silently. This board has no serial
+  #                              console, so without it a failure and "the probe never ran" look
+  #                              the same: the panel keeps the DarwinBoot frame either way. A
+  #                              panic screen naming the stage is the only per-flash evidence.
+  #                              Success does not panic; it is read from the panel.
+  #   offline-legacy-reached=1   paints a yellow band at the top of the panel as the first act of
+  #                              native_legacy_display_late_probe(), before any test can return.
+  #                              Band 3 of 16: below DarwinEnter's green band and the entry
+  #                              probe's blue and magenta ones, so all four can be read from one
+  #                              photograph. A yellow band proves bsd_autoconf reached the late
+  #                              probe and that the kernel can still write the frame buffer; no
+  #                              band proves the kernel stopped before that call. This separates
+  #                              the two cases the verdict argument cannot, because a kernel that
+  #                              died earlier never reaches any verdict site either.
+  #                              The same switch also paints the userspace ladder, bands 4 to 6,
+  #                              from three call sites the offline-userspace-ladder patch adds:
+  #                                band 4 cyan   the first bsd_ast fired, so bsd_init() finished
+  #                                band 5 orange load_init_program was entered
+  #                                band 6 red    process 1's execve returned 0
+  #                              One photograph then separates the three cases that all look
+  #                              identical on a panel that never changes: no band 4 means the
+  #                              kernel never left bsd_init; bands 4 and 5 without 6 put the stop
+  #                              in the exec path (AMFI, trust cache or union mount); all three
+  #                              mean userspace started and the remaining silence is the
+  #                              compositor's, not the kernel's.
+  #                              Bands 8 and 9 report the display backend itself, which bands 3
+  #                              to 6 cannot because the kernel paints those alone:
+  #                                band 8 purple a client submitted a swap
+  #                                band 9 white  the transfer wrote the scanout buffer
+  #                              Band 8 without 9 means a client exists and its frames were
+  #                              refused or never copied, so the fault is in the validator or
+  #                              the transfer, not in a missing client. Neither band means no
+  #                              client reached this backend at all.
+  "offline-mobile-graphics-load=1",
+  "offline-legacy-pm=1",
+  "offline-legacy-register=1",
+  "offline-legacy-gop=1",
+  "offline-legacy-phase=4",
+  "offline-legacy-validate=1",
+  "offline-legacy-transfer=1",
+  "offline-legacy-cpu-present=1",
+  "offline-legacy-verdict=1",
+  "offline-legacy-reached=1",
+  # offline-legacy-dump-at is gone. It gated native_legacy_dump_state(), which was removed when
+  # the cell painter replaced the panic dump, so the argument had been a dead key: present on the
+  # command line, read by nothing. The text channel below replaces it properly.
+  "sheng-vsync=60",
+  # sheng-lite and sheng-disable-watchdogd come from the working port. Both are parsed by
+  # package/BootWatchdogPolicy.c, whose only call site is inside `#if XNU_BOOT_PROGRESS` in
+  # load_init_program, so they did nothing until alioth_defconfig turned that option on.
+  # sheng-lite stops the jobs that only reach for the network, iCloud or the photo library and
+  # have nothing to do on a tablet with no radios and no accounts; sheng-disable-watchdogd stops
+  # watchdogd, which on this board asserts because the Data volume has no role. A 2026-10-26
+  # measurement found processes dying with libsystem faults and fewer than ten alive, which is
+  # the shape a daemon asserting on a missing service takes.
+  "sheng-lite=1",
+  # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
+  # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
+  # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
+  # first stage. It does NOT panic, so the hardware watchdog cannot reset the panel and erase it,
+  # which is what defeated three earlier attempts to read a panic dump.
+  # The working port sheng passes the same argument. It is also the only channel that carries
+  # what a colour band cannot: kern_exit.c:1901 already calls
+  # boot_progress_exit(pid, p_name, rv, namespace, code) for every exiting process, and
+  # BootProgress.c stores and renders those records. That is the pid, the name and the reason,
+  # which is exactly what the exit loop investigation is missing.
+  # 1 would be a one-shot page; 2 keeps it live. Any other value disables the layer.
+  "boot-progress=2",
+  # boot-diag-resume=<seconds> lets the diagnostic page take the panel back that long after
+  # scanout stops (BootProgress.c:520-525). Without it, a client that ever does present would
+  # keep the page hidden for good; with it the diagnostics always come back.
+  "boot-diag-resume=10",
+  "sheng-disable-watchdogd=1",
+  # iPadOS 17 roots from a read-only System volume plus a writable Data volume in one APFS
+  # volume group. There is no SEP and no hardware keybag on SM8250, so keybagd takes its
+  # shared-Data allow-list path only when this argument is present. Nothing in this kernel
+  # parses it (no occurrence of the string in kernel.macho); userspace reads it from
+  # kern.bootargs. probe-keybag-bypass.py qualifies the same argument offline.
+  "-apfs_shared_datavolume",
   # The unattended-test pair (package/BootLog.c) is left out while the probe work runs: with
   # sheng-autoreset=<seconds> the kernel resets on its own after that many seconds, which looks
   # exactly like a reset probe firing and cannot be told apart from one. Add both back when
@@ -210,6 +370,59 @@ owned_memory_size = "0x100000000"
 # nothing in this kernel reads a DBRDISK1 extent table.
 packed_data_ramdisk = false
 unique_chip_id = "required"
+# IOFindBSDRoot selects its root media by three predicates, in order: rd=/rootdev= on the
+# command line, /chosen/root-matching, /chosen/boot-uuid, and only then a fallback of
+# IOProviderClass=IOMedia + Content="Apple_HFS" (IOKitBSDInit.cpp:781-928). This board carries
+# none of the first three, and no media here is Apple_HFS - the APFS container is EF57347C/
+# 7C3457EF and the APFS volume is 41504653 - so the fallback can never match and the kernel
+# panics at line 984 after ten ROOTDEVICETIMEOUT rounds. This writes /chosen/root-matching as
+# {"IOProviderClass":"IOMedia","IOPropertyMatch":{"UUID":<OS volume>}} (devicetree.py:294-297),
+# which the parser accepts as a bare <dict> (OSUnserializeXML.y:217-229).
+# The value is the OS window's own volume UUID, recorded by build/verified-root-os/verification.json.
+root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
+
+# Device identity. The panel is 1080x2400 (20:9), so an iPad identity would make UIKit lay out
+# a 4:3 interface and distort it. The supplied image accepts a phone identity: SpringBoard.app's
+# Info.plist declares UIDeviceFamily = [1, 2] (1 = iPhone, 2 = iPad), so iPhone10,3 is a family
+# this image already supports. iPhone10,3 (D22) is 1125x2436 at 19.5:9, the closest shape the
+# 21H461 resource set carries to this panel.
+#
+# These tables are top-level [adt.*], not [payload.adt.*]. devicetree.generate() reads two
+# different tables: platform = config['adt'] supplies the ADT property nodes below, while
+# options = config['payload']['adt'] carries only the DarwinBoot switches (chip_id,
+# owned_memory_size, packed_data_ramdisk, root_match_volume_uuid, unique_chip_id). Writing the
+# identity under [payload.adt] silently did nothing and left the os profile's iPad7,1 / J120 /
+# artwork-device-idiom "pad" in place.
+# profiles.merge() is a recursive dict merge, so these keys overlay the profile's one by one.
+# A list value needs the plural "strings" kind: typed_properties() calls value.encode() on the
+# singular "string" branch and a list has no encode().
+[adt.root.string]
+model = "iPhone10,3"
+target-type = "D22"
+
+[adt.chosen.u32]
+display-scale = 3
+
+[adt.product.string]
+product-name = "iPhone X"
+product-description = "iPhone X"
+artwork-device-idiom = "phone"
+
+[adt.product.u32]
+artwork-device-subtype = 2436
+artwork-scale-factor = 3
+
+# home-button-type 2 is the gesture-only case: the lock screen then offers the swipe-to-unlock
+# gesture and draws the home indicator, instead of expecting a physical Home button.
+[adt.buttons.string]
+compatible = "buttons"
+device_type = "buttons"
+
+[adt.buttons.strings]
+button-names = ["hold", "voldown", "volup"]
+
+[adt.buttons.u32]
+home-button-type = 2
 
 [device_tree]
 source = "device:dts/alioth.dts"
