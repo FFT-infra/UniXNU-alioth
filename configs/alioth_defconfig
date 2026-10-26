@@ -73,6 +73,12 @@ CONFIG_XNU_OWNER_DATA_VOLUME_UUID="B0B12459-4F23-4E03-9B64-A902959309AA"
 # script checks it) and the RAM transport's storage bindings step in board.toml.
 CONFIG_XNU_NATIVE_RAM_BLOCK=y
 CONFIG_XNU_BOOT_PROGRESS=y
+# The CDC-ACM debug console over the board's DWC3 controller. Its patches guard every
+# addition behind `#if XNU_QCOM_USB_DEBUG`, so this switch has to reach the six objects those
+# patches edit or the port links to nothing. build-xnu-4k-baseline.sh passes it to them and
+# force-loads libQcomXnuUsbDebug.a when this is 1. The firmware already brings the controller
+# up and this kernel has no other USB driver, so nothing competes for it.
+CONFIG_XNU_QCOM_USB_DEBUG=y
 # Was unset. It is on now because BootWatchdogPolicy.c, which reads sheng-lite and
 # sheng-disable-watchdogd, is called only from inside `#if XNU_BOOT_PROGRESS` in
 # load_init_program, so those arguments were dead keys while this stayed off. sheng sets both and

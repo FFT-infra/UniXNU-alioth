@@ -9,7 +9,7 @@ description = "Xiaomi Redmi K40 (alioth, M2012K11AC)"
 kit = "alioth"
 
 [components]
-include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "ShengUfs", "VirtioMmioBlock", "RamBlock", "GopFramebuffer", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState"]
+include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "ShengUfs", "VirtioMmioBlock", "RamBlock", "GopFramebuffer", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState", "QcomXnuUsbDebug"]
 
 [userdata]
 # Android's userdata on UFS LUN 0, read from the phone's GPT.
@@ -71,6 +71,7 @@ archives = [
   # prelinked IOMobileFramebufferLegacy are re-proven against this kernel on every run. It must
   # run after the driver recipes above, because it reads their compile records.
   "build-gop-legacy-display.py",
+  "component:QcomXnuUsbDebug",
 ]
 
 [firmware]
@@ -345,6 +346,16 @@ kernel_args = [
   # scanout stops (BootProgress.c:520-525). Without it, a client that ever does present would
   # keep the page hidden for good; with it the diagnostics always come back.
   "boot-diag-resume=10",
+  # qcom-usb-debug=1 starts the CDC-ACM console over the board's DWC3 controller. It tees
+  # printf, IOLog, kprintf and the panic drain onto a USB serial port, so the log can be read
+  # live on the host instead of photographed off the panel. The firmware already brings the
+  # controller up (uefi-alioth DXE) and this kernel has no other USB driver, so nothing competes.
+  # qcom-usb-ctl=1 adds the two-way control channel the host scripts use for status and reboot.
+  # Expected: the host sees 1209:316d as "QcomXnuUsbDebug" and the diagnostic page prints
+  # "QCOM USB WORKER active". If a precondition fails the page prints
+  # "QCOM USB WORKER unavailable phase=%u error=%u" and the enum names which one.
+  "qcom-usb-debug=1",
+  "qcom-usb-ctl=1",
   "sheng-disable-watchdogd=1",
   # iPadOS 17 roots from a read-only System volume plus a writable Data volume in one APFS
   # volume group. There is no SEP and no hardware keybag on SM8250, so keybagd takes its

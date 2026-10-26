@@ -61,8 +61,16 @@ import shutil
 import tempfile
 def _sha(path):
     return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
-_staged = pathlib.Path(tempfile.mkdtemp(prefix='unixnu-boot-progress-')) / 'BootProgress.c'
+_stage = pathlib.Path(tempfile.mkdtemp(prefix='unixnu-boot-progress-'))
+_staged = _stage / 'BootProgress.c'
 shutil.copyfile(source, _staged)
+# BootProgress.c includes its own headers from the package directory, so the copy has to bring
+# them or the compile fails on the first include.
+for _header in ('BootProgressCore.h', 'BootProgressDisplay.h', 'BootProgressLifecycle.h',
+                'BootProgressPulse.h', 'BootResetCore.h'):
+    _from = source.parent / _header
+    if _from.is_file():
+        shutil.copyfile(_from, _stage / _header)
 if _sha(_staged) != _sha(source):
     raise SystemExit(f'{source} changed while it was copied for compilation; rerun the build')
 source = _staged
