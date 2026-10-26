@@ -5,6 +5,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <pexpert/pexpert.h>
+/* kprintf, for the EXITLOG line: it is already teed onto the USB console by
+ * pe_kprintf.c, so this is the one channel that keeps every exit record. */
+#include <kern/debug.h>
 #include <kern/thread.h>
 #include <kern/clock.h>
 #include <kern/sched_prim.h>
@@ -105,6 +108,10 @@ static unsigned pulse_worker_status,bind_count,bind_result=3,bind_depth;
 static uintptr_t bind_base;
 static uint64_t irq_entries,irq_entry_pc;
 static unsigned enabled, busy, started, last_draw = ~0U;
+/* A component's own persistent status line, drawn at row 42 every frame. Pushed, never pulled:
+ * see boot_progress_persist. */
+static char persistent_note[BP_COLS];
+static uint32_t persistent_note_color = 0xffaaaaaa;
 uint64_t boot_progress_epoch, boot_progress_frequency;
 static uint64_t irq_count, thread_count;
 static uint64_t last_pc, last_psr, last_sp;
@@ -131,6 +138,10 @@ extern unsigned int vm_page_free_count;
 extern unsigned int vm_page_active_count,vm_page_inactive_count,vm_page_wire_count,vm_page_speculative_count;
 extern uint64_t max_mem;
 extern volatile uint32_t native_ram_block_sparse __attribute__((weak_import));
+/* Declared with an opaque pointer so this file needs no QcomXnuUsbDebug header; the row that
+ * calls it declares the struct prefix it reads. */
+extern void qcom_usb_debug_get_status(void *) __attribute__((weak_import));
+extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
 extern volatile uint64_t native_ram_block_bytes,native_ram_block_resident_bytes __attribute__((weak_import));
 extern unsigned int vm_page_free_min,vm_page_free_reserved,vm_page_free_target;
 extern void boot_progress_exit_fault(int,unsigned,char *,unsigned long) __attribute__((weak_import));
@@ -368,8 +379,23 @@ static void draw(unsigned now) {
     __asm__ volatile("mrs %0,cntv_cval_el0" : "=r"(cval));
     __asm__ volatile("mrs %0,cntv_ctl_el0" : "=r"(ctl));
     __asm__ volatile("mrs %0,daif" : "=r"(daif));
-    snprintf(b,sizeof(b),"TIMER vct=%llx cval=%llx ctl=%llx DAIF=%llx (read-only monitor sample)",vct,cval,ctl,daif);
-    if(!(&native_touch_stage_req && native_touch_stage_req))line(42,b,0xffaaaaaa);
+    /* The USB console's own refusal is reported through boot_progress_stage, which keeps only
+     * the last six lines. Initialization runs at time=0s and the exit log fills those slots
+     * within seconds, so that line is gone by the time anyone photographs the panel: a
+     * refused controller and a controller that never ran both look like an empty page. This
+     * row redraws the cached status every frame instead, so the refusal stays readable. The
+     * layout below is the prefix of struct qcom_usb_debug_status, which is a stable public
+     * ABI; only the fields this row prints are declared. */
+    /* A note a component pushed with boot_progress_persist() outlives the six-slot stage ring.
+     * This row only copies a static buffer: it never calls into the component that wrote it.
+     * draw() also runs from boot_progress_init(), which is before any component's own init, so
+     * a call out from here would reach an uninitialized module. */
+    if(persistent_note[0]) {
+      line(42,persistent_note,persistent_note_color);
+    } else if(!(&native_touch_stage_req && native_touch_stage_req)) {
+      snprintf(b,sizeof(b),"TIMER vct=%llx cval=%llx ctl=%llx DAIF=%llx (read-only monitor sample)",vct,cval,ctl,daif);
+      line(42,b,0xffaaaaaa);
+    }
     snprintf(b,sizeof(b),"CPU IRQ phase=%u id=%u quiesce=%u halt=%u; phase 0=exit 2=clock 4=IPI 6=EOI; sleep-disabled=1",
       armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls);line(37,b,0xffffff00);
     if(&armcpu_smp_requested){
@@ -616,6 +642,17 @@ void boot_progress_putc(char c) {
   if (!started && !state.frozen && c=='\n' && now!=last_draw) draw(now);
   release();
 }
+/* A component states its own persistent status once, and draw() only reads the copy. The stage
+ * ring holds six lines and a boot produces far more, so a component whose one line matters later
+ * cannot use it. Pushing also keeps draw() free of calls into components: draw() runs from
+ * boot_progress_init(), which precedes every component's init. */
+void boot_progress_persist(const char *text, uint32_t color) {
+  if(!text)return;
+  unsigned i=0;
+  for(;i<BP_COLS-1 && text[i];++i)persistent_note[i]=text[i];
+  persistent_note[i]=0;
+  persistent_note_color=color;
+}
 void boot_progress_stage(const char *text) {
   if (!enabled || !take()) return;
   unsigned now=seconds();
@@ -635,6 +672,19 @@ void boot_progress_process_stage(int pid,const char *name,const char *text) {
   if(!strncmp(text,"exec process signature",22))census_note(name,0);
   snprintf(stamped,sizeof(stamped),"target pid=%d %.24s %.70s",pid,name,text);
   bp_stage(&state,stamped,now);
+  /* A refusal is the one line here worth keeping after the six-slot ring has moved on, and
+   * the panel's window loses it in seconds. This is where kern_exec.c reports the MAC policy
+   * verdict, so it is the only place that names the stage an exec died in. */
+  /* Manual scan: this translation unit has no string.h, and the word is short. */
+  bool refused = false;
+  for(const char *q = text; *q; ++q) {
+    if(q[0]=='R'&&q[1]=='E'&&q[2]=='F'&&q[3]=='U'&&q[4]=='S'&&q[5]=='E'&&q[6]=='D'){refused=true;break;}
+  }
+  if(refused && &qcom_usb_debug_write) {
+    char log[192];
+    int n=snprintf(log,sizeof(log),"EXECREFUSED pid=%d name=%s %s\n",pid,name?name:"?",text);
+    if(n>0)qcom_usb_debug_write(log,(size_t)n<(size_t)sizeof(log)?(size_t)n:sizeof(log)-1);
+  }
   if(!started && !state.frozen)draw(now);
   release();
 }
@@ -647,6 +697,23 @@ void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t
    * is never reset, so it survives the four-row window and answers "has ld ever faulted" at any
    * time in the boot. */
   if(name && !strcmp(name,"ld"))__atomic_fetch_add(&ld_exits,1,__ATOMIC_RELAXED);
+  /* The panel keeps a four-row window, so the full exit history is lost to a photograph. The
+   * USB console carries kprintf, so each exit also goes there: that is the only channel that
+   * keeps every record. Printing the reason namespace and the code is what separates a
+   * signal death from an ordinary nonzero exit, and the name is what identifies the process.
+   * Guarded on the sink existing, because a board without the USB console still links. */
+  /* Straight into the USB console's own backlog, not through printf or kprintf. Both were
+   * measured silent here: a DEVELOPMENT kernel leaves disable_kprintf_output true unless
+   * -enable_kprintf_spam is passed, and printf's console path did not reach the tee either.
+   * qcom_usb_debug_write is the module's bounded, allocation-free, any-context entry point,
+   * so it is the one call that does not depend on console state. Weak, so a board without
+   * that console still links and simply loses the line. */
+  if (&qcom_usb_debug_write) {
+    char log[128];
+    int n = snprintf(log,sizeof(log),"EXITLOG pid=%d name=%s status=%d ns=%u code=%llu\n",
+      pid,name?name:"?",status,ns,(unsigned long long)code);
+    if (n > 0) qcom_usb_debug_write(log,(size_t)n < sizeof(log) ? (size_t)n : sizeof(log)-1);
+  }
   if(name && !strcmp(name,"xpcproxy") && pid==proc_selfpid())xpc_fail_note(status,ns,code);
   if(__atomic_exchange_n(&exit_lock,1,__ATOMIC_ACQUIRE)) {
     __atomic_fetch_add(&exit_dropped,1,__ATOMIC_RELAXED);return;
@@ -659,6 +726,30 @@ void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t
     if(&boot_progress_throw_text)boot_progress_throw_text[0]=0;
     boot_progress_exit_reason(pid,signal,exit_records.reason,sizeof(exit_records.reason));
     if(&boot_progress_throw_text && boot_progress_throw_text[0])strlcpy(exit_records.thrown,boot_progress_throw_text,sizeof(exit_records.thrown));
+  }
+  /* The fault row and the reason text are built for the panel, whose four-row window loses
+   * them within seconds. Send the same bytes to the USB console, where they persist: this is
+   * the only place the crash site and the uncaught-exception text survive long enough to read
+   * after the fact. The fault row is filled above only for signals 3..12 (not SIGKILL), and
+   * the reason only for SIGABRT, so each is sent right after the step that fills it. */
+  if (signal>=3 && signal<=12 && signal!=9) {
+    unsigned idx = exit_records.crashes ? (exit_records.crashes-1)%3 : 0;
+    const char *row = exit_records.crash[idx];
+    if (&qcom_usb_debug_write && row[0]) {
+      char log[448];
+      int n = snprintf(log,sizeof(log),"EXITCRASH pid=%d name=%s %s\n",pid,name?name:"?",row);
+      if (n > 0) qcom_usb_debug_write(log,(size_t)n < sizeof(log) ? (size_t)n : sizeof(log)-1);
+    }
+  }
+  if (signal==6 && exit_records.reason[0] && &qcom_usb_debug_write) {
+    char log[400];
+    int n = snprintf(log,sizeof(log),"EXITREASON pid=%d name=%s %s\n",pid,name?name:"?",exit_records.reason);
+    if (n > 0) qcom_usb_debug_write(log,(size_t)n < sizeof(log) ? (size_t)n : sizeof(log)-1);
+  }
+  if (signal==6 && exit_records.thrown[0] && &qcom_usb_debug_write) {
+    char log[400];
+    int n = snprintf(log,sizeof(log),"EXITTHROW pid=%d name=%s %s\n",pid,name?name:"?",exit_records.thrown);
+    if (n > 0) qcom_usb_debug_write(log,(size_t)n < sizeof(log) ? (size_t)n : sizeof(log)-1);
   }
   __atomic_store_n(&exit_lock,0,__ATOMIC_RELEASE);
 }

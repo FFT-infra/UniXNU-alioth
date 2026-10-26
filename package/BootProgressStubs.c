@@ -272,3 +272,19 @@ __attribute__((weak)) int native_ufs_extra_fault(uint32_t *out) { (void)out; ret
 // a GPU probe installed one.
 __attribute__((weak)) int (*native_adreno_cached_read32)(uint64_t, uint32_t *) = 0;
 __attribute__((weak)) int (*native_adreno_dram_read32)(uint64_t, uint32_t *) = 0;
+/* The USB status row in BootProgress.c calls this through weak_import, and a static kernel
+ * link refuses to leave such a symbol undefined. The real definition lives in
+ * libQcomXnuUsbDebug.a, which is force-loaded when CONFIG_XNU_QCOM_USB_DEBUG is on, and a
+ * strong definition wins over this one. The sentinel matters: a zero-filled struct would print
+ * phase=0 error=0, which is exactly what "the module never initialized" also prints. Writing
+ * 0xff says "this stub answered, not the module", so the row can never be misread as a real
+ * measurement. The struct's first two fields are phase and error, which is all this writes. */
+__attribute__((weak)) void qcom_usb_debug_get_status(void *status)
+{
+  /* The real function copies 304 bytes; fill the same span so the caller's buffer is fully
+   * defined either way. */
+  volatile unsigned char *bytes = (volatile unsigned char *)status;
+  unsigned i;
+  if (!bytes) return;
+  for (i = 0; i < 304u; ++i) bytes[i] = 0xffu;
+}

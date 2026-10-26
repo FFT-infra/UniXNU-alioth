@@ -6,6 +6,8 @@
 // CONFIG_XNU_NATIVE_LEGACY_DISPLAY is now on, so libNativeLegacyDisplay.late.a defines this
 // entry and the kernel calls the real one. The stub is gone: keeping it was a duplicate symbol
 // at the link. Set the displayed switch back to n and this definition has to come back with it.
+#include <stdint.h>
+
 #if !XNU_NATIVE_LEGACY_DISPLAY
 void native_legacy_display_probe(void);
 void native_legacy_display_probe(void)
@@ -34,5 +36,23 @@ __attribute__((weak)) int native_ram_block_gpu_addon(const unsigned char **addon
 {
 	(void)addon;
 	(void)bytes;
+	return 0;
+}
+
+// GopFramebuffer's compositor-scanout path imports the UFS DPU window as weak_import, and a
+// static kernel link refuses to leave a weak_import undefined. NativeUfs defines both; this board
+// selects ShengUfs, so neither exists here. NativeLegacyDisplay.cpp:136 tests `&native_ufs_dpu_map`
+// and `!(native_legacy_dpu_state >> 31)` before using either, so a zero state and a reporter that
+// maps nothing make the path decline itself, which is the correct answer on a board whose DPU is
+// not published. Weak, so a component that later defines the real symbols wins.
+__attribute__((weak)) volatile uint32_t native_ufs_dpu_state;
+__attribute__((weak)) uint32_t native_ufs_dpu_map(unsigned slot, const uint64_t *pages,
+    unsigned count);
+__attribute__((weak)) uint32_t native_ufs_dpu_map(unsigned slot, const uint64_t *pages,
+    unsigned count)
+{
+	(void)slot;
+	(void)pages;
+	(void)count;
 	return 0;
 }
