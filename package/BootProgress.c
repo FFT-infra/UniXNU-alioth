@@ -688,7 +688,7 @@ void boot_progress_process_stage(int pid,const char *name,const char *text) {
   if(!started && !state.frozen)draw(now);
   release();
 }
-void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t code) {
+void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t code,const char *why) {
   if(!enabled)return;
   census_note(name,1);
   /* ld is the dynamic loader, so a fault in it makes every later failure downstream. Counted
@@ -710,8 +710,10 @@ void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t
    * that console still links and simply loses the line. */
   if (&qcom_usb_debug_write) {
     char log[128];
-    int n = snprintf(log,sizeof(log),"EXITLOG pid=%d name=%s status=%d ns=%u code=%llu\n",
-      pid,name?name:"?",status,ns,(unsigned long long)code);
+    /* why is the reason's own text, present only when the kernel carried a payload.
+     * It is the only field that separates one libsystem fault from another. */
+    int n = snprintf(log,sizeof(log),"EXITLOG pid=%d name=%s status=%d ns=%u code=%llu%s%s\n",
+      pid,name?name:"?",status,ns,(unsigned long long)code,why&&why[0]?" why=":"",why&&why[0]?why:"");
     if (n > 0) qcom_usb_debug_write(log,(size_t)n < sizeof(log) ? (size_t)n : sizeof(log)-1);
   }
   if(name && !strcmp(name,"xpcproxy") && pid==proc_selfpid())xpc_fail_note(status,ns,code);
