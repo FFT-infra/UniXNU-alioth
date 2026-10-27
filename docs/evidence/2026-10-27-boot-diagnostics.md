@@ -920,3 +920,76 @@ GUI 进程（backboardd/SpringBoard/runningboardd）仍然是 0。
 
 它没启动，说明 launchd 在它之前就停了，或者它的 fork 没发生。
 **这是下一个要查的目标，而且现在底干净了，可以干净地查。**
+
+## 【纠正】cryptexd 并没有"自己好了"
+
+我在 boot-usb32 那轮说"cryptexd 和 lsd 都自己好了，0 次崩溃" —— **错了**。
+
+实测：`serial-32.log` 里 `cryptexd` 崩了 **23 次**，全部是
+`why=unexpected failure: mkdirat: [28: No space left on device]`。
+
+我当时只看了抓取窗口的前段（105 条记录里 cryptexd 出现较晚），
+就下了结论。**窗口不完整不能当"没有发生"。**
+
+## 屏幕照片给出的真实规模（之前没拿到的数据）
+```
+procs=128        128 个进程活着
+CLIENT calls=5   framebuffer 客户端连了 5 次
+SWAP calls=0     仍然零帧
+DISPLAY stage=10
+total=318 nonzero=58 crashsig=26   （长时间累计）
+p230 cryptexd ns=18 sub=2          （仍在崩）
+```
+
+**128 个进程**说明系统已经推进到相当靠后的阶段，不是"卡在启动早期"。
+但 GUI 层（backboardd/SpringBoard/runningboardd）仍然不在。
+
+## 已改
+把 `cryptexd` 重新加回 `sheng-disable-jobs`。
+它在 SystemOS 已由 `zzyb-native-cryptex-os-view.patch` 绑定的架构下无事可做，
+23 次循环崩溃只是噪音。
+
+## 关于 ENOSPC 的两种可能
+1. **真的满了**：32 MiB 卷在 128 进程运行后确实不够（之前测的是空卷）
+2. **落到了别的挂载点**：mkdir 目标不是 /private/var
+
+无法离线区分。但既然 cryptexd 本来就不需要运行，禁用它可以绕过这个问题，
+把精力留给真正的卡点（GUI 层）。
+
+## 【当前真实状态】128 进程，但 GUI 层缺席
+
+屏幕照片（用户提供）给出了串口拿不到的关键数据：
+```
+procs=128      128 个进程活着
+CLIENT calls=5 framebuffer 客户端连了 5 次
+SWAP calls=0   零帧提交
+DISPLAY stage=10
+total=318 nonzero=58 crashsig=26
+```
+
+### 已排除的假设
+| 假设 | 证据 | 结论 |
+|---|---|---|
+| 卡在首次启动任务 | `FinishRestoreFromBackup`/`finish_demo_restore`/`datamigrator` 全部 status=0 | 否 |
+| `disabled.plist` 抹掉了原系统条目 | seed 里 `db/com.apple.xpc.launchd/` 只有 `config`，**没有 disabled.plist** | 否 |
+| `sheng-lite` 禁用了 runningboardd 的依赖 | 18 个禁用项里没有；runningboardd 只依赖 3 个框架 | 否 |
+| Data mount 失败 | boot-usb31 起已修复（UUID） | 否 |
+
+### 当前唯一确凿的矛盾
+`CLIENT calls=5` 说明有 5 个客户端成功连上 `IOMobileFramebufferUserClient`，
+但 `SWAP calls=0` 说明没有一个提交过帧。
+
+而 `backboardd`（真正的渲染服务器）**不在 128 个进程里**。
+所以这 5 个客户端不是渲染器——它们连上了但无事可做。
+
+### runningboardd 是 RunAtLoad，为什么没启动
+`com.apple.runningboardd.plist`: RunAtLoad=true, KeepAlive=true,
+只依赖 Foundation/RunningBoard/RunningBoardServices 三个框架。
+
+它本该无条件启动。它没启动，而 launchd 已经成功拉起了 30+ 个其他服务，
+说明 launchd 本身在正常工作。
+
+**下一步只能靠探针**：在 boot_progress 的监控线程（不持 VFS 锁）里
+读 `/System/Library/LaunchDaemons/com.apple.runningboardd.plist` 是否可见，
+以及 `/private/var/db/com.apple.xpc.launchd/disabled.plist` 的实际内容。
+这是唯一能区分"plist 不可见"和"launchd 拒绝加载"的方法。

@@ -335,7 +335,7 @@ kernel_args = [
   # accounts and no network here, so live activities have nothing to do. cryptexd was
   # in this list during the Data-mount fault and is left out now: once the volume
   # mounted, it stopped crashing on its own.
-  "sheng-disable-jobs=com.apple.liveactivitiesd",
+  "sheng-disable-jobs=com.apple.liveactivitiesd,com.apple.cryptexd",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
