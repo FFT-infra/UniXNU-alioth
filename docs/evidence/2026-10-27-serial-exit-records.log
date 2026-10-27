@@ -1,0 +1,333 @@
+QCOM XNU USB CDC ACM v1
+Darwin Kernel Version 23.6.0: Tue Oct 27 03:07:47 CST 2026; xinyang:ios-obj/DEVELOPMENT_ARM64_BCM2837
+pmap_startup() init/release time: 113897 microsec
+pmap_startup() delayed init/release of 0 pages
+vm_page_bootstrap: 984488 free pages, 64088 wired pages, (up to 0 of which are delayed free)
+VM boostrap: 51 maps, 153 entries and 128 holes available
+Maximum number of VM swap files: 5
+gIOKitPageableFixed0    : 0xfffffff155000000 - 0xfffffff15b000000 (96M)
+gIOKitPageableFixed3    : 0xfffffff15b000000 - 0xfffffff161000000 (96M)
+gIOKitPageableFixed1    : 0xfffffff161000000 - 0xfffffff167000000 (96M)
+mb                      : 0xfffffff167000000 - 0xfffffff16d000000 (96M)
+zones                   : 0xfffffff16d000000 - 0xfffffff76d000000 (24G)
+zone_meta               : 0xfffffff76d000000 - 0xfffffff773b92000 (107M)
+compressor              : 0xfffffff773b92000 - 0xfffffff89bb92000 (4736M)
+gIOKitPageableFixed2    : 0xfffffff89bb92000 - 0xfffffff8a1b92000 (96M)
+ipc_kernel_map          : 0xfffffff8a1b92000 - 0xfffffff8a3b92000 (32M)
+bufferhdr               : 0xfffffff8a3b92000 - 0xfffffff8a4316000 (7M)
+kmem_ptr_range          : 0xfffffff8a4316000 - 0xfffffff97a8f6000 (3429M)
+kmem_sprayqtn_range     : 0xfffffff97a8f6000 - 0xfffffff9f4a2f000 (1953M)
+kmem_ptr_range_meta     : 0xfffffff9f4a2f000 - 0xfffffff9f4ad0000 (644K)
+ipc_kernel_copy_map     : 0xfffffff9f4ad0000 - 0xfffffff9f52d0000 (8M)
+kmem_data_range         : 0xfffffff9f52d0000 - 0xfffffffbfe53a000 (8G)
+bsd_pageable            : 0xfffffffbfe53a000 - 0xfffffffbff5fc000 (16M)
+io_submap               : 0xfffffffbff5fc000 - 0xfffffffbffdfc000 (8M)
+kmem_large_ranges[1]    : 0 - 0 (0B)
+kmem_large_ranges[2]    : 0 - 0 (0B)
+kmem_large_ranges[3]    : 0 - 0 (0B)
+kmem_large_ranges[4]    : 0xfffffff989d1d200 - 0xfffffff9f4a2f000 (1709M)
+kmem_large_ranges[5]    : 0xfffffffa3651d400 - 0xfffffffbfe53a000 (7G)
+"vm_compressor_mode" is 8
+mapping deprecated VM_PAGER_FREEZER_DEFAULT to VM_PAGER_FREEZER_COMPRESSOR_NO_SWAP
+zone_init: pgzalloc  0xfffffff16d000000:0xfffffff16d7a1000 (7M) [976 slots]
+zone_init: map VM    0xfffffff16d7a1000:0xfffffff253ce2000 (3685M)
+zone_init: map RO    0xfffffff253ce2000:0xfffffff2a094d000 (1228M)
+zone_init: map GEN0  0xfffffff2a094d000:0xfffffff386e8e000 (3685M)
+zone_init: map GEN1  0xfffffff386e8e000:0xfffffff46d3cf000 (3685M)
+zone_init: map GEN2  0xfffffff46d3cf000:0xfffffff553910000 (3685M)
+zone_init: map GEN3  0xfffffff553910000:0xfffffff639e52000 (3685M)
+zone_init: map DATA  0xfffffff639e52000:0xfffffff76d000000 (4913M)
+zone_init: metadata  0xfffffff76d010000:0xfffffff773010000 (96M)
+zone_init: metabits  0xfffffff773010000:0xfffffff773b82000 (11M)
+zone_init: extra     0:0 (0B)
+Unable to find vm tag  for btlog
+VM bootstrap done: 39 maps, 112 entries and 117 holes left
+OSLog stream configured: stream: 8192 bytes, cache: 2112 bytes
+OSLog stream verification: 0
+Firehose configured: 16 chunks, 8 io pages
+Long logs support configured: size: 16384
+Log queues configured: slot count: 32, per-slot size: 32768, total size: 1048576
+standard timeslicing quantum is 10000 us
+standard background quantum is 2500 us
+mig_table_max_displ = 54 mach_kobj_count = 372
+debug_log_init: Error!! gPanicBase is still not initialized
+debug_log_init: Error!! gPanicBase is still not initialized
+kdp_core zlib memory 0x7000
+Serial requested, consistent debug disabled or debug boot arg not present, configuring debugging over serial
+iBoot version: 
+iBoot Stage 2 version: 
+IONVRAM.cpp:initImageFormat:1433 - NVRAM size is 8192 bytes
+IONVRAM.cpp:getNVRAMProperties:1244 - _bankSize=0x2000, _bankCount=0x1, _currentBank=0
+IONVRAMCHRPHandler.cpp:unserializeImage:479 - NVRAM : commonPartitionOffset - 0x30, commonPartitionSize - 0x800, systemPartitionOffset - 0xffffffff, systemPartitionSize - 0
+lockdown_mode: lockdown mode in nvram is off
+EXITLOG pid=1 name=init status=0 ns=0 code=0
+EXITLOG pid=1 name=init status=0 ns=0 code=0
+EXITLOG pid=2 name=fsck status=0 ns=0 code=0
+EXITLOG pid=3 name=mount status=0 ns=0 code=0
+EXITLOG pid=4 name=seputil status=0 ns=0 code=0
+EXITLOG pid=5 name=mobile_obliterator status=0 ns=0 code=0
+EXITLOG pid=6 name=launchd status=1 ns=0 code=0
+EXITLOG pid=7 name=mount status=0 ns=0 code=0
+EXITLOG pid=7 name=apfs_boot_util status=0 ns=0 code=0
+EXITLOG pid=9 name=MSUEarlyBootTask status=1 ns=0 code=0
+EXITLOG pid=8 name=MSUEarlyBootTask status=0 ns=0 code=0
+EXITLOG pid=10 name=cc_fips_test status=0 ns=0 code=0
+EXITLOG pid=11 name=keybagd status=0 ns=0 code=0
+EXITLOG pid=12 name=usermanagerd status=0 ns=0 code=0
+EXITLOG pid=13 name=dirs_cleaner status=0 ns=0 code=0
+EXITLOG pid=14 name=xpcroleaccountd status=0 ns=0 code=0
+EXITLOG pid=15 name=init_featureflags status=0 ns=0 code=0
+EXITLOG pid=16 name=auearlyboot status=0 ns=0 code=0
+EXITLOG pid=17 name=tzinit status=0 ns=0 code=0
+EXITLOG pid=18 name=FinishRestoreFromBackup status=0 ns=0 code=0
+EXITLOG pid=19 name=finish_demo_restore status=0 ns=0 code=0
+EXITLOG pid=20 name=sysstatuscheck status=256 ns=0 code=0
+EXITLOG pid=21 name=prng_seedctl status=3328 ns=0 code=0
+EXITLOG pid=22 name=launchd_cache_loader status=0 ns=0 code=0
+EXITLOG pid=23 name=init_exclavekit status=0 ns=0 code=0
+EXITLOG pid=81 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=66 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=65 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=37 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=79 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=80 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=61 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=44 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=50 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=53 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=71 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=76 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=78 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=75 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=45 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=47 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=48 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=63 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=57 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=83 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=29 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=40 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=24 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=25 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=85 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=87 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=26 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=88 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=35 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=89 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=84 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=86 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=52 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=82 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=67 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=60 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=55 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=58 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=92 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=93 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=94 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=94 name=liveactivitiesd status=5 ns=2 code=5
+EXITCRASH pid=94 name=liveactivitiesd p94 liveactivitiesd sig5 PC1d27b64f8 LR1d27b64cc Ef2000001 F0 +10ec0000 bt 1d279c0ec 1a0476cc0 1a04480e4 1d279c0c0 1d2909ec0 1d28fc024 100bc8fc4 1ba31e228 0
+EXITLOG pid=95 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=95 name=liveactivitiesd status=5 ns=2 code=5
+EXITCRASH pid=95 name=liveactivitiesd p95 liveactivitiesd sig5 PC1d27b64f8 LR1d27b64cc Ef2000001 F0 +10ec0000 bt 1d279c0ec 1a0476cc0 1a04480e4 1d279c0c0 1d2909ec0 1d28fc024 100c76fc4 1ba31e228 0
+EXITLOG pid=91 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=100 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=101 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=96 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=69 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=48 name=DumpPanic status=0 ns=0 code=0
+EXITLOG pid=101 name=liveactivitiesd status=5 ns=2 code=5
+EXITCRASH pid=101 name=liveactivitiesd p101 liveactivitiesd sig5 PC1d27b64f8 LR1d27b64cc Ef2000001 F0 +10ec0000 bt 1d279c0ec 1a0476cc0 1a04480e4 1d279c0c0 1d2909ec0 1d28fc024 1002d4fc4 1ba31e228 0
+EXITLOG pid=54 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=97 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=79 name=IOMFB_FDR_Loader status=256 ns=0 code=0
+EXITLOG pid=99 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=105 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=43 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=103 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=102 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=104 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=93 name=com.apple.datamigrator status=0 ns=0 code=0
+EXITLOG pid=90 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=107 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=108 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=108 name=liveactivitiesd status=5 ns=2 code=5
+EXITCRASH pid=108 name=liveactivitiesd p108 liveactivitiesd sig5 PC1d27b64f8 LR1d27b64cc Ef2000001 F0 +10ec0000 bt 1d279c0ec 1a0476cc0 1a04480e4 1d279c0c0 1d2909ec0 1d28fc024 100277fc4 1ba31e228 0
+EXITLOG pid=109 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=110 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=64 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=106 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=111 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=112 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=39 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=113 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=114 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=115 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=116 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=116 name=liveactivitiesd status=5 ns=2 code=5
+EXITCRASH pid=116 name=liveactivitiesd p116 liveactivitiesd sig5 PC1d27b64f8 LR1d27b64cc Ef2000001 F0 +10ec0000 bt 1d279c0ec 1a0476cc0 1a04480e4 1d279c0c0 1d2909ec0 1d28fc024 100fdefc4 1ba31e228 0
+EXITLOG pid=117 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=118 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=59 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=119 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=120 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=121 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=122 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=123 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=124 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=125 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=126 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=62 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=127 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=128 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=129 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=32 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=130 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=130 name=liveactivitiesd status=5 ns=2 code=5
+EXITCRASH pid=130 name=liveactivitiesd p130 liveactivitiesd sig5 PC1d27b64f8 LR1d27b64cc Ef2000001 F0 +10ec0000 bt 1d279c0ec 1a0476cc0 1a04480e4 1d279c0c0 1d2909ec0 1d28fc024 10129bfc4 1ba31e228 0
+EXITLOG pid=132 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=33 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=133 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=134 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=135 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=137 name=liveactivitiesd status=5 ns=2 code=5
+EXITCRASH pid=137 name=liveactivitiesd p137 liveactivitiesd sig5 PC1d27b64f8 LR1d27b64cc Ef2000001 F0 +10ec0000 bt 1d279c0ec 1a0476cc0 1a04480e4 1d279c0c0 1d2909ec0 1d28fc024 101029fc4 1ba31e228 0
+EXITLOG pid=137 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=76 name=mtmergeprops status=0 ns=0 code=0
+EXITLOG pid=128 name=com.apple.datamigrator status=0 ns=0 code=0
+EXITLOG pid=138 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=139 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=30 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=140 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=98 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=141 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=142 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=144 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=145 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=146 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=147 name=liveactivitiesd status=5 ns=2 code=5
+EXITCRASH pid=147 name=liveactivitiesd p147 liveactivitiesd sig5 PC1d27b64f8 LR1d27b64cc Ef2000001 F0 +10ec0000 bt 1d279c0ec 1a0476cc0 1a04480e4 1d279c0c0 1d2909ec0 1d28fc024 101242fc4 1ba31e228 0
+EXITLOG pid=41 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=148 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=147 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=56 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=38 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=149 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=150 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=151 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=152 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=153 name=liveactivitiesd status=5 ns=2 code=5
+EXITCRASH pid=153 name=liveactivitiesd p153 liveactivitiesd sig5 PC1d27b64f8 LR1d27b64cc Ef2000001 F0 +10ec0000 bt 1d279c0ec 1a0476cc0 1a04480e4 1d279c0c0 1d2909ec0 1d28fc024 100e6efc4 1ba31e228 0
+EXITLOG pid=153 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=154 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=155 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=156 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=157 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=160 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=161 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=158 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=159 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=163 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=164 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=165 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=51 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=42 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=46 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=72 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=173 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=171 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=169 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=170 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=174 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=167 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=168 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=166 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=175 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=172 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=176 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=177 name=liveactivitiesd status=5 ns=2 code=5
+EXITCRASH pid=177 name=liveactivitiesd p177 liveactivitiesd sig5 PC1d27b64f8 LR1d27b64cc Ef2000001 F0 +10ec0000 bt 1d279c0ec 1a0476cc0 1a04480e4 1d279c0c0 1d2909ec0 1d28fc024 1004dcfc4 1ba31e228 0
+EXITLOG pid=178 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=177 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=156 name=ABDatabaseDoctor status=0 ns=0 code=0
+EXITLOG pid=31 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=77 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=180 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=181 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=182 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=49 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=183 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=176 name=com.apple.datamigrator status=0 ns=0 code=0
+EXITLOG pid=184 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=184 name=liveactivitiesd status=5 ns=2 code=5
+EXITCRASH pid=184 name=liveactivitiesd p184 liveactivitiesd sig5 PC1d27b64f8 LR1d27b64cc Ef2000001 F0 +10ec0000 bt 1d279c0ec 1a0476cc0 1a04480e4 1d279c0c0 1d2909ec0 1d28fc024 100e05fc4 1ba31e228 0
+EXITLOG pid=186 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=28 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=68 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=187 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=74 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=36 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=131 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=92 name=lsd status=11 ns=2 code=11
+EXITCRASH pid=92 name=lsd p92 lsd sig11 PC190fa9068 LR190fadcd4 E92000005 F100c7b20 +10ec0000 bt 198bca924 198bb7acc 1b961759c 1b9617108 198b859e4 198bca78c 198c36260 198c362c0 198bca220 198bc9420 198bcf010 198bc9350
+EXITLOG pid=189 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=73 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=190 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=191 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=136 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=32 name=routined status=6 ns=2 code=6
+EXITCRASH pid=32 name=routined p32 routined sig6 PC1dc64af74 LR1ee4e4fa4 E0 F0 +10ec0000 bt 1a0508708 1a05087f8 1e1cb48f0 1e1cada80 1a0475c9c 1a0476cc0 1a04528f8 1a0453374 1a045ca34 1a045c338 1ee4e2534 1ee4dfccc
+EXITLOG pid=193 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=193 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=193 name=cryptexd p193 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 1001471a8 100113e74 10011343c 1001350c4 1ba31e228 0
+EXITLOG pid=194 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=194 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=194 name=cryptexd p194 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 1009941a8 100960e74 10096043c 1009820c4 1ba31e228 0
+EXITLOG pid=195 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=195 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=195 name=cryptexd p195 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 100cd01a8 100c9ce74 100c9c43c 100cbe0c4 1ba31e228 0
+EXITLOG pid=185 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=162 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=196 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=196 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=196 name=cryptexd p196 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 100f3b1a8 100f07e74 100f0743c 100f290c4 1ba31e228 0
+EXITLOG pid=191 name=com.apple.datamigrator status=0 ns=0 code=0
+EXITLOG pid=197 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=197 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=197 name=cryptexd p197 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 100bfd1a8 100bc9e74 100bc943c 100beb0c4 1ba31e228 0
+EXITLOG pid=192 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=188 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=199 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=199 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=199 name=cryptexd p199 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 1005ce1a8 10059ae74 10059a43c 1005bc0c4 1ba31e228 0
+EXITLOG pid=148 name=corecaptured status=0 ns=0 code=0
+EXITLOG pid=200 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=200 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=200 name=cryptexd p200 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 10059b1a8 100567e74 10056743c 1005890c4 1ba31e228 0
+EXITLOG pid=201 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=201 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=201 name=cryptexd p201 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 1007921a8 10075ee74 10075e43c 1007800c4 1ba31e228 0
+EXITLOG pid=202 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=202 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=202 name=cryptexd p202 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 1004a81a8 100474e74 10047443c 1004960c4 1ba31e228 0
+EXITLOG pid=189 name=lsd status=11 ns=2 code=11
+EXITCRASH pid=189 name=lsd p189 lsd sig11 PC190fa9068 LR190fadcd4 E92000005 F100a71b8 +10ec0000 bt 198bca924 198bb7acc 1b961759c 1b9617108 198b859e4 198bca78c 198c36260 198c362c0 198bca220 198bc9420 198bcf010 198bc9350
+EXITLOG pid=203 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=204 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=204 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=204 name=cryptexd p204 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 1007061a8 1006d2e74 1006d243c 1006f40c4 1ba31e228 0
+EXITLOG pid=162 name=privacyaccountingd status=5 ns=2 code=5
+EXITCRASH pid=162 name=privacyaccountingd p162 privacyaccountingd sig5 PC1002a4ef0 LR1002a4ef0 Ef2000001 F0 +10ec0000 bt 1002a4d9c 1ba31e228 0
+EXITLOG pid=206 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=206 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=206 name=cryptexd p206 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 10093d1a8 100909e74 10090943c 10092b0c4 1ba31e228 0
+EXITLOG pid=207 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=207 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=207 name=cryptexd p207 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 10127e1a8 10124ae74 10124a43c 10126c0c4 1ba31e228 0
+EXITLOG pid=205 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=198 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=209 name=xpcproxy status=0 ns=0 code=0
+EXITLOG pid=209 name=cryptexd status=6 ns=18 code=2
+EXITCRASH pid=209 name=cryptexd p209 cryptexd sig6 PC1dc6523c0 LR1dc670bb0 E0 F0 +10ec0000 bt 1dc670be0 1a04ca230 1005741a8 100540e74 10054043c 1005620c4 1ba31e228 0
+EXITLOG pid=68 name=aggregated status=0 ns=0 code=0

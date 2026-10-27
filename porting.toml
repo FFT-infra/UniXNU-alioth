@@ -9,7 +9,7 @@ summary = "Device template. Complete each area with board-specific inputs and ev
 [[area]]
 id = "configuration"
 status = "planned"
-components = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot"]
+components = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState"]
 paths = ["board.toml", "feeds.toml", "configs/**", ".gitmodules", ".github/**", ".gitignore"]
 inputs = ["Identify the configuration hardware, resources and existing component interfaces for this board."]
 configuration = ["Record the board.toml fields, DTS properties and defconfig values used for configuration."]
@@ -64,31 +64,74 @@ evidence = []
 
 [[area]]
 id = "storage"
-status = "planned"
-components = []
+status = "device-verified"
+components = ["ShengUfs", "VerifiedRoot", "VirtioMmioBlock", "RamBlock"]
 paths = ["drivers/ShengUfs", "scripts/*ufs*", "scripts/*storage*", "scripts/*userdata*", "scripts/*root*"]
-inputs = ["Identify the storage and root hardware, resources and existing component interfaces for this board."]
-configuration = ["Record the board.toml fields, DTS properties and defconfig values used for storage and root."]
-procedure = ["Follow the storage and root stage in the porting guide and record the actual commands."]
-findings = ["Collect the first storage and root observation, its cause when established, and the resulting implementation decision."]
-completion = ["Host: register, clock, link and SMMU facts match the board inventory.", "Reads: SCSI capacity, GPT and known blocks are correct; OS/SystemOS windows stay within userdata.", "Root: the configured volume mounts and launchd starts. Persistence: writes survive reboot within the allocated Data region."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required storage and root inputs before implementation."]
-evidence = []
+inputs = [
+  "UFS 3.1 host on SM8250, bound through ShengUfs, plus the two authenticated volume windows (OS and SystemOS) inside userdata.",
+  "The Data seed is a raw APFS container: scripts/prepare-owner-data-fixture.py requires NXSB at 0x20, so the ADT reserves RAMDisk rather than PackedRAMDisk.",
+]
+configuration = [
+  "CONFIG_XNU_NATIVE_UFS=y, CONFIG_XNU_VERIFIED_ROOT_PROBE=y, CONFIG_XNU_OWNER_ROOT_AUDIT=y, CONFIG_XNU_OWNER_ROOT_TRUST=y.",
+  "CONFIG_XNU_NATIVE_RAM_BLOCK=y and CONFIG_XNU_OWNER_DATA_MOUNT=y; the Data mount must go through the RamBlock IOKit device, not /dev/md0.",
+]
+procedure = [
+  "./unixnu build payload --data-ramdisk <seed>, then bootimg, then fastboot flash boot_b.",
+  "The panel reports UFS read progress and the RAMDisk capacity; the USB console carries exit records.",
+]
+findings = [
+  "UFS reads run through ShengUfs and the panel reports verified blocks; the root is published only with an owner-signed policy, so CONFIG_XNU_VERIFIED_ROOT_PROBE must stay on or IOFindBSDRoot times out ten times and panics.",
+  "The Data mount fails with ENOENT through /dev/md0 (measured 2026-10-26, panic screen offline scratch Data mount failed: 2); publishing the seed through RamBlock as a real IOMedia is the path that mounts.",
+  "The Data volume is 32 MiB and holds the original private/var excluding staged_system_apps (39 files, 611715 bytes). Measured 2026-10-27: 20000 directories fit in 5.8 MiB, so capacity and inodes are not the limit for the services that fail.",
+  "cryptexd aborts with mkdirat [28: No space left on device] while that volume reports 31 MiB free, so the ENOSPC names a different mount than /private/var.",
+]
+completion = [
+  "The configured OS volume mounts and launchd starts; the Data volume mounts read-write as apfs and is accepted by native_owner_data_prepare.",
+  "Persistence within the allocated Data region is not yet demonstrated across a reboot.",
+]
+limits = [
+  "The write that fails with ENOSPC is not yet identified: the mkdir probe that prints its path is built but has not run on hardware.",
+  "The Data seed cannot simply be enlarged: boot_a and boot_b are 192 MiB and the payload is a FAT volume, so a seed larger than that does not fit.",
+]
+next_action = [
+  "Run the mkdir probe build and read the path it prints, then decide whether the failing write is on /private/var or elsewhere.",
+]
+evidence = [
+  { kind = "device", reference = "docs/evidence/2026-10-27-boot-diagnostics.md", command = "read /dev/tty.usbmodem<N> at 115200 8N1 and collect EXITLOG records", revision = "24d127c47217eb580dbe3f3a94c32ad25cbaae00", result = "The kernel reports cryptexd aborting with mkdirat ENOSPC while the Data volume reports 31 MiB free, which places the failing write on a mount other than /private/var." },
+]
 
 [[area]]
 id = "display"
-status = "planned"
-components = []
+status = "implemented"
+components = ["GopFramebuffer"]
 paths = ["package/*Display*", "package/*Framebuffer*", "package/*Backlight*", "package/AppleARMBacklight.cpp", "package/GeniI2c*", "scripts/*display*", "scripts/*gop*", "scripts/*framebuffer*"]
-inputs = ["Identify the display hardware, resources and existing component interfaces for this board."]
-configuration = ["Record the board.toml fields, DTS properties and defconfig values used for display."]
-procedure = ["Follow the display stage in the porting guide and record the actual commands."]
-findings = ["Collect the first display observation, its cause when established, and the resulting implementation decision."]
+inputs = [
+  "The panel is 1080x2400 and the loader hands over a framebuffer at 0x9c000000 with 4320-byte rows and 32 bpp, so the display path starts from that memory rather than from a GPU.",
+  "IOMobileFramebufferLegacy is prelinked and exports nothing, so the board archive binds each name to its original absolute address.",
+]
+configuration = [
+  "CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y; offline-component-load-probes.patch calls both display entry points, so the archive must resolve them or the link fails.",
+  "build-xnu-4k-baseline.sh force-loads libNativeLegacyDisplay.late.a and re-proves every address against this kernel on each run.",
+]
+procedure = [
+  "Boot the image and read the diagnostic page rows for DISPLAY stage, CLIENT and SWAP; the USB console carries the exit records.",
+  "A photograph of the panel is the frame evidence until a swap is submitted.",
+]
+findings = [
+  "The diagnostic page reaches DISPLAY stage=10 and a real client connects: CLIENT calls=4 with class=IOMobileFramebufferUserClient. No frame is ever submitted: SWAP calls=0.",
+  "The panel is driven directly by the kernel's own renderer, which is why the boot-progress page and the colour bands are visible before any userspace renderer runs.",
+]
 completion = ["A known frame appears with correct geometry and colors, then userland presentation and backlight controls work."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required display inputs before implementation."]
-evidence = []
+limits = [
+  "SWAP calls=0: nothing has ever presented a frame through this client. The panel shows only what the kernel draws.",
+  "backboardd, the render server, has not been started in any recent boot, so a userspace presentation path has never been exercised.",
+]
+next_action = [
+  "Get backboardd to start before investigating frame submission: with no render server there is no client that could call Swap.",
+]
+evidence = [
+  { kind = "device", reference = "docs/evidence/2026-10-27-boot-diagnostics.md", command = "read the diagnostic page and the USB console after booting the image", revision = "24d127c47217eb580dbe3f3a94c32ad25cbaae00", result = "DISPLAY stage=10 with CLIENT calls=4 class=IOMobileFramebufferUserClient, and SWAP calls=0: a client connects but no frame is submitted." },
+]
 
 [[area]]
 id = "input"
@@ -215,6 +258,6 @@ next_action = [
   "Wait for the MAC refusal to reproduce and read the ip_mac_return value it now prints.",
 ]
 evidence = [
-  { kind = "device", reference = "tmp/overnight/findings-2026-10-27.md", command = "read /dev/tty.usbmodem<N> at 115200 8N1 and send SXNU1 ... HELLO / STATUS", revision = "15a15d7cc526262a64531ff56b3a33bdbc46379c", result = "Console enumerated as 1209:316d named QcomXnuUsbDebug; STATUS returned usb=3 er=0 with the worker polling, so the port is live in both directions." },
-  { kind = "device", reference = "tmp/serial-final.log", command = "./unixnu build kernel; ./unixnu bootimg; fastboot flash boot_b; read the CDC-ACM console for 420 s", revision = "15a15d7cc526262a64531ff56b3a33bdbc46379c", result = "215 exit records captured. 180 xpcproxy status=0 (normal), 13 cryptexd ns=18 code=2, 11 liveactivitiesd sig5, 2 lsd sig11; each process repeats one fixed crash PC, so the faults are deterministic." },
+  { kind = "device", reference = "docs/evidence/2026-10-27-boot-diagnostics.md", command = "read /dev/tty.usbmodem<N> at 115200 8N1 and send SXNU1 ... HELLO / STATUS", revision = "15a15d7cc526262a64531ff56b3a33bdbc46379c", result = "Console enumerated as 1209:316d named QcomXnuUsbDebug; STATUS returned usb=3 er=0 with the worker polling, so the port is live in both directions." },
+  { kind = "device", reference = "docs/evidence/2026-10-27-serial-exit-records.log", command = "./unixnu build kernel; ./unixnu bootimg; fastboot flash boot_b; read the CDC-ACM console for 420 s", revision = "15a15d7cc526262a64531ff56b3a33bdbc46379c", result = "215 exit records captured. 180 xpcproxy status=0 (normal), 13 cryptexd ns=18 code=2, 11 liveactivitiesd sig5, 2 lsd sig11; each process repeats one fixed crash PC, so the faults are deterministic." },
 ]
