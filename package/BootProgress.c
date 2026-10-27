@@ -827,7 +827,13 @@ void boot_progress_irq(uint64_t pc,uint64_t psr,uint64_t sp) {
         const uint64_t kernel=(psr&0x1f)!=0;
         const uint32_t at=__atomic_fetch_add(&bp_prof_head,1,__ATOMIC_RELAXED);
         bp_prof[at%BpProfSamples]=((uint64_t)(pid&0xffff)<<48)|(kernel<<47)|(pc&((1ull<<47)-1));
-        bp_cpu_cnt[getCpuDatap()->cpu_number&7][pid%61]++;
+        /* getCpuDatap() reads the per-CPU pointer from a register and dereferences it. On a
+         * secondary core whose cpu_data is not published yet the register holds garbage, and
+         * dereferencing it faults: with SMP on this took a translation fault at
+         * far=0x107530000 inside this hook, which froze every later diagnostic and looked
+         * like a stalled UFS read. Compare the pointer before touching it. */
+        cpu_data_t *cpu=getCpuDatap();
+        if((uintptr_t)cpu>0xffff000000000000ull) bp_cpu_cnt[cpu->cpu_number&7][pid%61]++;
         if(kernel)bp_kernel_chain(pc);
       }
     }
