@@ -381,11 +381,19 @@ kernel_args = [
 chip_id = "0x164"
 owned_memory_size = "0x100000000"
 # The Data seed is dense. scripts/prepare-owner-data-fixture.py:62 requires its output to be a raw
-# APFS container (NXSB at 0x20, no DBRDISK1 header), so the ADT must reserve RAMDisk, not
-# PackedRAMDisk. DarwinBoot refuses a mismatch at DarwinBoot.c:558 with EFI_COMPROMISED_DATA.
-# Packed is not reachable here yet either: alioth leaves CONFIG_XNU_NATIVE_RAM_BLOCK unset, so
-# nothing in this kernel reads a DBRDISK1 extent table.
-packed_data_ramdisk = false
+# Packed, and deliberately so. The Data volume was a dense 32 MiB APFS container, and
+# measured 2026-10-27 the userspace ran out of room on it: profiled aborted with
+# "Unable to take PCDistributedLock at path
+# /var/mobile/Library/Caches/.com.apple.persistentconnection.settings.lock.lock:
+# No space left on device", and cryptexd aborted 23 times with mkdirat ENOSPC.
+# df reported 31 MiB free, which is what an APFS container this small reports before its
+# own reserve policy refuses an allocation.
+#
+# The seed is now 3 GiB logical, packed to 1.2 MB because only six pages are non-zero, so
+# it still fits the 192 MiB boot partition. scripts/seed-data-grow.py produced it from the
+# 32 MiB container, which keeps the volume UUID and therefore the defconfig value.
+# CONFIG_XNU_NATIVE_RAM_BLOCK is on, so the kernel reads the DBRDISK1 extent table.
+packed_data_ramdisk = true
 unique_chip_id = "required"
 # IOFindBSDRoot selects its root media by three predicates, in order: rd=/rootdev= on the
 # command line, /chosen/root-matching, /chosen/boot-uuid, and only then a fallback of

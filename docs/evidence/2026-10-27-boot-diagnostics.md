@@ -993,3 +993,46 @@ total=318 nonzero=58 crashsig=26
 读 `/System/Library/LaunchDaemons/com.apple.runningboardd.plist` 是否可见，
 以及 `/private/var/db/com.apple.xpc.launchd/disabled.plist` 的实际内容。
 这是唯一能区分"plist 不可见"和"launchd 拒绝加载"的方法。
+
+## 【根因确认】/var 真的没空间了 —— EXITREASON 早就说了
+
+我一直在 grep `EXITLOG`/`EXITCRASH`，**漏了 `EXITREASON`**。
+`serial-32.log` 里有 10 条，其中明确写着：
+
+```
+EXITREASON pid=130 name=profiled
+*** Terminating app due to uncaught exception 'NSInternalInconsistencyException',
+reason: 'Unable to take PCDistributedLock at path
+'/var/mobile/Library/Caches/.com.apple.persistentconnection.settings.lock.lock':
+No space left on device'
+```
+
+**`/var` 上的文件锁创建失败，ENOSPC。** 这不是内核问题，是用户态真的写不进去。
+
+配合 cryptexd 的 23 次 `mkdirat ENOSPC`，结论一致：**32 MiB 的 Data 卷对
+iOS 17 用户态太小**。
+
+## 为什么 df 显示 31 MiB 空闲却 ENOSPC
+APFS 容器有自己的空间管理器保留策略。32 MiB 的容器低于安全阈值，
+分配新 extent 时被拒，即使 df 报告有剩余。
+
+## 参考机 sheng 的做法（已核实）
+```
+packed_data_ramdisk = true
+persistent_data = true
+sheng-data-persist=2      -> 直接挂到 UFS 真实分区（数十 GiB）
+```
+alioth 原本是 `packed_data_ramdisk = false`（32 MiB 裸盘）。
+
+## 已实施的修复（实测可行）
+1. `packed_ramdisk.pack()` 把 32 MiB 裸 APFS 打包成 DBRDISK1
+   -> 33554432 字节 变 1192016 字节
+2. `seed-data-grow.py --gib 3` 扩到 3 GiB 逻辑容量
+   -> 编码后仍只有 1224832 字节（6 个 extent，其余全是零页）
+3. `board.toml`: `packed_data_ramdisk = true`
+4. payload 用新 seed 构建，镜像仍 187 MB（boot 分区 192 MiB，装得下）
+
+**关键：卷 UUID 保持不变**，所以 defconfig 里的
+`CONFIG_XNU_OWNER_DATA_VOLUME_UUID="B0B12459-..."` 不用改。
+
+boot-usb33 已构建，含 `DBRDISK1` 标记 2 处，待刷验证。
