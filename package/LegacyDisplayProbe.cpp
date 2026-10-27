@@ -904,6 +904,13 @@ void native_legacy_display_late_probe(void) {
 	// "the kernel stopped earlier", which the panel otherwise cannot tell apart, because both
 	// leave the DarwinBoot frame in place.
 	native_legacy_paint_reached_band();
+	// The HID publisher. It is an IOHIDDevice compiled into this kernel, so IOKit has no
+	// personality for it and nothing would start it: the board starts it explicitly, which the
+	// driver adaption guide names as the second of the two start paths and places in this
+	// function alongside the other board initialisation calls. Opt-in through
+	// offline-hid-input=1. Inside this file's extern "C" block, so no linkage specifier here.
+	extern int native_hid_input_probe(void);
+	native_hid_input_probe();
 	// The CPU frequency vote (sheng-cpufreq=<n>) maps the EPSS domains and votes the top
 	// non-turbo level; it reports its state through native_cpufreq_row on the panel.
 	/* This file sits inside an extern "C" block to the end, so the declaration must not repeat

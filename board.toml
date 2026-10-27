@@ -443,6 +443,12 @@ kernel_args = [
   # started (TOUCH start=1) and the desktop came up, but nothing reached the system.
   # The reference board passes the same argument.
   "sheng-touch-hid=1",
+  # Starts the HID publisher itself. The publisher is an IOHIDDevice compiled into this kernel,
+  # so IOKit has no personality for it and nothing matches it; the board calls it from
+  # native_legacy_display_late_probe, the second of the two start paths the driver adaption
+  # guide names. Without this argument the object is linked but never started, which is what
+  # every image up to boot-usb73 did: contacts arrived and no report was ever published.
+  "offline-hid-input=1",
   # One measurement round before any frame is trusted. Every frame read so far returned a
   # payload of all 0xFF with a matching CRC, which is the part's "no valid data" answer, and
   # GPIO 39 has never gone low. That leaves two very different causes: the sensor sees no
