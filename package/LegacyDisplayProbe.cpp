@@ -445,6 +445,39 @@ __attribute__((noinline)) bool native_legacy_gop_mapping_observed(IOService *obj
 	native_legacy_gop_width = width;
 	native_legacy_gop_height = height;
 	native_legacy_gop_mapping_checkpoint();
+	/* Publish this mapping to the USB console's screenshot provider, only when asked for.
+	 * Measured 2026-10-27: the SCREENSHOT control verb returned "state=unavailable" because
+	 * provider_state never reached 2 and nothing called qcom_usb_debug_register_framebuffer.
+	 * It is opt-in because the build that always registered it also submitted no frame
+	 * (SWAP calls=0 against 7 on the build before it), and that difference is not yet
+	 * attributed. offline-screenshot=1 turns it on without touching the default path.
+	 * Weak, so a kernel without that console still links. */
+	unsigned screenshot = 0;
+	if (PE_parse_boot_argn("offline-screenshot", &screenshot, sizeof(screenshot)) &&
+	    screenshot == 1) {
+		struct qcom_usb_framebuffer_abi {
+			const volatile uint8_t *pixels;
+			size_t bytes;
+			uint32_t width, height, stride;
+			uint32_t format;
+		} framebuffer;
+		extern int qcom_usb_debug_register_framebuffer(const void *) __attribute__((weak_import));
+		if (&qcom_usb_debug_register_framebuffer) {
+			framebuffer.pixels = (const volatile uint8_t *)mapping->getVirtualAddress();
+			framebuffer.bytes = (size_t)mapping->getLength();
+			framebuffer.width = width;
+			framebuffer.height = height;
+			/* The real stride comes from PE_Video, not from the mapping length: the
+			 * GOP mapping can carry padding past the last row. */
+			/* PE_current_console returns 0 on success and copies PE_state.video, so
+			 * its v_rowBytes is the loader's real stride (4320 for this panel). */
+			PE_Video published = {};
+			framebuffer.stride = PE_current_console(&published) == 0 && published.v_rowBytes
+			    ? (uint32_t)published.v_rowBytes : width * 4u;
+			framebuffer.format = 1; /* QCOM_USB_BGRA8888 */
+			(void)qcom_usb_debug_register_framebuffer(&framebuffer);
+		}
+	}
 	// offline-legacy-unit-scale=<1..3> publishes /chosen display-scale as an offline UI policy:
 	// that many actual scanout pixels per logical point. It changes only the published scale;
 	// the scanout copy still moves one actual pixel per pixel.
