@@ -253,9 +253,16 @@ kernel_args = [
   # reach this board's cores and IPIs are software-pended SPIs, and XNU only enables a core's
   # IPI after that core has taken one, so each core signals itself in initCPU; that code is
   # already in the pinned ArmCpu and the reference board passes the argument for it.
-  # "sheng-smp=1",
-  # "armcpu-spi-ipi=1",
-  # "armcpu-self-ipi=1",
+  # boot-usb75: the one variable is SMP itself. The touch path is now known good (boot-usb74:
+  # contacts 4, hid 2012), so it stays on; the earlier freezes were traced to the RPMh vote
+  # stalling 83 s in IODelay, which AliothRpmhPort no longer does. armcpu-self-ipi is added
+  # because ArmCpu records that an SGI does not reach these cores and IPIs are software-pended
+  # SPIs, and XNU only enables a core's IPI after that core has taken one, so each core has to
+  # signal itself. It is a component argument, not one of the documented boot arguments, and is
+  # recorded as such in porting.toml.
+  "sheng-smp=1",
+  "armcpu-spi-ipi=1",
+  "armcpu-self-ipi=1",
 
   # CPU frequency: vote each EPSS domain its highest non-turbo level. The register interface is
   # the same qcom-cpufreq-hw-epss one the reference board uses; the kona addresses and the 4/3/1
@@ -457,7 +464,6 @@ kernel_args = [
   # reading only the interrupt counter 0x8F and its neighbours, with no frame read at all,
   # and afterwards prints the CRC trailer next to every frame it does read. Hold a finger on
   # the panel for the whole thirty seconds. Drop this argument once the numbers are recorded.
-  "native-touch-diag=1",
   # iPadOS 17 roots from a read-only System volume plus a writable Data volume in one APFS
   # volume group. There is no SEP and no hardware keybag on SM8250, so keybagd takes its
   # shared-Data allow-list path only when this argument is present. Nothing in this kernel
