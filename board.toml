@@ -335,7 +335,10 @@ kernel_args = [
   # accounts and no network here, so live activities have nothing to do. cryptexd was
   # in this list during the Data-mount fault and is left out now: once the volume
   # mounted, it stopped crashing on its own.
-  "sheng-disable-jobs=com.apple.liveactivitiesd,com.apple.cryptexd",
+  # routined keeps aborting here: measured 2026-10-27, SIGABRT (status=6 ns=2) and several
+  # successive pids in one window. It drives location and routine learning, and this board has
+  # no GNSS and no accounts, so it has nothing to do.
+  "sheng-disable-jobs=com.apple.liveactivitiesd,com.apple.cryptexd,com.apple.routined",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
@@ -349,9 +352,11 @@ kernel_args = [
   # 1 would be a one-shot page; 2 keeps it live. Any other value disables the layer.
   "boot-progress=2",
   # boot-diag-resume=<seconds> lets the diagnostic page take the panel back that long after
-  # scanout stops (BootProgress.c:520-525). Without it, a client that ever does present would
-  # keep the page hidden for good; with it the diagnostics always come back.
-  "boot-diag-resume=10",
+  # scanout stops. Measured 2026-10-27 on boot-usb33: SpringBoard reached the lock screen, but
+  # this page took the panel back every time the renderer paused for ten seconds, so the desktop
+  # appeared and vanished in alternation. The console carries the diagnostics now, so the page
+  # no longer has to hold the panel: 0 leaves it to the renderer for good.
+  "boot-diag-resume=0",
   # qcom-usb-debug=1 starts the CDC-ACM console over the board's DWC3 controller. It tees
   # printf, IOLog, kprintf and the panic drain onto a USB serial port, so the log can be read
   # live on the host instead of photographed off the panel. The firmware already brings the

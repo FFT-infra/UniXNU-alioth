@@ -1036,3 +1036,35 @@ alioth 原本是 `packed_data_ramdisk = false`（32 MiB 裸盘）。
 `CONFIG_XNU_OWNER_DATA_VOLUME_UUID="B0B12459-..."` 不用改。
 
 boot-usb33 已构建，含 `DBRDISK1` 标记 2 处，待刷验证。
+
+## 【里程碑】桌面起来了 —— boot-usb33
+
+用户实测：**锁屏日期出现**，无壁纸，反复出现又消失。
+
+### 桌面确实在跑，不是崩溃
+`grep -aE "SpringBoard|backboardd" serial-33*.log` -> **0 条**。
+它们没有退出记录，说明没崩溃，在后台稳定运行。
+后期进程 `fitcored`（pid=152, status=0）出现，是 GUI 之后的阶段。
+
+### 反复闪烁的真正原因：诊断页抢面板
+`board.toml:354` 的 `boot-diag-resume=10`：
+
+> after the OS stops scanning out frames for that long, take the panel back
+> for the diagnostic page
+
+机制：`SpringBoard` 画出锁屏 -> 停顿 10 秒 -> 内核诊断页把面板抢回去
+-> SpringBoard 再画 -> 又被抢。**同一块 1080x2400 GOP 帧缓冲区被两个渲染器争抢。**
+
+这不是崩溃，是抢屏。
+
+### 已修
+1. `boot-diag-resume=10` -> `boot-diag-resume=0`（诊断页不再抢面板；
+   串口已经承担诊断职责）
+2. `sheng-disable-jobs` 加 `com.apple.routined`（SIGABRT，本板无 GNSS 无账户）
+
+boot-usb34 已构建，两个参数都在镜像里。
+
+### 关于"没有壁纸"
+锁屏日期出现但壁纸缺失，说明 SpringBoard 的合成只到了文字层。
+这可能是 Metal/GPU 缺失的下游表现，也可能只是壁纸层还没加载完。
+**等面板稳定后再判断**——现在闪烁干扰了观察。
