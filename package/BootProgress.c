@@ -171,14 +171,6 @@ extern volatile int native_hid_input_meta_status __attribute__((weak_import));
 extern volatile uint32_t native_hid_class_sizes[5] __attribute__((weak_import));
 extern volatile int native_hid_matching_load_status __attribute__((weak_import));
 extern volatile uint32_t native_touch_edge_stats[4] __attribute__((weak_import));
-/* The console's own state. It cannot report its own death, so these are drawn instead: a log
- * that stops is otherwise indistinguishable from a machine that stopped. phase 3 is ACTIVE,
- * 5 REFUSED, 6 IO_FAILED. recoveries reaching 64 means the retry budget ran out; zero with a
- * non-ACTIVE phase means the recovery path was never reached. */
-extern volatile uint32_t qcom_usb_diag_phase __attribute__((weak_import));
-extern volatile uint32_t qcom_usb_diag_failed __attribute__((weak_import));
-extern volatile uint32_t qcom_usb_diag_recoveries __attribute__((weak_import));
-extern volatile uint32_t qcom_usb_diag_dropped __attribute__((weak_import));
 extern volatile int native_hid_input_results[8] __attribute__((weak_import));
 extern volatile uint32_t native_touch_loop_step __attribute__((weak_import));
 extern volatile uint32_t native_touch_seq,native_touch_count __attribute__((weak_import));
@@ -533,11 +525,6 @@ static void draw(unsigned now) {
       line(43,b,0xff00ffcc);
     }
   } else line(43,b,0xffaaaaaa);
-  if(&qcom_usb_diag_phase) {
-    snprintf(b,sizeof(b),"USB phase=%u failed=%d recov=%u/%u dropped=%u",
-      qcom_usb_diag_phase,(int)qcom_usb_diag_failed,qcom_usb_diag_recoveries,64u,qcom_usb_diag_dropped);
-    line(45,b,0xff88aaff);
-  }
   if(&native_ufs_verify_ticks && &native_ufs_read_ticks) {
     uint64_t freq;__asm__ volatile("mrs %0,cntfrq_el0":"=r"(freq));if(!freq)freq=1;
     uint64_t vt=__atomic_load_n(&native_ufs_verify_ticks,__ATOMIC_RELAXED),rt=__atomic_load_n(&native_ufs_read_ticks,__ATOMIC_RELAXED);
