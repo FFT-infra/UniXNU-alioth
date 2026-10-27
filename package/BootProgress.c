@@ -162,6 +162,23 @@ extern unsigned boot_ui_trace_role_rows(unsigned,char [][120],unsigned,unsigned)
 extern char native_touch_rows[4][120] __attribute__((weak_import));
 extern char native_cpufreq_row[120] __attribute__((weak_import));
 extern volatile uint32_t native_hid_input_events[8] __attribute__((weak_import));
+/* The publisher's own state. Without these a zero report count cannot be told apart from a
+ * publisher that never started, a class-size mismatch, or a device with no event driver
+ * attached, and hid=0 has already cost several rounds of guessing. */
+extern volatile uint32_t native_hid_stage __attribute__((weak_import));
+extern volatile int native_hid_load_status __attribute__((weak_import));
+extern volatile int native_hid_input_meta_status __attribute__((weak_import));
+extern volatile uint32_t native_hid_class_sizes[5] __attribute__((weak_import));
+extern volatile int native_hid_matching_load_status __attribute__((weak_import));
+extern volatile uint32_t native_touch_edge_stats[4] __attribute__((weak_import));
+/* The console's own state. It cannot report its own death, so these are drawn instead: a log
+ * that stops is otherwise indistinguishable from a machine that stopped. phase 3 is ACTIVE,
+ * 5 REFUSED, 6 IO_FAILED. recoveries reaching 64 means the retry budget ran out; zero with a
+ * non-ACTIVE phase means the recovery path was never reached. */
+extern volatile uint32_t qcom_usb_diag_phase __attribute__((weak_import));
+extern volatile uint32_t qcom_usb_diag_failed __attribute__((weak_import));
+extern volatile uint32_t qcom_usb_diag_recoveries __attribute__((weak_import));
+extern volatile uint32_t qcom_usb_diag_dropped __attribute__((weak_import));
 extern volatile int native_hid_input_results[8] __attribute__((weak_import));
 extern volatile uint32_t native_touch_loop_step __attribute__((weak_import));
 extern volatile uint32_t native_touch_seq,native_touch_count __attribute__((weak_import));
@@ -504,12 +521,23 @@ static void draw(unsigned now) {
     // Touch replaces the TIMER/OBS rows (42-43) while it is requested: its summary row and the HID report counters.
     line(42,native_touch_rows[0],0xff00ffcc);
     if(&native_hid_input_events) {
-      snprintf(b,sizeof(b),"TOUCH HID started=%u driver=%u touch-reports=%u result=%d key-reports=%u | pad dots=%u",
-        native_hid_input_events[2],native_hid_input_events[4],native_hid_input_events[6],native_hid_input_results[6],
-        native_hid_input_events[5],touch_dots);
+      /* stage: 0 not run, 1 begin, 2 IOHIDFamily loaded, 3 no IOHIDResource, 4 class size is not
+       * 208, 5 preModLoad failed, 6 postModLoad failed, 7 start failed, 8 started. A report
+       * count of zero means something different at each of them. */
+      snprintf(b,sizeof(b),"TOUCH HID stage=%u load=%d meta=%d cls=%u evdrv=%u started=%u driver=%u reports=%u result=%d dots=%u",
+        &native_hid_stage?native_hid_stage:99, &native_hid_load_status?native_hid_load_status:99,
+        &native_hid_input_meta_status?native_hid_input_meta_status:99,
+        &native_hid_class_sizes?native_hid_class_sizes[4]:0, &native_hid_class_sizes?native_hid_class_sizes[1]:0,
+        native_hid_input_events[2],native_hid_input_events[4],native_hid_input_events[6],
+        native_hid_input_results[6],touch_dots);
       line(43,b,0xff00ffcc);
     }
   } else line(43,b,0xffaaaaaa);
+  if(&qcom_usb_diag_phase) {
+    snprintf(b,sizeof(b),"USB phase=%u failed=%d recov=%u/%u dropped=%u",
+      qcom_usb_diag_phase,(int)qcom_usb_diag_failed,qcom_usb_diag_recoveries,64u,qcom_usb_diag_dropped);
+    line(45,b,0xff88aaff);
+  }
   if(&native_ufs_verify_ticks && &native_ufs_read_ticks) {
     uint64_t freq;__asm__ volatile("mrs %0,cntfrq_el0":"=r"(freq));if(!freq)freq=1;
     uint64_t vt=__atomic_load_n(&native_ufs_verify_ticks,__ATOMIC_RELAXED),rt=__atomic_load_n(&native_ufs_read_ticks,__ATOMIC_RELAXED);
@@ -1354,7 +1382,7 @@ static void touch_time_report(unsigned now) {
   sent = 1;
   char log[176];
   int n = snprintf(log, sizeof(log),
-    "TOUCHSTAT t=%us frames=%u valid=%u contacts=%u irq=%u low=%u hid=%u xy=%d,%d raw=%02x%02x%02x%02x%02x%02x loop=%u fail=%u\n",
+    "TOUCHSTAT t=%us frames=%u valid=%u contacts=%u irq=%u low=%u hid=%u xy=%d,%d raw=%02x%02x%02x%02x%02x%02x hstage=%u hload=%d hml=%d hmeta=%d hcls=%u hevdrv=%u hres=%d edge=%u,%u loop=%u fail=%u\n",
     now, frames, valid, count,
     &native_touch_irq_level ? __atomic_load_n(&native_touch_irq_level, __ATOMIC_RELAXED) : 9,
     &native_touch_irq_low ? __atomic_load_n(&native_touch_irq_low, __ATOMIC_RELAXED) : 0,
@@ -1363,6 +1391,14 @@ static void touch_time_report(unsigned now) {
     &native_touch_frame_raw ? native_touch_frame_raw[0] : 0, &native_touch_frame_raw ? native_touch_frame_raw[1] : 0,
     &native_touch_frame_raw ? native_touch_frame_raw[2] : 0, &native_touch_frame_raw ? native_touch_frame_raw[3] : 0,
     &native_touch_frame_raw ? native_touch_frame_raw[4] : 0, &native_touch_frame_raw ? native_touch_frame_raw[5] : 0,
+    &native_hid_stage ? native_hid_stage : 99, &native_hid_load_status ? native_hid_load_status : 99,
+    &native_hid_matching_load_status ? native_hid_matching_load_status : 99,
+    &native_hid_input_meta_status ? native_hid_input_meta_status : 99,
+    &native_hid_class_sizes ? native_hid_class_sizes[4] : 0,
+    &native_hid_class_sizes ? native_hid_class_sizes[1] : 0,
+    &native_hid_input_results ? native_hid_input_results[6] : 99,
+    &native_touch_edge_stats ? native_touch_edge_stats[0] : 0,
+    &native_touch_edge_stats ? native_touch_edge_stats[1] : 0,
     loop, fail);
   if (n > 0) qcom_usb_debug_write(log, (size_t)n < sizeof(log) ? (size_t)n : sizeof(log) - 1);
 }

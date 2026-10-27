@@ -349,6 +349,29 @@ hid_probe_command = [str(packages[0].parent / 'HidInputProbe.cpp') if x == str(p
                      else str(hid_probe_obj) if x == str(probe_obj) else x for x in command]
 run(hid_probe_command, cwd=record['directory'])
 
+# The AppleKeyStore stand-in. AppleKeyStoreState is a selected component in board.toml, but a
+# static archive is only pulled in when something references it: the component provides an
+# IOService class plus two board callbacks, and the linker has no reason to take it. Without
+# this object the kernel carries no AKS at all (nm finds no keyevents symbol) and SpringBoard
+# asks for a passcode that no keybag exists to satisfy.
+keystore_probe_obj = OUT / 'KeyStoreProbe.o'
+keystore_command = [str(packages[0].parent / 'KeyStoreProbe.cpp') if x == str(probe_source)
+                    else str(keystore_probe_obj) if x == str(probe_obj) else x for x in command]
+run(keystore_command, cwd=record['directory'])
+
+# The AppleKeyStore class itself. The probe above supplies the two board callbacks and the
+# static-init trampoline; this builds the object those refer to. Its module initialiser is
+# removed and the initialiser globalised so the class registers when the probe asks it to,
+# not at load time, exactly as the reference board does.
+print(run(['python3', ROOT / 'scripts/build-arm-driver.py', 'NativeKeyStoreEvents'], text=True), end='')
+keystore_dir = ROOT / 'build/apple-key-store-state'
+keystore_late = keystore_dir / 'NativeKeyStoreEvents.late.o'
+objcopy = shutil.which('llvm-objcopy')
+require(objcopy, 'llvm-objcopy not found; the key store class needs its initialiser staged')
+run([objcopy, '--remove-section=__DATA,__mod_init_func',
+     '--globalize-symbol=__GLOBAL__sub_I_NativeKeyStoreEvents.cpp',
+     keystore_dir / 'NativeKeyStoreEvents.o', keystore_late])
+
 # The CPU frequency control, compiled with the same record so its flags match the kernel.
 # It exports sheng_cpufreq_probe/sheng_cpufreq_poll, which BootProgress weak-imports and
 # calls from its monitor loop.
@@ -429,7 +452,8 @@ require(hid.returncode == 0, 'build-sheng-hid-input.py failed: ' + (hid.stderr o
 archive = OUT / 'libNativeLegacyDisplay.late.a'
 archive.unlink(missing_ok=True)
 run(['xcrun', 'ar', 'rcs', archive, late, OUT / 'original-bindings.o', probe_obj, hid_probe_obj, cpufreq_obj,
-     presenter_late, hid_dir / 'NativeHidInput.late.o', hid_dir / 'hid-original-bindings.o'])
+     presenter_late, hid_dir / 'NativeHidInput.late.o', hid_dir / 'hid-original-bindings.o',
+     keystore_probe_obj, keystore_late])
 
 sources = [ROOT / 'drivers/GopFramebuffer/NativeLegacyDisplay.cpp',
            ROOT / 'drivers/GopFramebuffer/NativeLegacyRequest.h',

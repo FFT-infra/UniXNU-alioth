@@ -47,3 +47,16 @@
 // board enables them for its ShengUfs component.
 &ufs { status = "okay"; };
 &ufsphy { status = "okay"; };
+
+/* Cluster topology, only valid together with native-smp-type-clusters.patch: without it the
+ * topology parser maps a P core to cluster index 1 while MAX_CPU_CLUSTERS is 1 and writes past
+ * the end of cluster_phys_to_logical on the stack (measured: the kernel dies before the console
+ * comes up). The two must be enabled as one change. */
+&cpu0 { unixnu,cluster-type = "E"; };
+&cpu1 { unixnu,cluster-type = "E"; };
+&cpu2 { unixnu,cluster-type = "E"; };
+&cpu3 { unixnu,cluster-type = "E"; };
+&cpu4 { unixnu,cluster-type = "P"; };
+&cpu5 { unixnu,cluster-type = "P"; };
+&cpu6 { unixnu,cluster-type = "P"; };
+&cpu7 { unixnu,cluster-type = "P"; };

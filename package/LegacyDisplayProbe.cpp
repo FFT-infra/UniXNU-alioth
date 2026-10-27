@@ -911,6 +911,12 @@ void native_legacy_display_late_probe(void) {
 	// offline-hid-input=1. Inside this file's extern "C" block, so no linkage specifier here.
 	extern int native_hid_input_probe(void);
 	native_hid_input_probe();
+
+	// The AppleKeyStore stand-in. Same reason as the HID publisher: a selected component that
+	// nothing references is dropped from a static link, and without it there is no keybag to
+	// answer the post-restart passcode prompt. Opt-in through offline-key-events=1.
+	extern void native_keystore_probe(void);
+	native_keystore_probe();
 	// The CPU frequency vote (sheng-cpufreq=<n>) maps the EPSS domains and votes the top
 	// non-turbo level; it reports its state through native_cpufreq_row on the panel.
 	/* This file sits inside an extern "C" block to the end, so the declaration must not repeat

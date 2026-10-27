@@ -33,6 +33,7 @@ extern "C" kern_return_t OSKextLoadKextWithIdentifier(const char *);
 
 extern "C" {
 // Published for the diagnostic panel and the console report.
+volatile int native_hid_matching_load_status = -1;
 volatile uint32_t native_hid_stage, native_hid_resource_found;
 volatile int native_hid_load_status = -1, native_hid_input_meta_status = -1;
 volatile uint32_t native_hid_class_sizes[5];
@@ -59,6 +60,15 @@ extern "C" int native_hid_input_probe(void) {
   native_hid_stage = 1;
   // IOHIDFamily must be loaded first: the device attaches to the IOHIDResource it publishes.
   native_hid_load_status = OSKextLoadKextWithIdentifier("com.apple.iokit.IOHIDFamily");
+  /* Two kexts, not one. IOHIDFamily provides the device class and IOHIDResource, but the thing
+   * that makes a report reach the system is IOHIDEventDriver, which is a separate kext. Without
+   * it the publisher starts, publishes, and every report is dropped by its first line
+   * (hasEventDriverCached() finds no child service), so native_touch_hid_reports stays zero
+   * while contacts arrive. Measured on boot-usb92: stage reached 8 with zero reports. The
+   * reference board loads both, in this order. */
+  if (!native_hid_load_status)
+    native_hid_matching_load_status = OSKext::loadKextWithIdentifier(
+        "com.apple.iokit.IOHIDEventDriver", true, false, kOSKextExcludeNone, kOSKextExcludeNone, nullptr);
   const char *names[5] = {"IOHIDUserDevice", "IOHIDEventDriver", "IOHIDEventService",
                           "IOHIDResourceDeviceUserClient", "IOHIDDevice"};
   for (unsigned i = 0; i < 5; ++i) {

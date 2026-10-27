@@ -2,7 +2,7 @@
 name = "sm8250"
 kind = "soc"
 git = "https://github.com/FFT-infra/UniXNU-sm8250-common"
-commit = "6bb9b025704764a662728dce1a30557a35e082d8"
+commit = "a6e7e36caab58f5b9a5625dbdb8da2bf290fa5cc"
 
 # The UFS driver fork that carries the alioth SM8250 stream configuration.
 [[source]]

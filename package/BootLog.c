@@ -18,6 +18,8 @@
 
 extern int native_ufs_log_open(uint64_t *, uint64_t *, const char **) __attribute__((weak_import));
 extern int native_ufs_log_write(uint64_t, uint32_t, const void *) __attribute__((weak_import));
+extern int native_ufs_log_read(uint64_t, uint32_t, void *) __attribute__((weak_import));
+extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
 extern uint64_t native_ufs_export_blocks(void) __attribute__((weak_import));
 extern int native_ufs_export_write(uint64_t, uint32_t, const void *) __attribute__((weak_import));
 extern int native_ufs_log_sync(void) __attribute__((weak_import));
@@ -1066,6 +1068,31 @@ static void writer(void *arg, wait_result_t result) {
     IOSleep(1000);
   }
   boot_log_first_lba = first;
+  /* Print the previous run's log before the new header replaces it. This is what makes an
+   * unattended round usable: the USB console dies with the link, so after a reset the only
+   * record of what happened is on the medium, and the next boot is the only chance to show it.
+   * The tail is what matters — the last state before the reset. */
+  if (&native_ufs_log_read && blocks > (uint64_t)LogSlotFirst + LogSlotBlocks) {
+    struct boot_log_header previous;
+    if (native_ufs_log_read(0, 1, &previous) && memcmp(previous.magic, "SHLOG001", 8) == 0 &&
+        previous.slot_count && previous.slots_written && previous.slot_blocks == LogSlotBlocks) {
+      static char previous_slot[LogSlotBlocks * LogBlock];
+      uint32_t slot = (previous.slots_written - 1u) % previous.slot_count;
+      if (native_ufs_log_read(LogSlotFirst + (uint64_t)slot * LogSlotBlocks, LogSlotBlocks, previous_slot)) {
+        size_t end = sizeof previous_slot;
+        while (end && previous_slot[end - 1] == 0) --end;
+        size_t begin = end > 1536 ? end - 1536 : 0;
+        if (&qcom_usb_debug_write) {
+          char head[96];
+          int n = snprintf(head, sizeof head, "PREVLOG run=%llu slots=%u err=%u tail=%zu bytes\n",
+                           (unsigned long long)previous.boot_id, previous.slots_written,
+                           previous.write_errors, end);
+          if (n > 0) qcom_usb_debug_write(head, (size_t)n);
+          if (end > begin) qcom_usb_debug_write(previous_slot + begin, end - begin);
+        }
+      }
+    }
+  }
   const uint32_t slot_count = (uint32_t)((blocks - LogSlotFirst) / LogSlotBlocks);
   if (&native_ufs_export_blocks && &native_ufs_export_write) {
     IOLockLock(export_lock);

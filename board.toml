@@ -443,6 +443,9 @@ kernel_args = [
   # its own thread, so it is opt-in: without the argument the boot is the configuration that
   # holds the lock screen, and a regression in the touch path cannot cost that.
   # Expected console line: "TOUCH start=1"; the panel rows 42/43 then carry the HID counters.
+  # H1 probe: does the touch probe's RPMh L11C vote, made concurrently on another core, take
+  # the USB PHY rail down? The CDC device leaves the bus at t~5 s, which is when that vote runs.
+  # Touch is off for this round only.
   "native-touch=1",
   # The HID half. NativeHidInput only registers the touch sink when this argument is 1
   # (ShengHidInput-*/NativeHidInput.cpp:291,303); without it the frame loop reads contacts and
@@ -456,6 +459,19 @@ kernel_args = [
   # guide names. Without this argument the object is linked but never started, which is what
   # every image up to boot-usb73 did: contacts arrived and no report was ever published.
   "offline-hid-input=1",
+  # Screenshot registration. Proven harmless on boot-usb87: the home screen appeared at ~88 s
+  # with it enabled, and no capture had even been requested. Kept on so the frame buffer can be
+  # read back over the control socket once the USB link is stable.
+  "offline-screenshot=1",
+  # The AppleKeyStore stand-in and its key-event path. Without a keybag the post-restart lock
+  # screen asks for a passcode nothing can satisfy; this pair makes the owned AppleKeyStore
+  # answer "no passcode, nothing locked". Add sheng-aks-sls=3 only if the prompt survives.
+  "offline-key-events=1",
+  "sheng-aks=1",
+  # Measurement round for the unattended loop: the whole scheme depends on the board returning
+  # to fastboot by itself, and nothing has ever confirmed that it does. Sixty seconds is short
+  # enough to stand in front of the phone and long enough to be past the console coming up.
+  # "sheng-autoreset=150",  # off: it did not fire; verify the reset path before re-enabling
   # One measurement round before any frame is trusted. Every frame read so far returned a
   # payload of all 0xFF with a matching CRC, which is the part's "no valid data" answer, and
   # GPIO 39 has never gone low. That leaves two very different causes: the sensor sees no
