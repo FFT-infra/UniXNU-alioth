@@ -682,3 +682,212 @@ from the IOService-plane parent (optional)"）。
 12 个区域仍是 `planned`。可以回填已真机验证的事实。
 但 `porting-record.py check` 目前因"components without an area"报错
 （6 个组件未覆盖），这不是回填能解决的，需要新建区域。
+
+## 五项任务核实后的实际执行
+
+| # | 任务 | 核实结论 | 处理 |
+|---|---|---|---|
+| 1 | A650 GpuProbe.cpp 编译 | 源码在（1432 行），但优先级错 | 未做 |
+| 2 | 预置 Data 卷数据库 | **前提不成立**：TCC.db/Accounts3 在原始 OS 卷也不存在，是运行时生成 | 未做 |
+| 3 | songchiyu 触控驱动 | **仓库不存在**，_ref 里只有 QEMU 的 touch.py | 未做 |
+| 4 | canvas-width/height | 属实但 **optional**，我们用 Legacy 类不走那条路 | 未做 |
+| 5 | porting.toml 回填 | 属实且可做 | **已完成** |
+
+第 5 项执行结果：
+- `storage` 填 4 个组件（ShengUfs/VerifiedRoot/VirtioMmioBlock/RamBlock），
+  内容全部来自真机实测：/dev/md0 的 ENOENT、20000 目录只用 5.8 MiB、
+  cryptexd 的 ENOSPC 指向别的挂载点
+- `display` 填 GopFramebuffer：DISPLAY stage=10 / CLIENT calls=4 / SWAP calls=0，
+  并明确写下限制"从未有任何一帧被提交，backboardd 从未启动"
+- `AppleKeyStoreState` 归入 configuration
+- 证据文件拷进仓库 `docs/evidence/`，让 reference 从新克隆也能解析
+
+**`scripts/porting-record.py check` 现在输出：`alioth: 13 structured areas checked`**
+（之前是 "components without an area: [6 个]" 直接失败）
+
+## 【回归定位】mkdir-lookup 探针是 boot-usb26/27 卡死的原因
+
+镜像对比（唯一变量法）：
+
+| 镜像 | mkdir-err | mkdir-lookup | data= | 结果 |
+|---|---|---|---|---|
+| boot-usb19 | 0 | 0 | 0 | **正常**，26020 字节，132 条 EXITLOG |
+| boot-usb26 | 1 | **1** | 0 | 卡死，3846 字节 |
+| boot-usb27 | 1 | **1** | 1 | 卡死，3833 字节 |
+
+**`mkdir-lookup` 探针在 boot-usb26/27 都存在，而 boot-usb19 没有。**
+
+根因（源码）：`offline-mkdir-lookup-enospc.patch` 在 `nameiat` 失败路径上调用
+```c
+proc_getpid(vfs_context_proc(ctx))
+```
+这两个函数都可能取进程/凭证锁。而 `nameiat` 失败（尤其 ENOENT）在启动中
+大量发生，于是每次失败都在锁内调用它们 -> 与之前 printf 死锁同类。
+
+**已移除该探针**，boot-usb28 只保留 `mkdir-err`（在 out: 标签，仅 ENOSPC 等
+非普通失败时触发，且只用 `nd.ni_cnd.cn_pnbuf` 这个已解析的缓冲区）和 `data=`。
+
+## 三次死锁的共同模式
+1. printf（console 锁）
+2. qcom_usb_debug_write（控制器轮询 + 延时）
+3. proc_getpid(vfs_context_proc(ctx))（进程/凭证锁）
+
+**都是在 VFS 锁内调用了会取其它锁的东西。**
+教训：任何插在 VFS 路径上的探针，只能用"读已解析缓冲区 + 纯内存队列"这一种操作。
+
+## 回归定位失败，需要更严格的隔离
+
+boot-usb28（已移除 lookup 探针）**仍然卡死**：3817 字节、0 条 EXITLOG、控制通道无响应。
+
+所以 lookup 探针**不是**原因，我上一轮的隔离实验有漏洞。
+
+严格的镜像差异表：
+| 镜像 | mkdir-err | data= | sheng-disable-jobs | cs_enforcement | 结果 |
+|---|---|---|---|---|---|
+| boot-usb19 | 0 | 0 | 1 | 16 | 正常 |
+| boot-usb26 | 1 | 0 | 2 | 17 | 卡 |
+| boot-usb27 | 1 | 1 | 2 | 17 | 卡 |
+| boot-usb28 | 1 | 1 | 2 | 17 | 卡 |
+
+**三个变量同时变了**，我一次改了太多东西，无法归因：
+1. mkdir-err 探针（a5c4c7e）
+2. sheng-disable-jobs 新增禁用列表（a9b5f6e）
+3. cs_enforcement_disable / amfi_get_out_of_my_way（a9b5f6e）
+
+`mkdir-err` 条件已排除 ENOENT/EEXIST，只在异常时触发，理论上安全。
+`sheng-disable-jobs` 有完整边界检查（strlcat + 显式长度检查）。
+但 **`cs_enforcement_disable=1` 会关闭代码签名强制**，这可能导致
+launchd 或早期进程加载未验证的二进制而行为异常——这是最可疑的。
+
+## 下一步：一次只改一个
+下次构建只加 `mkdir-err`（回退 board.toml 的两项参数），
+验证它单独是否安全。这是二分法的第一步。
+
+## 【确认】mkdir 探针确实是元凶，但机制未查明
+
+boot-usb29 是干净二分的结果：
+| 镜像 | mkdir-err | data= | sheng-disable-jobs | cs_enforcement | 结果 |
+|---|---|---|---|---|---|
+| boot-usb19 | 0 | 0 | 1 | 16 | 正常 |
+| boot-usb29 | **1** | **1** | 1 | 16 | **卡死** |
+
+**唯一差异就是探针，所以探针是元凶。** 这次隔离是干净的。
+
+但机制我还没查明。已逐个排除：
+1. `snprintf` —— `vfs_syscalls.c` 里已有 4 处使用，VFS 上下文安全
+2. `nd.ni_cnd.cn_pnbuf` 读 —— 已解析缓冲区，只读
+3. `qcom_usb_debug_enqueue` 的 `backlog_write` —— 立即返回不自旋，
+   `busy` 用 exchange 且马上释放（QcomUsbBuffer.h:29,44）
+4. `daifset #3` 屏蔽中断 —— 但触发频率应该很低（已排除 ENOENT/EEXIST）
+
+**剩下的疑点**：`backlog_write` 用 `msr daifset, #3` 屏蔽 IRQ+FIQ，
+如果启动中非 ENOENT/EEXIST 的 mkdir 失败**实际上很频繁**
+（例如沙箱大量 EACCES），中断屏蔽累积会饿死定时器/存储中断。
+
+这个假设可以验证：把探针限制成**只报 ENOSPC**（回到最初的窄条件），
+如果那样就不卡，说明是频率问题。
+
+## 结论
+探针这条路已经花掉 4 次刷机（26/27/28/29）全部失败。
+**决定：放弃 mkdir 探针。** cryptexd 的 ENOSPC 路径改从其他角度查
+（例如 sheng-disable-jobs 直接禁用 cryptexd，不需要知道它写哪）。
+
+## 【panic 根因】Data mount 返回 ENOENT -> panic
+
+用户提供的 panic 屏照片：
+```
+offline scratch Data mount failed: 2 @kern_exec.c:8216
+```
+`2` = ENOENT。
+
+源码链：
+1. `kern_exec.c:8214` `native_owner_data_prepare()`
+2. `:8000` 调 `native_ram_block_volume_seed(...)`，返回 false 则 `error = ENOENT`
+3. `NativeRamBlock.cpp:448` -> `selectVolumeSeed()`
+4. `:374` `IOService::serviceMatching("IOMedia")` + `IOPropertyMatch UUID`
+   -> **找不到带该 UUID 的 IOMedia 就返回 0**
+
+所以 Data mount 失败 = RamBlock 没有发布 IOMedia。
+
+## 重要更正：这解释了我前面 5 次刷机的"卡死"
+boot-usb26/27/28/29/30 全部"卡在启动早期、3846 字节、0 条 EXITLOG"，
+我一度归因于 mkdir 探针（并为此改了两次代码、刷了 4 次机）。
+
+**真正原因是 Data mount panic**：panic 后内核停住，不再产生任何退出记录，
+所以看起来像"启动早期卡死"。
+
+而 boot-usb19（`why.log`，261 条 EXITLOG）确实过了 Data mount。
+两者差异只有 `why=` 参数那一个 hunk —— 但那不该影响 Data mount。
+
+**所以我现在无法解释为什么 boot-usb19 能过而 boot-usb30 不能。**
+这个矛盾必须解决，不能再猜。
+
+## 已排除
+- UUID 不匹配：实测 seed 的 UUID 就是 `B0B12459-...`，与 defconfig 一致
+- seed 哈希不匹配：`5add0dcb...` 与 payload.json 记录一致
+- RamBlock 未链接：`native_ram_block_volume_seed` 和 `selectVolumeSeed`
+  都在 kernel.macho 符号表里
+- ADT 缺 RAMDisk：payload.img 里 `RAMDisk` 字符串存在
+- RamBlock start 的尺寸检查：32 MiB 远小于 2 GiB 上限
+
+## 【根因确认并修复】脏 UUID 在 .config 里，不在 defconfig
+
+参考块正确指出了方向，但准确位置是 `.config` 而不是头文件本身。
+
+三方核对：
+| 来源 | UUID |
+|---|---|
+| 真实 seed（diskutil 实测） | `B0B12459-4F23-4E03-9B64-A902959309AA` |
+| `alioth_defconfig` | `B0B12459-...` ✓ |
+| **`.config`** | **`45828D34-98F0-4BBB-ADCB-2B7EE25BD9E6`** ✗ |
+| 生成的 `owner-data-volume.h` | 同 `.config`（脏） |
+
+**`unixnu build kernel` 读 `.config`，不读 defconfig。**
+我在 2 GiB seed 实验时改过 defconfig，后来改回去了，但**从没重跑
+`unixnu defconfig`**，所以 `.config` 一直保留着实验期的脏值。
+这个脏值经 `build-xnu-4k-baseline.sh:420-440` 的生成逻辑写进
+`owner-data-volume.h`，再编进内核。
+
+于是 `selectVolumeSeed()` 拿 `45828D34` 去匹配真实 UUID 为 `B0B12459`
+的 IOMedia，永远匹配不到 -> ENOENT -> panic。
+
+## 修复
+1. `./unixnu defconfig alioth_defconfig -D ../UniXNU-alioth` 同步 `.config`
+2. 手动写入 `owner-data-volume.h`（因为 build-boot-progress.py 在
+   build-xnu-4k-baseline.sh 之前跑，而后者才生成这个头文件；
+   删掉头文件会导致前置步骤失败）
+3. 重建内核：`kernel.macho sha256 0e064d44...`
+4. 验证：内核字符串里 `B0B12459` 1 处，`45828D34` **0 处**
+
+## 这一轮最大的教训
+我之前 5 次刷机（26/27/28/29/30）全部"卡在启动早期"，我把它归因于
+mkdir 探针，为此改代码、删探针、刷了 4 次机 —— **方向全错**。
+真正原因是 Data mount panic，一张 panic 屏照片就定死了。
+**教训：先看屏幕再改代码。** 我一直在串口上找证据，而 panic 屏就在那里。
+
+## 【修复后实测】boot-usb31 恢复正常启动
+
+```
+10901 字节  118 条 EXITLOG  27 个进程  5 条 EXITCRASH
+```
+
+对比修复前（boot-usb30）：3833 字节、0 条 EXITLOG、panic。
+
+**且本轮 cryptexd 和 lsd 都没有崩溃**（修复前分别崩 9 次和 17 次）。
+这强烈提示：那些崩溃很可能就是 Data mount 失败的下游后果——
+`/private/var` 没挂上，所有需要它的守护进程都拿不到数据。
+
+剩余唯一异常：`liveactivitiesd` 6 次 SIGTRAP（BRK #1 in CalendarUIKit）。
+GUI 进程（backboardd/SpringBoard/runningboardd）仍然是 0。
+
+## 流程缺陷（重要）
+`unixnu build kernel` 读 `out/<...>/.config`，而 `.config` 只由
+`unixnu defconfig` 生成。**改 defconfig 后不重跑 defconfig，构建仍用旧值，
+且没有任何警告。** 我这次就是这样把 2 GiB 实验的脏 UUID 带进了 5 个镜像，
+并误判成"探针死锁"，为此刷了 4 次机。
+
+规则：每次改 `configs/*_defconfig` 后立即跑
+`./unixnu defconfig alioth_defconfig -D ../UniXNU-alioth`。
+
+另外 `build-boot-progress.py` 在 `build-xnu-4k-baseline.sh` 之前运行，
+而 `owner-data-volume.h` 由后者生成。手动删那个头文件会让前置步骤失败。
