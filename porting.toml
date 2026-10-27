@@ -36,17 +36,17 @@ evidence = []
 
 [[area]]
 id = "cpu"
-status = "planned"
+status = "implemented"
 components = []
 paths = ["package/CpuFreq*", "scripts/*armcpu*"]
-inputs = ["Identify the cpu and interrupts hardware, resources and existing component interfaces for this board."]
-configuration = ["Record the board.toml fields, DTS properties and defconfig values used for cpu and interrupts."]
-procedure = ["Follow the cpu and interrupts stage in the porting guide and record the actual commands."]
-findings = ["Collect the first cpu and interrupts observation, its cause when established, and the resulting implementation decision."]
+inputs = ["kona: four Cortex-A55 (cpu0-3) and four Cortex-A77 (cpu4-7), MPIDR core number in Affinity1 so phys ids are 0x000-0x700. Interrupts and timers come from the ArmCpu component; secondary start is PSCI CPU_ON over smc."]
+configuration = ["board.toml: sheng-smp=1 starts secondary CPUs, armcpu-spi-ipi=1 routes IPIs through software-pended SPIs, armcpu-self-ipi=1 makes each core signal itself so XNU enables its IPI (a component argument, not one of the documented boot arguments), armcpu-diagnostics=1 reports the bring-up. dts: unixnu,cluster-type E on cpu0-3 and P on cpu4-7."]
+procedure = ["Apply both SoC patches (native-smp-secondary, native-smp-type-clusters) through the SoC repository's patch series, then build kernel, payload and boot image and boot over USB. Verify in the build tree that MAX_CPUS is 8 in the BCM2837 block, MAX_CPU_CLUSTERS is 2 and __ARM_AMP__ survives the later #undef."]
+findings = ["Without native-smp-secondary.patch the reset vector masks MPIDR with 0xFF, which is Aff0 and is zero for every kona core, so every secondary core picked the boot CPU's cpu_data and reset handler. The boot either panicked with Invalid kernel stack pointer or hard-locked with interrupts off in early initialisation.", "unixnu,cluster-type must never ship without native-smp-type-clusters.patch. With MAX_CPU_CLUSTERS still 1 the topology parser takes phys_cluster_id = (cluster_type == P), which is 1, and writes cluster_phys_to_logical[1] past the end of a one-element stack array. Release builds do not assert: the kernel dies before the console comes up. scripts/check-smp-topology.py refuses that combination.", "Both patches are private to UniXNU-pipa, not present in UniXNU/UniXNU. They live in the SM8250 SoC repository because the topology they describe is a property of the SoC, which is why the pins differ from the SM8550 device's."]
 completion = ["Every enabled CPU reaches its entry checkpoint and timer/IPI handling works on each enabled CPU."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required cpu and interrupts inputs before implementation."]
-evidence = []
+limits = ["Secondary CPUs have not been brought up on hardware yet. The two patches are applied only in the build feed checkout, not yet committed to FFT-infra/UniXNU-sm8250-common, so a fetch or tree refresh loses them.", "unixnu,cluster-type is still declared in the board DTS rather than the SoC DTSI."]
+next_action = ["Boot the image carrying both patches and read SMP run count, armcpu_smp_step, psci_rc and the boot time."]
+evidence = [{ kind = "source", reference = "scripts/check-smp-topology.py", result = "Refuses a device tree that declares cluster-type without the cluster patch applied and MAX_CPU_CLUSTERS >= 2, the combination that killed three boots silently." }]
 
 [[area]]
 id = "memory"
