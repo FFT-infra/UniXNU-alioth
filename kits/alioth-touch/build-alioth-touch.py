@@ -150,4 +150,14 @@ run(["xcrun", "ar", "rcs", archive, *objs])
     "source_sha256": {str(p.relative_to(ROOT.parent)) if p.is_relative_to(ROOT.parent) else str(p): sha(p)
                       for p in [touch_cpp, hid / "NativeHidInput.cpp", *c_sources]},
 }, indent=2) + "\n")
-print(f"Built {archive} ({len(objs)} objects); merge into the kernel prelink (see kits/alioth-touch/README.md)")
+print(f"Built {archive} ({len(objs)} objects)")
+
+# Also add the objects to libLinkStubs.a. The kernel link takes a single
+# CONFIG_XNU_EXTRA_LD_ARCHIVES path here, and a second, space-separated path does not reach
+# the link (measured 2026-10-27: the archive stayed out of the commands entirely).
+# build-link-stubs.py runs earlier, so its archive already exists; adding members to an
+# archive in place is what `ar r` does.
+stub_archive = ROOT / "build" / "link-stubs" / "libLinkStubs.a"
+if stub_archive.exists():
+    run(["xcrun", "ar", "rcs", str(stub_archive), *[str(o) for o in objs]])
+    print(f"Added {len(objs)} objects to {stub_archive}")

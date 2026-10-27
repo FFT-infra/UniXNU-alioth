@@ -19,6 +19,7 @@ wrong archive.
 """
 import hashlib
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -339,6 +340,37 @@ command += suppressions
 run(command, cwd=record['directory'])
 (OUT / 'probe-compile-command.json').write_text(json.dumps(command, indent=2) + '\n')
 
+# The CPU frequency control, compiled with the same record so its flags match the kernel.
+# It exports sheng_cpufreq_probe/sheng_cpufreq_poll, which BootProgress weak-imports and
+# calls from its monitor loop.
+# The device package appears in the tree as kits/<kit>; tree/package is the upstream one.
+# Same lookup build-boot-progress.py uses for its board sources.
+_cpufreq = sorted(ROOT.glob('kits/*/CpuFreqProbe.cpp'))
+require(_cpufreq, 'cpu frequency probe missing: no kits/*/CpuFreqProbe.cpp')
+cpufreq_source = _cpufreq[0]
+cpufreq_obj = OUT / 'CpuFreqProbe.o'
+cpufreq_command, suppressions2, i = [], [], 0
+while i < len(arguments):
+    value = arguments[i]
+    if value == record['file']:
+        cpufreq_command.append(str(cpufreq_source))
+    elif value == '-o':
+        cpufreq_command += ['-o', str(cpufreq_obj)]
+        i += 1
+    elif value == '-Xclang' and arguments[i + 1].startswith('-W'):
+        i += 1
+    elif value.startswith('-Wno-'):
+        suppressions2.append(value)
+    elif not value.startswith(('-W', '-DXNU_BOOT_PROGRESS=')):
+        cpufreq_command.append(value)
+    i += 1
+cpufreq_command += ['-mgeneral-regs-only', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
+                    '-Wno-c99-designator', '-Wno-reorder-init-list',
+                    '-Wno-deprecated-enum-enum-conversion', '-Wno-missing-designated-field-initializers',
+                    '-I', str(record['directory']), '-I', str(ROOT / '.cache/xnu-work/osfmk'), '-I', str(OUT)]
+cpufreq_command += suppressions2
+run(cpufreq_command, cwd=record['directory'])
+
 # The owned presenter, staged the same way.
 print(run(['python3', ROOT / 'scripts/build-arm-driver.py', 'NativeGOPPresenter'], text=True), end='')
 presenter = ROOT / 'build/native-gop-presenter/NativeGOPPresenter.o'
@@ -350,9 +382,32 @@ require(code(presenter.read_bytes(), macho(presenter.read_bytes())) ==
         code(presenter_late.read_bytes(), macho(presenter_late.read_bytes())),
         'Owned presenter instructions unchanged by late init staging')
 
+# The HID publisher belongs in this archive and nowhere else. ShengHidInput's own recipe
+# produces NativeHidInput.late.o and hid-original-bindings.o but only into its build
+# directory; nothing in the generic archive pipeline picks a ``.late.o`` up, and a plain
+# archive is not force-loaded, so an object with no inbound reference is dropped at link
+# time. That is what earlier images did: the touch core ran, contacts reached the host, and
+# the kernel carried no IOHIDDevice at all. UniXNU-sheng wires it the same way, from its own
+# display recipe, because this archive is the one the kernel link force-loads.
+#
+# Two inputs are adapted for this board rather than taken from sheng:
+#   * the reference candidate: sheng's recipe accepts "any later candidate built from the
+#     same original components", but looks for it under sheng's own pipeline name. This tree
+#     names its candidate after the profile that produced it, so publish ours under the name
+#     the recipe globs. The recipe still verifies the original IOHIDFamily instruction hash
+#     and the whole 207-slot ABI against it, so nothing is taken on trust.
+#   * ``brew --prefix llvm``: the recipe locates llvm-objcopy through Homebrew, which does
+#     not exist on the Linux builder. Point it at the llvm that is on PATH instead.
+hid_dir = ROOT / 'build/sheng-hid-input'
+hid = subprocess.run(['python3', ROOT / 'scripts/build-sheng-hid-input.py'],
+                     capture_output=True, text=True)
+print(hid.stdout, end='')
+require(hid.returncode == 0, 'build-sheng-hid-input.py failed: ' + (hid.stderr or hid.stdout)[-1200:])
+
 archive = OUT / 'libNativeLegacyDisplay.late.a'
 archive.unlink(missing_ok=True)
-run(['xcrun', 'ar', 'rcs', archive, late, OUT / 'original-bindings.o', probe_obj, presenter_late])
+run(['xcrun', 'ar', 'rcs', archive, late, OUT / 'original-bindings.o', probe_obj, cpufreq_obj, presenter_late,
+     hid_dir / 'NativeHidInput.late.o', hid_dir / 'hid-original-bindings.o'])
 
 sources = [ROOT / 'drivers/GopFramebuffer/NativeLegacyDisplay.cpp',
            ROOT / 'drivers/GopFramebuffer/NativeLegacyRequest.h',

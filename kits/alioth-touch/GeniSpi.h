@@ -6,6 +6,12 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// The implementation is C and the only consumer is C++ (FocalTouchProbe.cpp). Without this
+// guard the consumer mangles these names and the link reports the C definitions as undefined.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Serial-engine registers (offsets from the SE base).
 #define GENI_FORCE_DEFAULT_REG 0x20
 #define GENI_OUTPUT_CTRL 0x24
@@ -220,4 +226,8 @@ int geni_spi_set_clock(struct geni_spi *s, unsigned speed_hz, unsigned sclk_hz, 
 // With use_dma set the transfer runs through the SE DMA engine.
 // One full-duplex (rx!=NULL, tx!=NULL), TX-only or RX-only transfer of len bytes (8 bits per word), polled.
 int geni_spi_transfer(struct geni_spi *s, const uint8_t *tx, uint8_t *rx, size_t len, int keep_cs);
+
+#ifdef __cplusplus
+}
+#endif
 #endif

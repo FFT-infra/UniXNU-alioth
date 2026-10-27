@@ -47,10 +47,30 @@ static int exchange(struct Fts5652 *chip, size_t length, int read, size_t payloa
                                 ((uint16_t)chip->rx[8 + payload] << 8);
             if (wire_crc(chip->rx + 7, payload) != received) {
                 chip->last_crc_fail = 1;
+                /* Keep what the check compared: without it a CRC refusal cannot be told
+                 * apart from a bus that returned garbage, and the two need opposite fixes.
+                 * boot-usb44 returned -74 on every read with no way to see either number. */
+                chip->last_crc_expected = wire_crc(chip->rx + 7, payload);
+                chip->last_crc_received = received;
+                chip->last_header[0] = chip->rx[0];
+                chip->last_header[1] = chip->rx[1];
+                chip->last_header[2] = chip->rx[2];
+                chip->last_header[3] = chip->rx[3];
+                chip->last_data0 = chip->rx[7];
+                chip->last_data1 = chip->rx[8];
+                chip->last_data2 = chip->rx[9];
                 result = -74;
                 continue;
             }
             chip->last_crc_fail = 0;
+            /* Record the pair on success too. "The frame passed its CRC" is the premise the
+             * whole read path rests on, and until these two bytes are visible it is an
+             * inference from a counter that could also be zero because the check never ran.
+             * An all-0xFF payload has CRC 0xF11C, so a trailer of 0xFFFF here would mean the
+             * bus returned nothing rather than a valid empty frame, and the two need opposite
+             * fixes. */
+            chip->last_crc_expected = wire_crc(chip->rx + 7, payload);
+            chip->last_crc_received = received;
         }
         return 0;
     }
@@ -90,17 +110,23 @@ static int fts5652_read(struct Fts5652 *chip, uint8_t command, uint8_t *data, si
     return result;
 }
 
-int fts5652_sleep(struct Fts5652 *chip)
+/* One register, for callers outside this file. The reader below is static here, and the probe's
+ * health check needs it to inspect the power-mode and identity registers while the frame loop
+ * runs. 0 = read. */
+int fts5652_read_reg(struct Fts5652 *chip, uint8_t reg, uint8_t *value)
 {
-    const uint8_t mode = 3;
-    return fts5652_write(chip, 0xa5, &mode, 1);
+    if (!chip || !value) {
+        return -22;
+    }
+    return fts5652_read(chip, reg, value, 1);
 }
 
-int fts5652_wake(struct Fts5652 *chip)
-{
-    const uint8_t mode = 0;
-    return fts5652_write(chip, 0xa5, &mode, 1);
-}
+/* There is deliberately no sleep or wake helper here. Both would write 0xA5, and nothing on
+ * this board documents what that register accepts: the board's own driver only ever writes
+ * 0x03 (sleep) there, on suspend, and never on the path that brings the part up. The previous
+ * pair of helpers wrote 0x03 and 0x00 and had no caller; keeping them was a hazard, because
+ * the first display-sleep path wired up would have sent the part to sleep through a value we
+ * cannot justify. Reading 0xA5 stays: it is what tells us whether the part is answering. */
 
 static int supported_app(unsigned app_id)
 {
@@ -114,6 +140,37 @@ static int supported_app(unsigned app_id)
     }
 }
 
+/* Poll the two identity registers until they stop reading as an unpopulated bus.
+ *
+ * Measured 2026-10-27 on boot-usb56: every register, including the firmware version, read back
+ * as 0xef immediately after reset was released, which is what a controller that has not finished
+ * coming up looks like. The board's own touch driver allows a full second, polling every 200 ms
+ * (reference/k40-kernel/drivers/input/touchscreen/focaltech_spi/focaltech_core.c:52-53), while
+ * this probe read once after 9 ms. Poll here instead, and report how long the part took so the
+ * number is on the console rather than guessed.
+ *
+ * A value of 0x00 or 0xff means the bus is floating; anything else is taken as the part talking,
+ * because the two identity bytes of a real FTS part are never those. */
+int fts5652_wait_ready(struct Fts5652 *chip, unsigned timeout_ms, unsigned *waited_ms)
+{
+    const unsigned step_ms = 20;
+    unsigned waited = 0;
+    while (waited <= timeout_ms) {
+        uint8_t high = 0, low = 0;
+        if (!fts5652_read(chip, 0xa3, &high, 1) && !fts5652_read(chip, 0x9f, &low, 1) &&
+            high != 0x00 && high != 0xff && low != 0xef && (high != 0xef || low != 0xef)) {
+            chip->app[0] = high;
+            chip->app[1] = low;
+            if (waited_ms) *waited_ms = waited;
+            return 0;
+        }
+        chip->io.delay_us(chip->io.context, step_ms * 1000u);
+        waited += step_ms;
+    }
+    if (waited_ms) *waited_ms = waited;
+    return -1;
+}
+
 int fts5652_state(struct Fts5652 *chip, int probe_boot)
 {
     uint8_t high = 0, low = 0;
@@ -125,15 +182,22 @@ int fts5652_state(struct Fts5652 *chip, int probe_boot)
     stage(chip, "state-app", app, app_result);
     chip->app[0] = high;
     chip->app[1] = low;
+    int rom_result = 0;
     if (probe_boot) {
         uint8_t rom[2] = {0};
-        int rom_result = fts5652_read(chip, 0x90, rom, sizeof(rom));
+        rom_result = fts5652_read(chip, 0x90, rom, sizeof(rom));
         stage(chip, "state-rom", ((unsigned)rom[0] << 8) | rom[1], rom_result);
         chip->rom[0] = rom[0];
         chip->rom[1] = rom[1];
     }
     int ver_result = fts5652_read(chip, 0xa6, &chip->version, 1);
     stage(chip, "state-version", chip->version, ver_result);
+    /* How each identity read ended, so a refused app id names the value it got instead of
+     * only "step 8". boot-usb55 reached the chip for the first time (rc=0 on every read) and
+     * still refused, which can only be the app id. */
+    chip->app_result = app_result;
+    chip->rom_result = rom_result;
+    chip->version_result = ver_result;
     if (!app_result && supported_app(app)) {
         return 0;
     }
@@ -146,20 +210,33 @@ int fts5652_frame(struct Fts5652 *chip, unsigned *count, struct Fts5652Contact *
     if (!chip || !chip->io.transfer || !contacts || capacity < FTS5652_CONTACTS) {
         return -22;
     }
-    // Read command 1, 62 bytes of touch data (frame buffer is 2 header + 60
-    // contact bytes); the Android driver reads the same layout.
-    uint8_t buf[FTS5652_FRAME_DATA + 9];
-    memset(buf, 0, sizeof(buf));
-    buf[0] = 1;
+    // Frame read: command 1, 62 payload bytes, then a 2-byte CRC. exchange() sends whatever is
+    // in chip->tx and nothing else, so the full four-byte header has to be built here: command,
+    // ctrl (READ | CRC enable), payload length big-endian, then the three dummy bytes the part
+    // inserts before its data. Without this the transfer went out carrying the previous
+    // register read's command, so the panel never received a frame request and every read
+    // failed its CRC (measured 2026-10-28 on boot-usb60: the probe started, TOUCHSTAT never
+    // showed a frame).
+    memset(chip->tx, 0, FTS5652_FRAME_DATA + 9);
+    chip->tx[0] = 1;
+    chip->tx[1] = 0xa0;
+    chip->tx[2] = (uint8_t)(FTS5652_FRAME_DATA >> 8);
+    chip->tx[3] = (uint8_t)FTS5652_FRAME_DATA;
     int result = exchange(chip, FTS5652_FRAME_DATA + 9, 1, FTS5652_FRAME_DATA);
     if (result) {
         return result;
     }
-    // buf[1..] hold the 62 data bytes; the frame header is:
-    //   data[0] = 0x01 status, data[1] = contact count (bits 0..3)
-    const uint8_t *d = buf + 1;
-    if (d[0] == 0xef && d[1] == 0xef && d[2] == 0xef) {
-        return -74;                       // panel in boot ROM, no frame out yet
+    // Payload begins after the four header bytes and the three dummy bytes. Layout, matching
+    // the board's own touch driver: payload[0] status, payload[1] contact count in bits 0..3,
+    // then six bytes per contact.
+    const uint8_t *d = chip->rx + 7;
+    /* A frame of all 0xFF is the part's "not ready" answer, not ten fingers. The board's own
+     * driver detects point count 0xF with the following bytes all 0xFF and runs a recovery
+     * sequence; publishing ours reported ten fingers at 32767,32767 a hundred and forty times
+     * a second until the part woke up, which is what boot-usb61 showed in its first three
+     * minutes. Publish no contacts for such a frame. */
+    if (d[0] == 0xff && d[1] == 0xff) {
+        return 0;
     }
     unsigned points = d[1] & 0x0f;
     if (points > FTS5652_CONTACTS) {
@@ -167,16 +244,18 @@ int fts5652_frame(struct Fts5652 *chip, unsigned *count, struct Fts5652Contact *
     }
     unsigned out = 0;
     for (unsigned i = 0; i < points; ++i) {
-        unsigned base = i * 6;
-        uint8_t xh = d[2 + base];
-        uint8_t xl = d[3 + base];
-        uint8_t yh = d[4 + base];
-        uint8_t yl = d[5 + base];
-        unsigned x = ((unsigned)(xh & 0x0f) << 8) | xl;
-        unsigned y = ((unsigned)(yh & 0x0f) << 8) | yl;
-        // The Android driver masks IDs with xID_MASK.. event field is bits 6..7.
-        int event = xh >> 6;
-        int id = yh >> 4;
+        const unsigned base = i * 6;
+        const uint8_t *r = d + 2 + base;
+        /* Six bytes per contact. X and Y are not simple 16-bit big-endian words: the low three
+         * bits of each live in the pressure byte, and the high four live in the X_H / Y_H
+         * bytes, giving a 15-bit field (0..32767). event is X_H bits 7..6, id is Y_H bits
+         * 7..4, area is the area byte's high nibble. Getting the packing wrong reports
+         * coordinates an order of magnitude small and in the wrong place. */
+        const unsigned pre = r[4];
+        const unsigned x = ((unsigned)(r[0] & 0x0f) << 11) | ((unsigned)r[1] << 3) | ((pre & 0xe0) >> 5);
+        const unsigned y = ((unsigned)(r[2] & 0x0f) << 11) | ((unsigned)r[3] << 3) | ((pre & 0x1c) >> 2);
+        const int event = r[0] >> 6;
+        const int id = r[2] >> 4;
         if (event == 0 && x == 0 && y == 0) {
             continue;
         }
@@ -185,8 +264,8 @@ int fts5652_frame(struct Fts5652 *chip, unsigned *count, struct Fts5652Contact *
             contacts[out].x = (int)x;
             contacts[out].y = (int)y;
             contacts[out].event = event;
-            contacts[out].pressure = d[6 + base];
-            contacts[out].area = d[7 + base] >> 4;
+            contacts[out].pressure = pre & 0x03;
+            contacts[out].area = r[5] >> 4;
             ++out;
         }
     }

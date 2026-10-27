@@ -25,13 +25,35 @@ ROOT = Path(__file__).resolve().parent.parent          # UniXNU tree
 _candidates = []
 if os.environ.get("UNIXNU_DEVICE"):
     _candidates.append(Path(os.environ["UNIXNU_DEVICE"]) / "kits" / "alioth-touch")
-_candidates.append(ROOT / "kits" / "alioth-touch")
+# The authoritative location, and the reason it comes before the tree: tree.py links the device
+# package as kits/<kit>, so resolving that link names the device repository even though unixnu
+# does not export UNIXNU_DEVICE to archive steps. kits/alioth-touch inside the tree is not a link
+# and can be a stale copy left by an earlier build; when it won the lookup, header edits in the
+# device repository never reached the compile and the C/C++ linkage fix silently did not apply.
+_device = ROOT / "kits" / "alioth"
+if _device.is_symlink():
+    _candidates.append(_device.resolve().parent / "kits" / "alioth-touch")
 _candidates.append(ROOT.parent / "kits" / "alioth-touch")
 KIT = next((c for c in _candidates if c.exists()), _candidates[0])
 DEVICE = KIT.parent.parent
 if not KIT.exists():
     sys.exit(f"alioth-touch kit not found (tried {[str(c) for c in _candidates]})")
 OUT = ROOT / "build" / "alioth-touch"
+
+# build-sheng-hid-input.py, which the display recipe runs, validates its work against a
+# prelinked reference candidate. It accepts any candidate built from the same original
+# components, but looks for it under sheng's pipeline name; this tree names its candidate
+# after the profile that produced it. Publish ours under the name it globs, refreshed every
+# build because the recipe compares the bytes against that candidate's own recorded sha.
+_prelink = ROOT / "build" / "xnu-prelink"
+_candidate = _prelink / "native-owner-mobile-graphics-candidate.macho"
+if _candidate.is_file():
+    _alias = _prelink / "native-owner-ufs-cpu-desktop-v9-hid-init-candidate"
+    _link = _alias.with_suffix(".macho")
+    if _link.is_symlink() or _link.exists():
+        _link.unlink()
+    _link.symlink_to(_candidate.name)
+    _alias.with_suffix(".json").write_bytes(_candidate.with_suffix(".json").read_bytes())
 OUT.mkdir(parents=True, exist_ok=True)
 
 def run(cmd, **kw):
@@ -87,9 +109,14 @@ def cpp_cmd(source, obj, json_path, extra_inc=None):
         elif not value.startswith("-W"):
             cmd.append(value)
         i += 1
+    # -Wmissing-designated-field-initializers is not suppressed by the record's own flags: the
+    # loop above drops every -W, and XNU's headers (vm_kern.h, IOLib.h, OSValueObject.h) trip it
+    # under -Werror on this toolchain. Measured 2026-10-27: it is the only diagnostic that
+    # blocks the kit build, and it fires in Apple's headers, not in the kit's code.
     cmd += ["-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter",
             "-Wno-unnecessary-virtual-specifier", "-Wno-c99-designator", "-Wno-reorder-init-list",
-            "-Wno-deprecated-enum-enum-conversion", "-I", str(ROOT / ".cache/xnu-work/osfmk")]
+            "-Wno-deprecated-enum-enum-conversion", "-Wno-missing-designated-field-initializers",
+            "-I", str(ROOT / ".cache/xnu-work/osfmk")]
     if extra_inc:
         cmd += ["-I" + str(p) for p in extra_inc]
     return cmd, r["directory"]
@@ -111,8 +138,8 @@ def c_cmd(source, obj, json_path, extra_inc=None):
         elif not value.startswith("-W"):
             cmd.append(value)
         i += 1
-    cmd += ["-Wall", "-Wextra", "-Werror", "-mgeneral-regs-only",
-            "-I", str(ROOT / ".cache/xnu-work/osfmk")]
+    cmd += ["-Wall", "-Wextra", "-Werror", "-Wno-missing-designated-field-initializers",
+            "-mgeneral-regs-only", "-I", str(ROOT / ".cache/xnu-work/osfmk")]
     if extra_inc:
         cmd += ["-I" + str(p) for p in extra_inc]
     return cmd, r["directory"]
@@ -127,13 +154,19 @@ cmd, cwd = cpp_cmd(touch_cpp, touch_obj, expert, inc)
 run(cmd, cwd=cwd)
 
 objs = [touch_obj]
-if has_hid:
-    hid_obj = OUT / "NativeHidInput.o"
-    cmd, cwd = cpp_cmd(hid / "NativeHidInput.cpp", hid_obj, expert, inc)
-    run(cmd, cwd=cwd)
-    objs.append(hid_obj)
+# The kernel side of the RPMh vote: ml_io_map, IODelay and the USB console, which the vote
+# itself cannot reference because it has to stay compilable by the host test.
+rpmh_obj = OUT / "AliothRpmhPort.o"
+cmd, cwd = cpp_cmd(KIT / "AliothRpmhPort.cpp", rpmh_obj, expert, inc)
+run(cmd, cwd=cwd)
+objs.append(rpmh_obj)
+# The HID publisher is not built here any more. ShengHidInput is a selected component of this
+# board, so its own recipe (component:ShengHidInput in board.toml's archives) compiles
+# NativeHidInput.cpp with the IOHIDFamily ABI rebinding that an offline IOHIDDevice needs.
+# Compiling it here as well produced a second, unrebound object in an archive the kernel link
+# does not force-load, so it was dropped and the board ran with no HID device at all.
 
-c_sources = [KIT / "FocalTouchProtocol.c", KIT / "GeniSpi.c"]
+c_sources = [KIT / "FocalTouchProtocol.c", KIT / "GeniSpi.c", KIT / "AliothRpmh.c"]
 for src in c_sources:
     obj = OUT / (src.stem + ".o")
     objs.append(obj)
@@ -148,6 +181,16 @@ run(["xcrun", "ar", "rcs", archive, *objs])
     "archive": str(archive),
     "objects": [str(o) for o in objs],
     "source_sha256": {str(p.relative_to(ROOT.parent)) if p.is_relative_to(ROOT.parent) else str(p): sha(p)
-                      for p in [touch_cpp, hid / "NativeHidInput.cpp", *c_sources]},
+                      for p in [touch_cpp, *c_sources]},
 }, indent=2) + "\n")
-print(f"Built {archive} ({len(objs)} objects); merge into the kernel prelink (see kits/alioth-touch/README.md)")
+print(f"Built {archive} ({len(objs)} objects)")
+
+# Also add the objects to libLinkStubs.a. The kernel link takes a single
+# CONFIG_XNU_EXTRA_LD_ARCHIVES path here, and a second, space-separated path does not reach
+# the link (measured 2026-10-27: the archive stayed out of the commands entirely).
+# build-link-stubs.py runs earlier, so its archive already exists; adding members to an
+# archive in place is what `ar r` does.
+stub_archive = ROOT / "build" / "link-stubs" / "libLinkStubs.a"
+if stub_archive.exists():
+    run(["xcrun", "ar", "rcs", str(stub_archive), *[str(o) for o in objs]])
+    print(f"Added {len(objs)} objects to {stub_archive}")

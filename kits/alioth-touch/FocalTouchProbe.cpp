@@ -8,11 +8,13 @@
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <kern/thread.h>
 #include <kern/clock.h>
+#include <pexpert/pexpert.h>
 #include <libkern/c++/OSSharedPtr.h>
 #include <string.h>
 #include <mach/mach_time.h>
 
 #include "FocalTouchBoard.h"
+#include "AliothRpmh.h"
 #include "FocalTouchProtocol.h"
 #include "GeniSpi.h"
 
@@ -28,8 +30,9 @@ volatile uint32_t native_touch_loop_step;
 volatile uint32_t native_touch_valid;
 // Consumer-side accounting that the HID digitizer (NativeHidInput) maintains;
 // defined here so the probe archive alone satisfies the digitizer's link.
-volatile uint32_t native_touch_edge_stats[4];
-volatile uint32_t native_touch_hid_multi[3];
+// native_touch_edge_stats and native_touch_hid_multi belong to ShengHidInput: NativeHidInput.cpp
+// defines them and is now linked. Defining them here as well made the kernel link fail with two
+// duplicate symbols the first time the HID object was actually pulled in.
 }
 
 extern "C" bool native_hid_input_requested(void) {
@@ -38,8 +41,70 @@ extern "C" bool native_hid_input_requested(void) {
     return true;
 }
 
+// GPIO_CFG as written and as read back, for the three SPI pins.
+// What gpio8's CFG register reads at each candidate TLMM base.
+extern "C" {
+volatile unsigned native_touch_tlmm_probe[3];
+}
+// Touch health, published for the boot log: how many register polls ran, the last power mode
+// read from the part (0xffff when the read failed), and how many recovery sequences fired.
+// The first bytes of the last frame's payload and the last coordinates published, so a frame
+// that reports no contacts and a frame that reports contacts at a wrong place look different
+// on the console.
+extern "C" {
+volatile unsigned native_touch_frame_raw[8];
+}
+// Interrupt-line state: 0 asserted (a report is pending), 1 idle, plus how often it was seen
+// asserted. Without these a loop that never sees the line is indistinguishable from a panel
+// that never has anything to report.
+extern "C" {
+volatile unsigned native_touch_irq_level;
+volatile unsigned native_touch_irq_low;
+}
+extern "C" {
+volatile unsigned native_touch_reg_polls;
+volatile unsigned native_touch_power_mode;
+volatile unsigned native_touch_recoveries;
+}
+// The FTS identity read: app id and the three per-read results (app, rom, version).
+// How long the part took to answer its identity registers, and whether it ever did.
+// The last frame read's error, as a positive number (0 = read fine).
+extern "C" {
+volatile unsigned native_touch_frame_rc;
+}
+extern "C" {
+volatile unsigned native_touch_ready;
+volatile unsigned native_touch_ready_ms;
+}
+extern "C" {
+volatile unsigned native_touch_app_id;
+volatile unsigned native_touch_app_rc[3];
+}
+extern "C" {
+volatile unsigned native_touch_pin_cfg[3];
+volatile unsigned native_touch_pin_want[3];
+}
 extern "C" {
 volatile uint32_t native_touch_fail_step;
+// 0 = the touch rail voted; non-zero is the RPMh refusal, for the console line.
+volatile int native_touch_power_result = -1;
+}
+
+// The last register read the protocol core reported. Declared here, outside the anonymous
+// namespace below, because a definition inside it has internal linkage and exports no symbol;
+// the console reader in the display probe would then fail to link. Measured 2026-10-27: this
+// exact placement is what made the four names undefined at the final link.
+// What the last refused CRC compared, and the bytes around it, for the console line.
+extern "C" {
+volatile unsigned native_touch_crc_expected, native_touch_crc_received;
+volatile unsigned native_touch_hdr0, native_touch_hdr1, native_touch_hdr2, native_touch_hdr3;
+volatile unsigned native_touch_data0, native_touch_data1, native_touch_data2;
+}
+extern "C" {
+volatile int native_touch_stage_result;
+volatile unsigned native_touch_stage_value;
+volatile unsigned native_touch_stage_total;
+char native_touch_stage_name[32];
 }
 
 namespace {
@@ -83,7 +148,7 @@ uint32_t ioRd(void *ctx, uint32_t reg) {return rd32(reinterpret_cast<uintptr_t>(
 void ioWr(void *ctx, uint32_t reg, uint32_t value) {wr32(reinterpret_cast<uintptr_t>(ctx), reg, value);}
 
 struct Session {
-    Region gccAhb, gccSe4, gccCore, gccVote, tlmm, wrapper, se;
+    Region gccAhb, gccSe4, gccCore, gccVote, tlmmNorth, tlmmSouth, wrapper, se;
     IOBufferMemoryDescriptor *dmaMem = nullptr;
     struct geni_spi spi;
     struct Fts5652 chip;
@@ -96,10 +161,63 @@ void fail(Session &s, unsigned step) {
     if (!s.fail) {s.fail = step; native_touch_fail_step = step;}
 }
 
+// One pin: mux function, pull, drive strength and direction, in the TLMM bit layout
+// [1:0] pull, [5:2] function, [8:6] drive, [9] output.
+/* Map the two TLMM tiles and report what each one reads. A pin answers only through its own
+ * tile; the offsets come from the K40 kernel's pinctrl-kona.c:20-21. Reading the register a
+ * known pin would occupy tells us whether a tile is really there, which is the difference
+ * between "the address is wrong" and "the write did not land". */
+void probeTlmm(Session &s) {
+    static const struct { uint64_t phys; const char *name; } tiles[2] = {
+        { TB_TLMM_BASE + TB_TLMM_NORTH_OFFSET, "north" },
+        { TB_TLMM_BASE + TB_TLMM_SOUTH_OFFSET, "south" },
+    };
+    Region *slots[2] = { &s.tlmmNorth, &s.tlmmSouth };
+    for (unsigned i = 0; i < 2; ++i) {
+        if (!mapRegion(tiles[i].phys, TB_TLMM_TILE_SIZE, *slots[i])) {
+            native_touch_tlmm_probe[i] = 0xdead0000u | i;
+            continue;
+        }
+        /* gpio8 is in the north tile and gpio33 in the south, so each tile is read at a pin it
+         * actually owns rather than at a fixed offset that may mean nothing there. */
+        const unsigned pin = i == 0 ? TB_GPIO_SPI_FIRST : 33u;
+        native_touch_tlmm_probe[i] = rd32(slots[i]->va, pin * TB_GPIO_STRIDE);
+    }
+}
+void gpioConfigure(Session &s, unsigned pin, unsigned function, unsigned pull, unsigned drive, bool output) {
+    const uintptr_t base = pin <= TB_TLMM_PIN_SPLIT ? s.tlmmNorth.va : s.tlmmSouth.va;
+    const uintptr_t cfg = base + pin * TB_GPIO_STRIDE;
+    const uint32_t want = pull | (function << TB_CFG_FUNC_SHIFT) | (drive << TB_CFG_DRIVE_SHIFT) |
+                          (output ? TB_CFG_OE : 0u);
+    wr32(cfg, 0, want);
+    /* Read the register back. A pin write that lands outside the controller reads as zero or
+     * as an unrelated register, which is indistinguishable from a correct write unless it is
+     * compared. boot-usb46 and usb47 configured nothing because the TLMM window was wrong and
+     * no readback existed to say so. */
+    const uint32_t got = rd32(cfg, 0);
+    /* The three SPI pins are 8, 9 and 10, not 0..2: indexing by pin number is what made the
+     * first version of this readback report zeros for both sides, which said nothing about
+     * the hardware because the array was never written. Index by position instead. */
+    if (pin >= TB_GPIO_SPI_FIRST && pin < TB_GPIO_SPI_FIRST + 3) {
+        const unsigned slot = pin - TB_GPIO_SPI_FIRST;
+        native_touch_pin_cfg[slot] = got;
+        native_touch_pin_want[slot] = want;
+    }
+}
+void gpioDrive(Session &s, unsigned pin, bool high) {
+    const uintptr_t base = pin <= TB_TLMM_PIN_SPLIT ? s.tlmmNorth.va : s.tlmmSouth.va;
+    const uintptr_t io = base + pin * TB_GPIO_STRIDE + 4;
+    wr32(io, 0, high ? TB_IO_HIGH : 0u);
+}
+// The pad's input level: GPIO_IN_OUT is CFG + 4 and bit 0 carries it.
+int gpioRead(Session &s, unsigned pin) {
+    const uintptr_t base = pin <= TB_TLMM_PIN_SPLIT ? s.tlmmNorth.va : s.tlmmSouth.va;
+    return (int)(rd32(base + pin * TB_GPIO_STRIDE, 4) & 1u);
+}
+
 void gpioReset(Session &s, int asserted) {
-    const uintptr_t cfg = s.tlmm.va + TB_GPIO_RESET * TB_GPIO_STRIDE;
-    wr32(cfg, 0, (rd32(cfg, 0) & ~TB_CFG_OE) | TB_CFG_OE);           // output
-    wr32(cfg, 4, asserted ? 0u : TB_IO_OUT);                          // low asserted (active-low reset)
+    gpioConfigure(s, TB_GPIO_RESET, 0, TB_CFG_PULL_UP, TB_CFG_DRIVE_MA8, true);
+    gpioDrive(s, TB_GPIO_RESET, !asserted);   // active low
 }
 
 void panelReset(void *ctx, int asserted) {
@@ -107,22 +225,62 @@ void panelReset(void *ctx, int asserted) {
 }
 int panelTransfer(void *ctx, const uint8_t *tx, uint8_t *rx, size_t len) {
     Session &s = *static_cast<Session *>(ctx);
+    /* No software chip select. This board's device tree gives the focaltech node only a
+     * reset-gpio and an irq-gpio, and the SE4 pin group (qupv3_se4_spi_active) lists just
+     * gpio8/9/10: there is no CS pin to drive. The GENI engine owns chip select and asserts
+     * it per transfer. An earlier version drove GPIO 11 as CS here, which the hardware does
+     * not use and which would fight the engine's own timing. */
     int rc = geni_spi_transfer(&s.spi, tx, rx, len, 0);
     if (rc && !s.fail) s.fail = 5;
     return rc;
 }
+// The protocol core reports every register read here: the name of the step, the value it got
+// and the transfer result. This used to drop all three, so a refusal at step 8 said only
+// "the FTS5652 handshake failed" and named neither the register nor the bytes. Keep the last
+// few so the console line after the failure can say what the chip actually answered.
+struct StageRecord {
+    const char *name;
+    unsigned value;
+    int result;
+};
+static StageRecord gStageLog[8];
+static unsigned gStageCount;
+// The console cannot reach gStageLog directly: it is static to this translation unit. The
+// last record is republished here for whoever reads it, as a fixed-size, allocation-free form
+// the boot code can print.
 void panelStage(void *ctx, const char *name, unsigned value, int result) {
-    (void)ctx; (void)name; (void)value; (void)result;
+    (void)ctx;
+    StageRecord &slot = gStageLog[gStageCount % 8];
+    slot.name = name;
+    slot.value = value;
+    slot.result = result;
+    ++gStageCount;
+    native_touch_stage_value = value;
+    native_touch_stage_result = result;
+    native_touch_stage_total = gStageCount;
+    unsigned i = 0;
+    if (name) {
+        for (; i + 1 < sizeof(native_touch_stage_name) && name[i]; ++i) {
+            native_touch_stage_name[i] = name[i];
+        }
+    }
+    native_touch_stage_name[i] = 0;
 }
 
 // Map the touch 12-bit raw coordinates onto the 0.1 mm axes the HID layer expects.
 void publish(const struct Fts5652Contact *c, unsigned count) {
     int xs[12], ys[12], ids[12];
     for (unsigned i = 0; i < count && i < 12; ++i) {
-        long x = (long)c[i].x * FTS5652_AXIS_X / 4095;
-        long y = (long)c[i].y * FTS5652_AXIS_Y / 4095;
-        if (x < 0) x = 0; if (x >= FTS5652_AXIS_X) x = FTS5652_AXIS_X - 1;
-        if (y < 0) y = 0; if (y >= FTS5652_AXIS_Y) y = FTS5652_AXIS_Y - 1;
+        /* The decoded coordinate is a 15-bit field (0..32767): the low three bits of each axis
+         * ride in the pressure byte. The part's own range is this board's display-coords from
+         * the device tree, 0..8639 x 0..19199. The HID layer's contract is a different space:
+         * NativeHidInput::touchSend transforms what it receives from 0..30480 / 0..20320 into
+         * the report's 0..32767, so publish in that space rather than in raw panel units, or
+         * every touch lands at a fraction of where the finger was. */
+        long x = (long)c[i].x * FTS5652_HID_AXIS_X / FTS5652_AXIS_X;
+        long y = (long)c[i].y * FTS5652_HID_AXIS_Y / FTS5652_AXIS_Y;
+        if (x < 0) x = 0; if (x >= FTS5652_HID_AXIS_X) x = FTS5652_HID_AXIS_X - 1;
+        if (y < 0) y = 0; if (y >= FTS5652_HID_AXIS_Y) y = FTS5652_HID_AXIS_Y - 1;
         xs[i] = (int)x; ys[i] = (int)y; ids[i] = c[i].id;
     }
     native_touch_seq = native_touch_seq + 1;
@@ -153,19 +311,151 @@ bool clockSe4(Session &s) {
     return true;
 }
 
+/* The panel can stop reporting fingers while still answering on the bus. Measured
+ * 2026-10-28 on boot-usb61: contacts read 1, 2 and 3 while the user touched during early boot,
+ * then 0 for the whole lock-screen session, so a swipe never reached the system even though
+ * every frame passed its CRC and the probe had started.
+ *
+ * Two registers tell the states apart: the power mode (0xA5, 3 = sleep) and the identity pair
+ * (0xA3/0x9F). Read them every TB_REG_POLL_FRAMES frames, report them, and when they show
+ * sleep or a lost identity run the recovery the board's own driver runs -- hold reset, release
+ * it, and wait for the identity registers to answer again. That is the same sequence that
+ * brought the part up at boot, so it needs no new protocol. */
+// The USB console, when the board links it. Weak, so a board without it still compiles.
+extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
+
+static void touchHealthCheck(Session &s) {
+    uint8_t power = 0, idh = 0, idl = 0;
+    const int powerRc = fts5652_read_reg(&s.chip, 0xa5, &power);
+    const int idhRc = fts5652_read_reg(&s.chip, 0xa3, &idh);
+    int idlRc = -1;
+    if (!idhRc) idlRc = fts5652_read_reg(&s.chip, 0x9f, &idl);
+    /* Read-only state the board's own FocalTech driver dumps (fts_dumpreg_show, focaltech_ex_fun.c).
+     * 0x8F counts the interrupts the part has raised; it separates "the part never saw a touch"
+     * from "the part saw one and the line to GPIO 39 is wrong", which the level alone cannot.
+     * 0x91 is its flow/work counter, 0x8B the charger mode and 0xD0 the gesture mode. Nothing
+     * here is written: 0xA5 has no vendor documentation for this board and a wrong write can
+     * leave the part half-configured. */
+    uint8_t intCount = 0, workCount = 0, charger = 0, gesture = 0;
+    const int intRc = fts5652_read_reg(&s.chip, 0x8f, &intCount);
+    if (intRc) intCount = 0xff;
+    (void) fts5652_read_reg(&s.chip, 0x91, &workCount);
+    (void) fts5652_read_reg(&s.chip, 0x8b, &charger);
+    (void) fts5652_read_reg(&s.chip, 0xd0, &gesture);
+    native_touch_reg_polls = native_touch_reg_polls + 1;
+    native_touch_power_mode = powerRc ? 0xffffu : power;
+    const bool asleep = powerRc == 0 && power == 0x03;
+    const bool lost = idhRc != 0 || idlRc != 0 || idh == 0x00 || idh == 0xff || idl == 0xff;
+    char text[224];
+    if (&qcom_usb_debug_write) {
+        int n = snprintf(text, sizeof(text), "TOUCHREG polls=%u power=%02x(rc=%d) id=%02x%02x(rc=%d/%d) int=%02x(rc=%d) work=%02x chg=%02x ges=%02x\n",
+            native_touch_reg_polls, power, powerRc, idh, idl, idhRc, idlRc, intCount, intRc, workCount, charger, gesture);
+        if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
+    }
+    if (!asleep && !lost) return;
+    gpioReset(s, 1);
+    ioDelayUs(nullptr, TB_RESET_ASSERT_US);
+    gpioReset(s, 0);
+    const int ready = fts5652_wait_ready(&s.chip, 1000, nullptr);
+    native_touch_recoveries = native_touch_recoveries + 1;
+    if (&qcom_usb_debug_write) {
+        int n = snprintf(text, sizeof(text), "TOUCHRECOVER n=%u asleep=%u lost=%u ready=%d\n",
+            native_touch_recoveries, asleep ? 1u : 0u, lost ? 1u : 0u, ready);
+        if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
+    }
+}
+
 void touchThread(void *arg, wait_result_t) {
     Session &s = *static_cast<Session *>(arg);
     struct Fts5652Contact contacts[10];
+    unsigned frames = 0;
+    /* native-touch-diag=1: one round that answers "is the part scanning at all" before any
+     * frame is read. The frame loop issues an SPI read every few hundred milliseconds, and a
+     * part with no data still answers those, so it cannot tell a part that sees nothing from
+     * one whose report never reaches the host. This phase issues no frame read at all: reset,
+     * wait as long as the board's own driver waits, then watch 0x8F, the part's interrupt
+     * counter, while the user holds a finger down. A counter that stays put means the sensor
+     * is not detecting; one that climbs while GPIO 39 stays high means the report exists and
+     * the line to the host is what is wrong. */
+    unsigned diag = 0;
+    PE_parse_boot_argn("native-touch-diag", &diag, sizeof(diag));
+    if (diag) {
+        gpioReset(s, 1);
+        ioDelayUs(nullptr, TB_RESET_ASSERT_US);
+        gpioReset(s, 0);
+        IOSleep(300);       /* fts_reset_proc(200) then fts_wait_tp_to_valid on the board's driver */
+        for (unsigned second = 0; second < 30; ++second) {
+            uint8_t power = 0, intCount = 0, work = 0, charger = 0, gesture = 0;
+            (void) fts5652_read_reg(&s.chip, 0xa5, &power);
+            (void) fts5652_read_reg(&s.chip, 0x8f, &intCount);
+            (void) fts5652_read_reg(&s.chip, 0x91, &work);
+            (void) fts5652_read_reg(&s.chip, 0x8b, &charger);
+            (void) fts5652_read_reg(&s.chip, 0xd0, &gesture);
+            const unsigned level = (unsigned) gpioRead(s, TB_GPIO_IRQ);
+            if (&qcom_usb_debug_write) {
+                char text[176];
+                int n = snprintf(text, sizeof(text),
+                    "TOUCHWATCH t=%us irq=%u power=%02x int=%02x work=%02x chg=%02x ges=%02x\n",
+                    second, level, power, intCount, work, charger, gesture);
+                if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
+            }
+            IOSleep(1000);
+        }
+    }
     for (;;) {
-        IODelay(TB_FRAME_PERIOD_US / 1000);
+        /* Sleep, do not IODelay. IODelay takes microseconds, so the old
+         * IODelay(TB_FRAME_PERIOD_US / 1000) asked for 6 us, not the 6 ms the constant means,
+         * and on this board IODelay also blocks a whole timer tick whatever it is asked for
+         * (no powergate-latency in the device tree, so delay_for_interval never spins). The
+         * frame loop therefore ran at roughly 1200 Hz instead of 166 Hz: measured
+         * 2026-10-28, the first boot where the touch thread actually ran (boot-usb57) issued
+         * seven times the designed SPI traffic and never reached SpringBoard in 534 s, while
+         * the same board reached the lock screen in about 104 s with the probe inactive.
+         * IOSleep yields the CPU between frames, which a polled input thread must do. */
+        IOSleep(TB_FRAME_PERIOD_US / 1000);
+        frames = frames + 1;
+        if (frames % TB_REG_POLL_FRAMES == 0) touchHealthCheck(s);
+        /* The part raises its interrupt line while it holds a report: the reference driver for
+         * this SoC family states it as "low = the chip has a report" and looks at the line
+         * rather than reading the frame register on a timer. Reading on a blind timer is what
+         * this loop used to do, and boot-usb64 saw one report in nine hundred seconds of
+         * polling while the user touched repeatedly. Read the line first and only fetch a frame
+         * when the part says it has one. */
+        native_touch_irq_level = (unsigned)gpioRead(s, TB_GPIO_IRQ);
+        if (native_touch_irq_level != 0 && (frames % 50) != 0) { continue; }
+        if (native_touch_irq_level == 0) native_touch_irq_low = native_touch_irq_low + 1;
         native_touch_loop_step = 1;
         unsigned count = 0;
         int rc = fts5652_frame(&s.chip, &count, contacts, 10);
         ++s.reads;
-        if (rc) {++s.bad; if (!s.fail) s.fail = 6; continue;}
+        if (rc) {
+            ++s.bad;
+            /* Publish the frame failure the same way a probe failure is published. Without
+             * this a loop that never reads a frame is silent: s.fail is a member of the
+             * session and nothing copies it to the counter the console reads. */
+            if (native_touch_fail_step == 0) native_touch_fail_step = 6;
+            native_touch_frame_rc = (unsigned)(-rc);
+            continue;
+        }
+        native_touch_frame_rc = 0;
         native_touch_loop_step = 2;
         native_touch_valid = native_touch_valid + 1;
         native_touch_frames = native_touch_frames + 1;
+        /* Keep the head of the payload that produced this frame. A frame that reports zero
+         * contacts and a frame whose contacts land off-screen look identical in the counters,
+         * and these bytes separate them. */
+        for (unsigned i = 0; i < 8; ++i) native_touch_frame_raw[i] = s.chip.rx[7 + i];
+        /* The CRC trailer, next to the head of the payload it covers. An all-0xFF payload
+         * carries 0xF11C, so "expected" is what a real empty frame looks like; a received
+         * value of 0xFFFF instead means the bus returned nothing and the frame path was
+         * never actually validated. */
+        if (diag && &qcom_usb_debug_write) {
+            char text[144];
+            int n = snprintf(text, sizeof(text), "TOUCHFRAME crc=%04x exp=%04x head=%02x%02x%02x%02x%02x%02x\n",
+                s.chip.last_crc_received, s.chip.last_crc_expected,
+                s.chip.rx[7], s.chip.rx[8], s.chip.rx[9], s.chip.rx[10], s.chip.rx[11], s.chip.rx[12]);
+            if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
+        }
         publish(contacts, count);
     }
 }
@@ -184,7 +474,7 @@ bool touchProbeStart(void) {
         !mapRegion(TB_GCC_BASE + 0x17400, 0x100, s.gccSe4) ||
         !mapRegion(TB_GCC_BASE + 0x23000, 0x100, s.gccCore) ||
         !mapRegion(TB_GCC_BASE + 0x52000, 0x1000, s.gccVote) ||
-        !mapRegion(TB_TLMM_BASE, 0x200000, s.tlmm) ||
+        !(probeTlmm(s), s.tlmmNorth.va && s.tlmmSouth.va) ||
         !mapRegion(TB_QUP_WRAPPER, 0x1000, s.wrapper) ||
         !mapRegion(TB_SE4_BASE, TB_SE4_SIZE, s.se)) {
         fail(s, 1);
@@ -206,12 +496,14 @@ bool touchProbeStart(void) {
     // SE4 clock source: TCXO 19.2 MHz (DFS level 0).
     clockSe4(s);
     // SPI pins (GPIO 8/9/10, function qup4 = FUNC_SEL 0, 6 mA, no pull); IRQ input; reset output high.
-    const uint32_t spiCfg = TB_CFG_FUNC_QUP4 | TB_CFG_DRIVE_MA6 | TB_CFG_PULL_NONE;
+    // MISO, MOSI and CLK: qup4 function, 6 mA, no pull. Function 1, not 0.
     for (unsigned i = 0; i < 3; ++i) {
-        wr32(s.tlmm.va, (TB_GPIO_SPI_FIRST + i) * TB_GPIO_STRIDE, spiCfg);
+        gpioConfigure(s, TB_GPIO_SPI_FIRST + i, TB_CFG_FUNC_SPI, TB_CFG_PULL_NONE, TB_CFG_DRIVE_MA2 + 2, false);
     }
-    const uint32_t irqCfg = (0u) | TB_CFG_PULL_UP;      // input, pull-up
-    wr32(s.tlmm.va, TB_GPIO_IRQ * TB_GPIO_STRIDE, irqCfg);
+    // Chip select: muxed to qup4 so the GENI engine's own CS reaches the pin. Not driven here.
+    gpioConfigure(s, TB_GPIO_CS, TB_CFG_FUNC_SPI, TB_CFG_PULL_UP, TB_CFG_DRIVE_MA16, false);
+    // The panel interrupt is only left as an input; the frame loop polls instead of waiting.
+    gpioConfigure(s, TB_GPIO_IRQ, 0, TB_CFG_PULL_UP, TB_CFG_DRIVE_MA2 + 2, false);
     gpioReset(s, 1);
     IODelay(1);
     // GENI SPI engine (FIFO mode first; DMA path only if the FIFO interface is disabled).
@@ -230,6 +522,40 @@ bool touchProbeStart(void) {
     if (geni_spi_init(&s.spi)) {fail(s, 5); return false;}
     if (geni_spi_setup(&s.spi, TB_SPI_MODE, TB_SPI_CS)) {fail(s, 6); return false;}
     if (geni_spi_set_clock(&s.spi, TB_SPI_HZ, TB_SPI_SCLK_HZ, TB_SPI_CLK_SEL)) {fail(s, 7); return false;}
+    // Supply the rail before releasing reset. Nothing powers the touch controller at boot:
+    // on this board the FTS5652 is on an RPMh-controlled LDO, and without the vote it does
+    // not answer on SPI at all. Measured on the same phone with the ios-sweet port: every
+    // register read timed out until an L11C vote was added, and touch worked immediately
+    // afterwards (ARCHIVE/ios-sweet/NOTES.md:24 and :29). A refusal here is not fatal to the
+    // rest of the boot, so it is reported and the probe continues: the identify below then
+    // fails on its own and names the read that timed out.
+    {
+        /* Two rails, in this order, and both are required. The chip's own supply is ldoc10 at
+         * 3.0 V and its I/O rail is ldoc1 at 1.8 V; ldoc11 at 3.2 V is the *panel's* I/O and
+         * does not power the touch controller. Measured 2026-10-27 on boot-usb44: voting
+         * ldoc11 alone made the SPI bus answer, but every frame read failed its Kermit CRC
+         * (-74), which is what a powered-but-wrongly-supplied part returns. The rails and
+         * voltages are the ones the ios-sweet port used on this same phone
+         * (diag-markers-v30/src/bsd/dev/sweet_touch.c:69-71). */
+        static const struct { const char *rail; unsigned mv; } rails[] = {
+            { "ldoc10", 3000 },   /* the chip's vdd */
+            { "ldoc1",  1800 },   /* its I/O */
+        };
+        int power = 0;
+        for (unsigned i = 0; i < sizeof(rails) / sizeof(rails[0]) && !power; ++i) {
+            power = sweet_rpmh_vreg_enable(rails[i].rail, rails[i].mv);
+        }
+        native_touch_power_result = power;
+        if (power) {
+            if (!s.fail) {s.fail = 10; native_touch_fail_step = 10;}
+            return false;
+        }
+        /* The rails need time to settle while reset is held low, before the chip is released.
+         * The vendor order (and the ios-sweet port's power_on) is reset low, rails up, then
+         * 3 ms + 15 ms of settle. Without it the chip can answer on the bus with data that
+         * fails its CRC, which is what boot-usb44 showed. */
+        ioDelayUs(nullptr, TB_POWER_SETTLE_US);
+    }
     // Panel: release reset, wait, identify.
     gpioReset(s, 0);
     ioDelayUs(nullptr, TB_RESET_RELEASE_US);
@@ -238,7 +564,31 @@ bool touchProbeStart(void) {
     s.chip.io.reset = panelReset;
     s.chip.io.delay_us = ioDelayUs;
     s.chip.io.stage = panelStage;
-    if (fts5652_state(&s.chip, 1)) {fail(s, 8); return false;}
+    /* Give the part time to finish coming up before the identity read. The board's own driver
+     * allows a full second for this; reading once after 9 ms returned 0xef for every register. */
+    unsigned waited = 0;
+    const int ready = fts5652_wait_ready(&s.chip, 1000, &waited);
+    native_touch_ready_ms = waited;
+    native_touch_ready = ready == 0 ? 1u : 0u;
+    if (fts5652_state(&s.chip, 1)) {
+        native_touch_crc_expected = s.chip.last_crc_expected;
+        native_touch_crc_received = s.chip.last_crc_received;
+        native_touch_hdr0 = s.chip.last_header[0];
+        native_touch_hdr1 = s.chip.last_header[1];
+        native_touch_hdr2 = s.chip.last_header[2];
+        native_touch_hdr3 = s.chip.last_header[3];
+        native_touch_data0 = s.chip.last_data0;
+        native_touch_data1 = s.chip.last_data1;
+        native_touch_data2 = s.chip.last_data2;
+        /* The app id is the two bytes the identity read returns; it is what the support check
+         * compares. Report it and the per-read results. */
+        native_touch_app_id = ((unsigned)s.chip.app[0] << 8) | s.chip.app[1];
+        native_touch_app_rc[0] = (unsigned)s.chip.app_result;
+        native_touch_app_rc[1] = (unsigned)s.chip.rom_result;
+        native_touch_app_rc[2] = (unsigned)s.chip.version_result;
+        fail(s, 8);
+        return false;
+    }
     // Frame loop.
     thread_t thread;
     if (kernel_thread_start(touchThread, &s, &thread) != KERN_SUCCESS) {fail(s, 9); return false;}

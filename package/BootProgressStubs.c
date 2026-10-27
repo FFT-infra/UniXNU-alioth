@@ -213,6 +213,22 @@ __attribute__((weak)) uint64_t native_gpu_coherence_row[120];
 __attribute__((weak)) uint64_t native_gpu_perf_vote[2];
 __attribute__((weak)) uint64_t native_hid_input_events[8];
 __attribute__((weak)) uint64_t native_hid_input_results[8];
+/* ShengHidInput's NativeHidInput.cpp calls these three, which the reference board defines in
+ * its own package. Without them the kernel link fails the moment the object is actually
+ * pulled in, which is what happened the first time it was archived into the force-loaded late
+ * archive: three undefined symbols, nothing else. They are weak so a board that defines real
+ * ones overrides them. Observed() is the useful one: it is how the HID publisher reports which
+ * stage it reached, and the counters are what BootProgress draws on the diagnostic panel. */
+__attribute__((weak)) void native_hid_input_observed(unsigned code, int value) {
+  if (code < 8) {
+    native_hid_input_events[code] = native_hid_input_events[code] + 1;
+    native_hid_input_results[code] = (uint64_t)(int64_t)value;
+  }
+}
+__attribute__((weak)) void native_hid_live_checkpoint(void *service) { (void) service; }
+__attribute__((weak)) void native_buttons_set_sink(void (*sink)(void *, uint32_t), void *context) {
+  (void) sink; (void) context;
+}
 __attribute__((weak)) uint64_t native_legacy_client_class[64];
 __attribute__((weak)) uint64_t native_legacy_frame_color_counts[8][4];
 __attribute__((weak)) uint64_t native_legacy_frame_color_other[8];

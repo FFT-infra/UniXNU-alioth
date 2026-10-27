@@ -9,6 +9,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// The implementation is C and the only consumer is C++ (FocalTouchProbe.cpp). Without this
+// guard the consumer mangles these names and the link reports the C definitions as undefined.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #define FTS5652_CONTACTS 10
 #define FTS5652_CHUNK 4096
 // Frame read: 62 data bytes (2 header + 10 contacts * 6 bytes) + 1 command byte.
@@ -16,8 +22,16 @@
 
 // Coordinate axes of the published finger set (0.1 mm units, K40 1080x2400 panel).
 // The HID layer scales these to its own 0..32767 range.
-#define FTS5652_AXIS_X 30480
-#define FTS5652_AXIS_Y 20320
+// The panel's own coordinate range, from this board's device tree
+// (alioth.dts focaltech@0: focaltech,display-coords = <0 0 0x21c0 0x4b00>).
+// The previous values (30480 x 20320) are not in the device tree and do not match the
+// contact range the part reports.
+#define FTS5652_AXIS_X 8640
+#define FTS5652_AXIS_Y 19200
+// The coordinate space the HID layer expects (NativeHidInput::touchSend transforms from here
+// into the report's 0..32767). The sheng touch core's own axis maxima.
+#define FTS5652_HID_AXIS_X 30480
+#define FTS5652_HID_AXIS_Y 20320
 
 struct Fts5652IO {
     void *context;
@@ -46,7 +60,22 @@ struct Fts5652 {
     uint8_t version;
     uint8_t last_status;
     int last_crc_fail;
+    // What a refused CRC compared, and the bytes around it. A wrong expected value means the
+    // command never reached the chip; matching-but-different data means the chip answered
+    // something else.
+    uint16_t last_crc_expected, last_crc_received;
+    uint8_t last_header[4];
+    uint8_t last_data0, last_data1, last_data2;
+    // How each identity read ended: 0 answered.
+    int app_result, rom_result, version_result;
 };
+
+// Read one register. 0 = read, and *value holds the byte.
+int fts5652_read_reg(struct Fts5652 *chip, uint8_t reg, uint8_t *value);
+
+// Poll the identity registers until the part answers, up to timeout_ms. 0 when it did, and
+// *waited_ms receives how long that took.
+int fts5652_wait_ready(struct Fts5652 *chip, unsigned timeout_ms, unsigned *waited_ms);
 
 // Identify the panel: reads the application IDs (0xA3/0x9F) and the ROM ID (0x90,
 // only when probe_boot). Returns 0 and fills chip->app when the panel answers
@@ -61,8 +90,11 @@ int fts5652_frame(struct Fts5652 *chip, unsigned *count, struct Fts5652Contact *
 // Generic single-register write (used by the probe for wakeup/sleep control).
 int fts5652_write(struct Fts5652 *chip, uint8_t command, const uint8_t *data, size_t length);
 
-// Sleep (deep sleep mode 3) and wakeup (mode 0).
-int fts5652_sleep(struct Fts5652 *chip);
-int fts5652_wake(struct Fts5652 *chip);
+// No sleep or wake helper is exported: both would write the power-mode register 0xA5, and
+// this board has no documentation for the values it accepts. Use reset for state recovery.
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

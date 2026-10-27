@@ -1,0 +1,31 @@
+# Build outputs and caches (re-derivable; nothing important lives here)
+/build/
+/Build/
+/Conf/
+/out/
+/.cache/
+/refer/
+/.local*/
+
+# Local development files
+*.log
+*.terminal
+*.swp
+*.swo
+*~
+.DS_Store
+.vscode/
+.idea/
+__pycache__/
+
+# Local build inputs: absolute paths and machine-specific seeds. The device repository
+# specification names this file as the one place local overrides go, and requires it to be
+# ignored so a checkout stays reproducible from feeds.toml and unixnu.lock alone.
+local.toml
+unixnu.local.toml
+
+# The touch diagnostic seeds recovered from a bootable payload. They are build inputs for a
+# measurement round, not sources; the trust cache is reproducible from the IPSW and the packed
+# Data seed from `unixnu build userdata`.
+*.trustcache
+*.dbr

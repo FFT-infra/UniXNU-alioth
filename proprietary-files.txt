@@ -1,2 +1,27 @@
-# Required firmware inputs: relative path | source | SHA-256 | consumer
-# Fill each entry from this board's firmware package.
+# Firmware inputs this board consumes, and where each one comes from.
+#
+# Format: path|sha256, one per line, as the device repository specification records them.
+# Prefix a path with - when the file is optional.
+#
+# This board currently consumes no Android proprietary firmware. Everything the image needs is
+# built from source or taken from the target IPSW:
+#
+#   * UEFI firmware            built from uefi-alioth (edk2 + Mu), no vendor blob
+#   * device tree              compiled from dts/alioth.dts against the SoC DTSI
+#   * XNU kernel and kexts     built from the pinned UniXNU sources and kernelcache
+#   * root and System volumes  044-76040-038.dmg and 044-76034-038.dmg, hashed in board.toml
+#                              under [ipsw.sha256] and unpacked by the IPSW step
+#   * Data seed                produced by `unixnu build userdata` from the same IPSW
+#   * touch controller         FocalTech FT5652 runs its own firmware; the board driver reads
+#                              frames over SPI and uploads nothing. Verified on the device: the
+#                              part answers identity reads (0x5652) and reports frames without
+#                              any download step, so there is no blob to record here.
+#
+# Nothing is listed because nothing is used. When the GPU path is enabled (Adreno 650 through
+# NativeAdreno), the a650 firmware becomes a real input and must be recorded here with its
+# source and digest before the image that uses it is published:
+#
+#   a650_gmu.bin, a650_sqe.fw, a650_zap.mdt, a650_zap.b02
+#
+# They are not listed now because no image of this board loads them, and a manifest that names
+# files the build does not consume is worse than one that says it consumes none.

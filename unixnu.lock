@@ -6,6 +6,12 @@ commit = "933f9360f1b70dfbda5548386a3d65e0358b4f7d"
 [source."IOStorageFamily"]
 commit = "e45fbe30a7879e0b16e26dddb78538f1b00e0bff"
 
+[source."ShengHidInput"]
+commit = "5f3a37cec0c3fc4234b10726b25489a55f0d77ef"
+
+[source."ShengNovatekTouch"]
+commit = "a1a6f2b1912b3cde2dcbe96439e5833b9ab250f4"
+
 [source."ShengUfs"]
 commit = "ab5405905a1892da03a9a53e0fa3dcd255d04055"
 

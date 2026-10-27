@@ -134,17 +134,17 @@ evidence = [
 
 [[area]]
 id = "input"
-status = "planned"
-components = []
-paths = ["drivers/ShengHidInput", "drivers/ShengNovatekTouch", "package/*Touch*", "package/*Button*", "scripts/*touch*", "scripts/*hid*"]
-inputs = ["Identify the input hardware, resources and existing component interfaces for this board."]
-configuration = ["Record the board.toml fields, DTS properties and defconfig values used for input."]
-procedure = ["Follow the input stage in the porting guide and record the actual commands."]
-findings = ["Collect the first input observation, its cause when established, and the resulting implementation decision."]
+status = "implemented"
+components = ["QcomGeniSpi", "ShengHidInput", "ShengNovatekTouch"]
+paths = ["drivers/ShengHidInput", "drivers/ShengNovatekTouch", "kits/alioth-touch", "scripts/build-alioth-touch.py", "scripts/build-gop-legacy-display.py"]
+inputs = ["FocalTech FT5652 on GENI SE4 (QUPv3 wrapper 0), per alioth-sm8250.dtsi: spi-max-frequency 6000000, interrupts <39 0x2008>, reset GPIO 33, irq GPIO 39, vdd L10C, vcc_i2c L1C, display-coords 0 0 8640 19200, max-touch-number 10."]
+configuration = ["board.toml: native-touch=1 starts kits/alioth-touch, sheng-touch-hid=1 enables the publication path in ShengHidInput, native-touch-diag=1 is a measurement-only round and must be removed for release images. SPI clock is the device tree's 6 MHz; the source is TCXO 19.2 MHz on DFS level 0."]
+procedure = ["Build with component ShengHidInput selected and the board display recipe, which invokes build-sheng-hid-input.py and archives NativeHidInput.late.o plus hid-original-bindings.o into the force-loaded libNativeLegacyDisplay.late.a. Then build payload and boot image, verify the payload carries the built kernel, and boot over USB."]
+findings = ["The part answers register reads (ID 0x5652) and returns a CRC-correct all-0xFF buffer while it has no report; an earlier version of FocalTouchProtocol.c treated that buffer as a successful empty frame, which is why every image reported frames=valid with contacts=0.", "Frame reads gated on GPIO 39 going low produced real contacts: at t=100 s two contacts, low count 284, raw 0002805f4598; the part's interrupt counter 0x8F rose from 01 to e0 and its work counter 0x91 advances 60 per second, so the sensor, the SPI link, the CRC and the interrupt line are all working.", "The HID publisher was never in the kernel: ShengHidInput compiles NativeHidInput.cpp but nothing archived it, and an object with no inbound reference is dropped from a plain archive. Selected as a component and archived by the display recipe, as UniXNU-sheng does, it links."]
 completion = ["Touches map to the display, simultaneous contacts keep stable IDs, release events arrive, and buttons produce expected HID reports."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required input inputs before implementation."]
-evidence = []
+limits = ["No HID report has reached the OS yet: native_touch_hid_reports stays 0 while contacts arrive, so the remaining work is the publication path, not the sensor.", "Buttons are not implemented on this board."]
+next_action = ["Boot the image that carries the archived HID objects and confirm native_touch_hid_reports rises and the UI responds to a swipe."]
+evidence = [{ kind = "source", reference = "kits/alioth-touch/FocalTouchProtocol.c", result = "Frame parsing treats an all-0xFF payload as no data, decodes 15-bit coordinates with the low bits in the pressure byte, and records the CRC it compared so 'passed' is visible rather than inferred." }]
 
 [[area]]
 id = "gpu"

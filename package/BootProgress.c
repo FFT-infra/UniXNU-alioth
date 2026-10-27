@@ -1265,6 +1265,101 @@ static void touch_monitor(void *arg, wait_result_t result) {
     if(over_us>50000)__atomic_fetch_add(&sleep_late50,1,__ATOMIC_RELAXED);
   }
 }
+/* The UFS TIME row carries the only measurement of where root verification time goes:
+ * verify_ms is the in-kernel SHA-256 and read_ms is the UFS transfer. It is drawn on the
+ * panel, and every panel reading so far was taken by hand, so the number was on screen and
+ * never recorded. This sends the same bytes to the USB console, which keeps them.
+ *
+ * A single total is not enough to act on. Measured 2026-10-27 on boot-usb40: by the end of
+ * the run verify+read was 94 s of a 352 s uptime, so UFS was 27% of the whole boot and the
+ * rest was somewhere else. What decides whether the transport is worth optimising is how much
+ * of it had accumulated by the time the desktop appeared, which a final total cannot show. So
+ * this samples every BpUfsPeriod seconds: the series dates the work, and the last sample is
+ * the total because the counters stop changing once nothing reads the root. */
+enum { BpUfsPeriod = 10 };
+static void ufs_time_report(unsigned now) {
+  if (!&qcom_usb_debug_write || !&native_ufs_verify_ticks || !&native_ufs_read_ticks) return;
+  static unsigned next_at, done;
+  const uint64_t vt = __atomic_load_n(&native_ufs_verify_ticks, __ATOMIC_RELAXED);
+  const uint64_t rt = __atomic_load_n(&native_ufs_read_ticks, __ATOMIC_RELAXED);
+  const uint64_t total = vt + rt;
+  /* A boot that never verifies a block has no figure to report and must not print zeros. */
+  if (!total || done) return;
+  /* The first sample goes out at once so the early split is not lost to a slow boot. */
+  if (next_at && now < next_at) return;
+  next_at = now + BpUfsPeriod;
+  uint64_t freq; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq)); if (!freq) freq = 1;
+  const uint64_t vms = vt * 1000 / freq, rms = rt * 1000 / freq;
+  const uint64_t blocks = __atomic_load_n(&native_ufs_verified_blocks, __ATOMIC_RELAXED);
+  const uint64_t reqs = __atomic_load_n(&native_ufs_block_reads, __ATOMIC_RELAXED);
+  /* Counters unchanged since the previous sample, and at least one sample was already sent:
+   * nothing is reading the root any more, so this is the total and the series can stop. */
+  static uint64_t last_total;
+  if (last_total && total == last_total) done = 1;
+  last_total = total;
+  const uint64_t spent = (vms + rms) / 1000;
+  char log[220];
+  int n = snprintf(log, sizeof(log),
+    "UFSTIME final=%u t=%us verify=%llums read=%llums other=%llus blocks=%llu (%llu MiB) reqs=%llu "
+    "blocks_per_req=%llu verify_pct=%llu\n",
+    done, now, vms, rms, now > spent ? (uint64_t)now - spent : 0, blocks, blocks * 4096 >> 20, reqs,
+    reqs ? blocks / reqs : 0, vms + rms ? vms * 100 / (vms + rms) : 0);
+  if (n > 0) qcom_usb_debug_write(log, (size_t)n < sizeof(log) ? (size_t)n : sizeof(log) - 1);
+}
+/* The touch frame loop, on the USB console. It starts its own thread and publishes through
+ * counters, so whether it is actually reading frames is invisible on the panel unless the touch
+ * rows exist, and those rows are the sheng kit's names, not this kit's. Report the counters this
+ * kit does publish once a second while they are moving, then once more when they stop, so a
+ * running loop and a stalled one are distinguishable without a photograph. */
+extern volatile uint32_t native_touch_frames __attribute__((weak_import));
+extern volatile uint32_t native_touch_valid __attribute__((weak_import));
+extern volatile uint32_t native_touch_fail_step __attribute__((weak_import));
+extern volatile uint32_t native_touch_frame_rc __attribute__((weak_import));
+extern volatile uint32_t native_touch_hid_reports __attribute__((weak_import));
+extern volatile unsigned native_touch_frame_raw[8] __attribute__((weak_import));
+extern volatile int native_touch_last_x __attribute__((weak_import));
+extern volatile int native_touch_last_y __attribute__((weak_import));
+extern volatile unsigned native_touch_irq_level __attribute__((weak_import));
+extern volatile unsigned native_touch_irq_low __attribute__((weak_import));
+static void touch_time_report(unsigned now) {
+  if (!&qcom_usb_debug_write || !&native_touch_frames) return;
+  static uint32_t last_frames, last_count;
+  static unsigned sent, stopped;
+  const uint32_t frames = __atomic_load_n(&native_touch_frames, __ATOMIC_RELAXED);
+  const uint32_t valid = &native_touch_valid ? __atomic_load_n(&native_touch_valid, __ATOMIC_RELAXED) : 0;
+  const uint32_t count = &native_touch_count ? __atomic_load_n(&native_touch_count, __ATOMIC_RELAXED) : 0;
+  /* Report even when no frame has been read yet. The first version returned silently while
+   * frames was zero, which hid the one case worth seeing: boot-usb60 started the probe
+   * (start=1) and then printed nothing, so a running-but-failing loop and a loop that never
+   * started looked identical. After 20 s there is always something to say. */
+  const uint32_t loop = &native_touch_loop_step ? __atomic_load_n(&native_touch_loop_step, __ATOMIC_RELAXED) : 0;
+  const uint32_t fail = &native_touch_fail_step ? __atomic_load_n(&native_touch_fail_step, __ATOMIC_RELAXED) : 0;
+  if (!frames && !sent) {
+    if (now < 20 || (now % 10)) return;
+  }
+  if (frames == last_frames && count == last_count) {
+    if (sent && !stopped) stopped = 1; else return;
+  } else {
+    stopped = 0;
+    /* While the loop is producing frames, one line a second is enough to see it move. */
+    if (sent && (now % 5)) return;
+  }
+  last_frames = frames; last_count = count;
+  sent = 1;
+  char log[176];
+  int n = snprintf(log, sizeof(log),
+    "TOUCHSTAT t=%us frames=%u valid=%u contacts=%u irq=%u low=%u hid=%u xy=%d,%d raw=%02x%02x%02x%02x%02x%02x loop=%u fail=%u\n",
+    now, frames, valid, count,
+    &native_touch_irq_level ? __atomic_load_n(&native_touch_irq_level, __ATOMIC_RELAXED) : 9,
+    &native_touch_irq_low ? __atomic_load_n(&native_touch_irq_low, __ATOMIC_RELAXED) : 0,
+    &native_touch_hid_reports ? __atomic_load_n(&native_touch_hid_reports, __ATOMIC_RELAXED) : 0,
+    &native_touch_last_x ? native_touch_last_x : -1, &native_touch_last_y ? native_touch_last_y : -1,
+    &native_touch_frame_raw ? native_touch_frame_raw[0] : 0, &native_touch_frame_raw ? native_touch_frame_raw[1] : 0,
+    &native_touch_frame_raw ? native_touch_frame_raw[2] : 0, &native_touch_frame_raw ? native_touch_frame_raw[3] : 0,
+    &native_touch_frame_raw ? native_touch_frame_raw[4] : 0, &native_touch_frame_raw ? native_touch_frame_raw[5] : 0,
+    loop, fail);
+  if (n > 0) qcom_usb_debug_write(log, (size_t)n < sizeof(log) ? (size_t)n : sizeof(log) - 1);
+}
 static void monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
   unsigned capture_at=0,capture_attempt=~0U,named=0;
@@ -1275,6 +1370,8 @@ static void monitor(void *arg, wait_result_t result) {
     if(nprocs>0 && !named){thread_set_thread_name(current_thread(),"boot_progress");named=1;}
     if(boot_process_snapshot)boot_process_snapshot();
     if(boot_log_tick)boot_log_tick(now);
+    ufs_time_report(now);
+    touch_time_report(now);
     if(sheng_cpufreq_poll)sheng_cpufreq_poll();
     if(boot_ui_trace_snapshot)boot_ui_trace_snapshot(now);
     if(&boot_process_attempts && &boot_process_busy) {

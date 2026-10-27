@@ -1,0 +1,3 @@
+[submodule "drivers/ShengHidInput"]
+	path = drivers/ShengHidInput
+	url = https://github.com/UniXNU/ShengHidInput.git

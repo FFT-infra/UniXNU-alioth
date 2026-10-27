@@ -117,6 +117,23 @@ __attribute__((weak)) void boot_progress_cancel_scanout(void);
 __attribute__((weak)) void boot_progress_cancel_scanout(void) {
 }
 
+// The touch kit is C++, so its entry point is the mangled __Z15touchProbeStartv. An extern "C"
+// declaration asks for _touchProbeStart instead and can never resolve; that mismatch is why an
+// earlier attempt failed at link time. This file sits inside an extern "C" block to the end, so
+// C++ linkage has to be asked for explicitly here, or the declaration inherits C linkage again.
+//
+// A strong reference is deliberate. A static archive member is pulled in only when something
+// references it, and a weak definition here would win over the archive rather than yield to it,
+// leaving the driver out of the kernel. The kit is always built by build-alioth-touch.py, which
+// board.toml lists as a kernel archive, so the reference always resolves.
+extern "C++" {
+bool touchProbeStart(void);
+}
+
+// The USB console, when the board links it. Weak, so a board without it still links and simply
+// loses the line; the same contract BootProgress.c uses for the same symbol.
+extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
+
 // Called from the owned display before it writes a frame into the firmware framebuffer.
 bool native_legacy_prepare_scanout(void) {
 	native_legacy_prepare_calls = native_legacy_prepare_calls + 1;
@@ -887,6 +904,97 @@ void native_legacy_display_late_probe(void) {
 	// "the kernel stopped earlier", which the panel otherwise cannot tell apart, because both
 	// leave the DarwinBoot frame in place.
 	native_legacy_paint_reached_band();
+	// The CPU frequency vote (sheng-cpufreq=<n>) maps the EPSS domains and votes the top
+	// non-turbo level; it reports its state through native_cpufreq_row on the panel.
+	/* This file sits inside an extern "C" block to the end, so the declaration must not repeat
+	 * the linkage specifier: an extern "C" inside a function body there is a syntax error. */
+	extern void sheng_cpufreq_probe(void) __attribute__((weak_import));
+	if (&sheng_cpufreq_probe) sheng_cpufreq_probe();
+	// The touch controller is a separate part from the display and needs no framebuffer, so it
+	// starts here rather than after the display path, which can refuse early. Opt-in through
+	// native-touch=1: the default boot must stay the configuration that holds the lock screen,
+	// and touchProbeStart maps six register windows, votes clocks and starts its own thread.
+	// It returns after starting that thread, so it does not hold the boot here.
+	{
+		unsigned touch = 0;
+		if (PE_parse_boot_argn("native-touch", &touch, sizeof(touch)) && touch == 1) {
+			const bool started = touchProbeStart();
+			if (&qcom_usb_debug_write) {
+				/* The step number is the only diagnosis this driver has: fail() records it in
+				 * native_touch_fail_step and nothing else reads that variable. 1 = a register
+				 * window did not map, 2 = the GCC clocks did not come up, 3 = the GENI read
+				 * failed, 4 = the SE reported FIFO disabled (the DMA path, not written), 5 =
+				 * GENI init, 6 = GENI setup, 7 = the serial clock, 8 = the FTS5652 boot
+				 * handshake, 9 = no thread. Without it a refusal is just "start=0". */
+				extern volatile uint32_t native_touch_fail_step __attribute__((weak_import));
+				extern volatile int native_touch_stage_result __attribute__((weak_import));
+				extern volatile unsigned native_touch_stage_value __attribute__((weak_import));
+				extern volatile unsigned native_touch_stage_total __attribute__((weak_import));
+				extern char native_touch_stage_name[32] __attribute__((weak_import));
+				unsigned step = &native_touch_fail_step ? native_touch_fail_step : 0;
+				/* The last register read the protocol core made, with the bytes it got and the
+				 * transfer result. Step 8 is the FTS5652 handshake, which reads 0xa3/0x9f for
+				 * the application id, 0x90 for the ROM id and 0xa6 for the version; without
+				 * this the failure names none of them. */
+				extern volatile unsigned native_touch_crc_expected __attribute__((weak_import));
+				extern volatile unsigned native_touch_crc_received __attribute__((weak_import));
+				extern volatile unsigned native_touch_hdr0 __attribute__((weak_import));
+				extern volatile unsigned native_touch_hdr1 __attribute__((weak_import));
+				extern volatile unsigned native_touch_hdr2 __attribute__((weak_import));
+				extern volatile unsigned native_touch_hdr3 __attribute__((weak_import));
+				extern volatile unsigned native_touch_data0 __attribute__((weak_import));
+				extern volatile unsigned native_touch_data1 __attribute__((weak_import));
+				extern volatile unsigned native_touch_data2 __attribute__((weak_import));
+				char text[256];
+				int n = snprintf(text, sizeof(text),
+				    "TOUCH start=%u step=%u last=%s value=%04x rc=%d reads=%u "
+				    "crc=%04x/%04x hdr=%02x%02x%02x%02x data=%02x%02x%02x\n",
+				    started ? 1u : 0u, step,
+				    &native_touch_stage_name ? native_touch_stage_name : "-",
+				    &native_touch_stage_value ? native_touch_stage_value : 0,
+				    &native_touch_stage_result ? native_touch_stage_result : 0,
+				    &native_touch_stage_total ? native_touch_stage_total : 0,
+				    &native_touch_crc_expected ? native_touch_crc_expected : 0,
+				    &native_touch_crc_received ? native_touch_crc_received : 0,
+				    &native_touch_hdr0 ? native_touch_hdr0 : 0, &native_touch_hdr1 ? native_touch_hdr1 : 0,
+				    &native_touch_hdr2 ? native_touch_hdr2 : 0, &native_touch_hdr3 ? native_touch_hdr3 : 0,
+				    &native_touch_data0 ? native_touch_data0 : 0, &native_touch_data1 ? native_touch_data1 : 0,
+				    &native_touch_data2 ? native_touch_data2 : 0);
+				if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
+				/* The three SPI pins, as written and as read back. Equal values prove the pin
+				 * write reached the controller; a mismatch or a zero says the window is wrong. */
+				extern volatile unsigned native_touch_pin_cfg[3] __attribute__((weak_import));
+				extern volatile unsigned native_touch_pin_want[3] __attribute__((weak_import));
+				extern volatile unsigned native_touch_tlmm_probe[3] __attribute__((weak_import));
+				extern volatile unsigned native_touch_ready __attribute__((weak_import));
+				extern volatile unsigned native_touch_ready_ms __attribute__((weak_import));
+				extern volatile unsigned native_touch_app_id __attribute__((weak_import));
+				extern volatile unsigned native_touch_app_rc[3] __attribute__((weak_import));
+				n = snprintf(text, sizeof(text), "TOUCH ready=%u after=%ums\n",
+				    &native_touch_ready ? native_touch_ready : 0,
+				    &native_touch_ready_ms ? native_touch_ready_ms : 0);
+				if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
+				n = snprintf(text, sizeof(text), "TOUCH app=%04x rc=%u/%u/%u\n",
+				    &native_touch_app_id ? native_touch_app_id : 0,
+				    &native_touch_app_rc ? native_touch_app_rc[0] : 0,
+				    &native_touch_app_rc ? native_touch_app_rc[1] : 0,
+				    &native_touch_app_rc ? native_touch_app_rc[2] : 0);
+				if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
+				n = snprintf(text, sizeof(text), "TOUCH tlmm north=%08x south=%08x\n",
+				    &native_touch_tlmm_probe ? native_touch_tlmm_probe[0] : 0,
+				    &native_touch_tlmm_probe ? native_touch_tlmm_probe[1] : 0);
+				if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
+				n = snprintf(text, sizeof(text), "TOUCH pins cfg=%08x,%08x,%08x want=%08x,%08x,%08x\n",
+				    &native_touch_pin_cfg ? native_touch_pin_cfg[0] : 0,
+				    &native_touch_pin_cfg ? native_touch_pin_cfg[1] : 0,
+				    &native_touch_pin_cfg ? native_touch_pin_cfg[2] : 0,
+				    &native_touch_pin_want ? native_touch_pin_want[0] : 0,
+				    &native_touch_pin_want ? native_touch_pin_want[1] : 0,
+				    &native_touch_pin_want ? native_touch_pin_want[2] : 0);
+				if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
+			}
+		}
+	}
 	IOService *display = pendingLegacyDisplay;
 	if (!display) {
 		// Either the graphics kext load failed, so bsd_init never called the first entry, or the
