@@ -402,12 +402,15 @@ kernel_args = [
   # successive pids in one window. It drives location and routine learning, and this board has
   # no GNSS and no accounts, so it has nothing to do.
   "sheng-disable-jobs=com.apple.liveactivitiesd,com.apple.cryptexd,com.apple.routined",
-  # Unattended loop, disabled for now. Measured 2026-10-27: sheng-autoreset fires and the
-  # kernel restarts, but it comes back to the kernel rather than to fastboot, exactly as the
-  # control-channel REBOOT does. BootReset writes the IMEM cell with ml_io_map_unmappable and
-  # this module used ml_io_map, so the mapping attributes are not the difference; either the
-  # address, the value, or the medium the bootloader reads is wrong.
-  # "sheng-autoreset=150",
+  # Unattended loop, on for the return-path round. Measured 2026-10-27 in an earlier round:
+  # sheng-autoreset fires and the kernel restarts, but it comes back to the kernel rather than to
+  # fastboot, exactly as the control-channel REBOOT does. BootReset writes the IMEM cell with
+  # ml_io_map_unmappable and this module used ml_io_map, so the mapping attributes are not the
+  # difference; either the address, the value, or the medium the bootloader reads is wrong.
+  # That round is the only observation so far, and it is not clear the writer thread was running
+  # through it, so the persistent log has to record the reset before the reading is trusted.
+  # The timer lives in the writer thread, so it needs sheng-log=1 further down this list.
+  "sheng-autoreset=150",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
@@ -471,7 +474,10 @@ kernel_args = [
   # Measurement round for the unattended loop: the whole scheme depends on the board returning
   # to fastboot by itself, and nothing has ever confirmed that it does. Sixty seconds is short
   # enough to stand in front of the phone and long enough to be past the console coming up.
-  # "sheng-autoreset=150",  # off: it did not fire; verify the reset path before re-enabling
+  # On for the return-path test. boot_reset_mark_bootloader(), the watchdog and the timed
+  # reset all sit behind this one argument, so with it commented out there was nothing to
+  # observe: "no reset at 150 s" was never evidence.
+  # "sheng-autoreset=150",  # gated behind sheng-log
   # One measurement round before any frame is trusted. Every frame read so far returned a
   # payload of all 0xFF with a matching CRC, which is the part's "no valid data" answer, and
   # GPIO 39 has never gone low. That leaves two very different causes: the sensor sees no
@@ -486,11 +492,16 @@ kernel_args = [
   # parses it (no occurrence of the string in kernel.macho); userspace reads it from
   # kern.bootargs. probe-keybag-bypass.py qualifies the same argument offline.
   "-apfs_shared_datavolume",
-  # The unattended-test pair (package/BootLog.c) is left out while the probe work runs: with
-  # sheng-autoreset=<seconds> the kernel resets on its own after that many seconds, which looks
-  # exactly like a reset probe firing and cannot be told apart from one. Add both back when
-  # running unattended (PLAN 1.5.6).
-  # "sheng-log=1",
+  # The timed reset and the reset probe both live inside the persistent-log writer thread, and
+  # that thread only starts when sheng-log=1. With sheng-autoreset alone nothing watches the
+  # deadline: "no reset at 150 s" was the writer never having started, not the reset path
+  # failing. The official unattended example passes both arguments together.
+  "sheng-log=1",
+  # boot-usb99 was the first image that passed this pair, and it faulted in the writer's
+  # read-back of the previous run: the header struct was handed straight to a block-addressed
+  # read, which copied 4096 bytes into a 152-byte stack object and ran into the guard page
+  # (pc in memcpy, lr in hostRead4k, far = sp + 0x3b0). The read-back now goes through
+  # native_ufs_log_read_bytes, so the boot below is the first that can reach the timed reset.
   # "sheng-autoreset=180",
 ]
 

@@ -19,6 +19,9 @@
 extern int native_ufs_log_open(uint64_t *, uint64_t *, const char **) __attribute__((weak_import));
 extern int native_ufs_log_write(uint64_t, uint32_t, const void *) __attribute__((weak_import));
 extern int native_ufs_log_read(uint64_t, uint32_t, void *) __attribute__((weak_import));
+// Same window, byte granular. native_ufs_log_read writes blocks*4096 bytes, so it needs a
+// buffer that large; this one reads through a bounce block and fills only what is asked.
+extern int native_ufs_log_read_bytes(uint64_t, uint32_t, void *) __attribute__((weak_import));
 extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
 extern uint64_t native_ufs_export_blocks(void) __attribute__((weak_import));
 extern int native_ufs_export_write(uint64_t, uint32_t, const void *) __attribute__((weak_import));
@@ -166,7 +169,10 @@ extern volatile uint64_t native_adreno_import_live[3 + 8 * 4] __attribute__((wea
 extern volatile uint32_t native_adreno_import_persistent[2] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_import_fail_pa __attribute__((weak_import)), native_adreno_import_fail_offset __attribute__((weak_import));
 // What the reset probe and the autoreset attempt saw, for the [reset] section of the log.
-static char boot_log_reset_probe_text[240], boot_log_reset_result[120], boot_log_reset_mark[64], boot_log_reset_watchdog[120];
+// The mark line is "mark: %08x -> %08x rc=%d | <pon line> pon_rc=%d", about 100 bytes with the
+// PON text at 50, so 64 truncated it before pon_rc and left the PON verdict unreadable even when
+// the write happened. 160 leaves room for a wider status word and a longer PON line.
+static char boot_log_reset_probe_text[240], boot_log_reset_result[200], boot_log_reset_mark[160], boot_log_reset_watchdog[120];
 // The kernel message buffer (bsd/sys/msgbuf.h); only these leading fields are read.
 struct boot_log_msgbuf {int msg_magic, msg_size, msg_bufx, msg_bufr; char *msg_bufc;};
 extern struct boot_log_msgbuf *msgbufp;
@@ -1068,16 +1074,24 @@ static void writer(void *arg, wait_result_t result) {
     IOSleep(1000);
   }
   boot_log_first_lba = first;
-  /* Print the previous run's log before the new header replaces it. This is what makes an
-   * unattended round usable: the USB console dies with the link, so after a reset the only
-   * record of what happened is on the medium, and the next boot is the only chance to show it.
-   * The tail is what matters — the last state before the reset. */
-  if (&native_ufs_log_read && blocks > (uint64_t)LogSlotFirst + LogSlotBlocks) {
+  /* Put the previous run's log back on the console before the new header replaces it. An
+   * unattended round ends with the USB link gone, so the medium is the only record, and the next
+   * boot is the only chance to show it. The tail is what matters: that is the state the reset
+   * left behind.
+   * Every read of this window fills whole 4096-byte blocks, so each destination must hold
+   * blocks*4096 bytes. The header goes through the byte-granular call, which stages the block
+   * itself. Passing &previous to the block call is what faulted boot-usb99: 4096 bytes landed in
+   * a 152-byte stack object and ran on into the guard page (pc in memcpy, lr in hostRead4k,
+   * far = sp + 0x3b0, x20 = 0x1000). */
+  if (&native_ufs_log_read && &native_ufs_log_read_bytes &&
+      blocks > (uint64_t)LogSlotFirst + LogSlotBlocks) {
+    _Static_assert(sizeof(struct boot_log_header) <= LogBlock, "the header must fit in one block");
     struct boot_log_header previous;
-    if (native_ufs_log_read(0, 1, &previous) && memcmp(previous.magic, "SHLOG001", 8) == 0 &&
+    if (native_ufs_log_read_bytes(0, sizeof previous, &previous) && memcmp(previous.magic, "SHLOG001", 8) == 0 &&
         previous.slot_count && previous.slots_written && previous.slot_blocks == LogSlotBlocks) {
-      static char previous_slot[LogSlotBlocks * LogBlock];
       uint32_t slot = (previous.slots_written - 1u) % previous.slot_count;
+      /* Sized to exactly what the block read writes: LogSlotBlocks * LogBlock bytes. */
+      static char previous_slot[LogSlotBlocks * LogBlock];
       if (native_ufs_log_read(LogSlotFirst + (uint64_t)slot * LogSlotBlocks, LogSlotBlocks, previous_slot)) {
         size_t end = sizeof previous_slot;
         while (end && previous_slot[end - 1] == 0) --end;
@@ -1109,13 +1123,19 @@ static void writer(void *arg, wait_result_t result) {
   if (&boot_progress_tag) strlcpy(h.tag, boot_progress_tag(), sizeof h.tag);
   uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
   const uint64_t start = log_ticks();
-  // The reboot-into-fastboot path, read only: PSCI features and the PMIC cell. sheng-autoreset=<seconds of log time> then writes the cell and
-  // restarts once, after that round's log is on the medium, but only when the probe found the cell writable.
+  // The reboot-into-fastboot path: PSCI features and the PMIC cell, then sheng-autoreset=<seconds
+  // of log time>, which writes the cells and restarts once, after that round's log is on the medium.
+  // The probe only reports. It used to be the gate, and it refused every run: it returns 0 only
+  // when the cell already holds a reason br_known() accepts, this handset leaves 0x4ab2b0e2 in it,
+  // so the mark, the PON write and the reset were skipped on every boot and the log said
+  // "autoreset skipped: the probe found no writable cell" (boot-usb101, 273 rounds, known=0).
+  // Whether the cell held an old reason says nothing about whether it can be overwritten.
   uint32_t autoreset = 0;
   int reset_ok = 0, reset_tried = 0;
   if (&boot_reset_probe) {
-    reset_ok = boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text) == 0;
+    (void)boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text);
     PE_parse_boot_argn("sheng-autoreset", &autoreset, sizeof autoreset);
+    reset_ok = &boot_reset_bootloader != NULL;
   }
   // sheng-diag-export=<seconds of log time>: export the diagnostic files once then (set it shortly before sheng-autoreset).
   uint32_t diag_at = 0;
@@ -1178,8 +1198,11 @@ void boot_log_tick(unsigned now) {
   // sheng-log, marks the cell (any restart is fastboot) and arms the hypervisor's watchdog, which bites a minute after the pings stop:
   // after the autoreset deadline, or when a panic parks the cores.
   uint32_t autoreset = 0;
-  if (PE_parse_boot_argn("sheng-autoreset", &autoreset, sizeof autoreset) && autoreset && &boot_reset_probe &&
-      boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text) == 0) {
+  // The probe is called for its text, not for a verdict: what the cell held at boot is worth
+  // recording, but it must not decide whether the cell may be rewritten. See the same note in
+  // the writer.
+  if (PE_parse_boot_argn("sheng-autoreset", &autoreset, sizeof autoreset) && autoreset) {
+    if (&boot_reset_probe) (void)boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text);
     if (&boot_reset_mark_bootloader) boot_reset_mark_bootloader(boot_log_reset_mark, sizeof boot_log_reset_mark);
     if (&boot_reset_watchdog) boot_reset_watchdog(autoreset + 60, boot_log_reset_watchdog, sizeof boot_log_reset_watchdog);
   }

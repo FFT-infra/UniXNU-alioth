@@ -28,6 +28,13 @@
 
 // The devicetree's IMEM window: qcom,msm-imem@146bf000 reg = <0x146bf000 0x1000>.
 enum {ImemBase = 0x146bf000, ImemSize = 0x1000};
+// PS_HOLD as the AP drives it: writing 0 releases the PMIC's power hold and the part restarts.
+// The sweet shim (ARCHIVE/ios-sweet/shim/shim.c:104-114) does this right after SMC
+// SYSTEM_RESET returns, and this firmware needs it: PSCI 1.1 here reports SYSTEM_RESET,
+// SYSTEM_RESET2(32) and SYSTEM_RESET2(64) all as NOT_SUPPORTED, measured on boot-usb101 as
+// "psci v10001 reset=0 reset2_32=0 reset2_64=0", so the SMC returns immediately and never
+// resets. Without this write there is no reset path at all.
+enum {PsHoldBase = 0x0c264000, PsHoldSize = 0x1000};
 enum {PsciVersion = 0x84000000u, PsciFeatures = 0x8400000au, PsciSystemReset = 0x84000009u,
       PsciSystemReset2_32 = 0x84000012u, PsciSystemReset2_64 = 0xc4000012u};
 
@@ -245,7 +252,18 @@ int boot_reset_bootloader(char *text, unsigned cap) {
   snprintf(text, cap, "reset: %08x -> %08x rc=%d | %s pon_rc=%d", before, after, rc, pon, pon_rc);
   if (rc) return 10 + rc;
   psci(PsciSystemReset, 0);
-  return 99;   // SYSTEM_RESET returned
+  // PSCI never resets on this firmware, so the SMC above returns at once. Dropping PS_HOLD is
+  // what actually restarts the PMIC, in the shim's order: reason written, dsb, SMC, PS_HOLD=0.
+  // A write that lands kills power inside the call, so the sleep below is reached only when the
+  // part is still running, and returning is then the honest answer for the log to carry.
+  volatile uint32_t *pshold = (volatile uint32_t *)ml_io_map_unmappable((vm_offset_t)PsHoldBase, (vm_size_t)PsHoldSize, 7);
+  if (pshold) {
+    *pshold = 0;
+    __asm__ volatile("dsb sy" ::: "memory");
+    ml_io_unmap((vm_offset_t)pshold, PsHoldSize);
+  }
+  IOSleep(2000);
+  return 99;   // neither the SMC nor PS_HOLD restarted the part
 }
 
 // The APSS watchdog (qcom,wdt@17c10000, bark-time 0x4e20 = 20 s, pet-time 0x3a98 = 15 s,
