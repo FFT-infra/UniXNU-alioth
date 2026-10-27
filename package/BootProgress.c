@@ -142,12 +142,6 @@ extern volatile uint32_t native_ram_block_sparse __attribute__((weak_import));
  * calls it declares the struct prefix it reads. */
 extern void qcom_usb_debug_get_status(void *) __attribute__((weak_import));
 extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
-/* The Data mount's outcome, set by offline-owner-systemos-mount.patch. Nothing printed it: the
- * panel has no row for it and the exit records never carried it, so a failed /private/var mount
- * and a working one looked the same in every log. cryptexd's mkdirat ENOSPC and lsd's crash both
- * depend on that volume, so the value has to be visible. */
-extern volatile int native_owner_data_status __attribute__((weak_import));
-extern volatile int native_owner_data_stage __attribute__((weak_import));
 extern volatile uint64_t native_ram_block_bytes,native_ram_block_resident_bytes __attribute__((weak_import));
 extern unsigned int vm_page_free_min,vm_page_free_reserved,vm_page_free_target;
 extern void boot_progress_exit_fault(int,unsigned,char *,unsigned long) __attribute__((weak_import));
@@ -718,13 +712,8 @@ void boot_progress_exit(int pid,const char *name,int status,unsigned ns,uint64_t
     char log[128];
     /* why is the reason's own text, present only when the kernel carried a payload.
      * It is the only field that separates one libsystem fault from another. */
-    /* data= carries the /private/var mount outcome on every line, so a run of failures can be
-     * read against it: 0 mounted, negative not attempted, positive an errno. */
-    int n = snprintf(log,sizeof(log),"EXITLOG pid=%d name=%s status=%d ns=%u code=%llu data=%d/%d%s%s\n",
-      pid,name?name:"?",status,ns,(unsigned long long)code,
-      &native_owner_data_status?native_owner_data_status:-1,
-      &native_owner_data_stage?native_owner_data_stage:-1,
-      why&&why[0]?" why=":"",why&&why[0]?why:"");
+    int n = snprintf(log,sizeof(log),"EXITLOG pid=%d name=%s status=%d ns=%u code=%llu%s%s\n",
+      pid,name?name:"?",status,ns,(unsigned long long)code,why&&why[0]?" why=":"",why&&why[0]?why:"");
     if (n > 0) qcom_usb_debug_write(log,(size_t)n < sizeof(log) ? (size_t)n : sizeof(log)-1);
   }
   if(name && !strcmp(name,"xpcproxy") && pid==proc_selfpid())xpc_fail_note(status,ns,code);
