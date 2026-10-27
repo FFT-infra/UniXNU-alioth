@@ -891,3 +891,32 @@ GUI 进程（backboardd/SpringBoard/runningboardd）仍然是 0。
 
 另外 `build-boot-progress.py` 在 `build-xnu-4k-baseline.sh` 之前运行，
 而 `owner-data-volume.h` 由后者生成。手动删那个头文件会让前置步骤失败。
+
+## 【boot-usb32】用户态第一次完全干净
+
+```
+9234 字节  105 条 EXITLOG  31 个进程  EXITCRASH = 0
+```
+
+**这是整个 bring-up 里第一次零崩溃启动。** 对比：
+| 镜像 | EXITLOG | EXITCRASH | 备注 |
+|---|---|---|---|
+| boot-usb30 | 0 | 0 | Data mount panic |
+| boot-usb31 | 118 | 5 | liveactivitiesd 6 次 |
+| **boot-usb32** | **105** | **0** | 干净 |
+
+剩余非零退出都是**单次、非循环**的正常退出：
+- `launchd status=1` —— 每次启动都发生 1 次，是 launchd 早期引导后
+  exec 成用户态版本的正常行为，不是故障
+- `sysstatuscheck 256` / `prng_seedctl 3328` / `MSUEarlyBootTask 1` /
+  `IOMFB_FDR_Loader 256` / `accessoryupdaterd 256` —— 各 1 次，正常
+- `profiled status=6 ns=2` 2 次 —— 唯一还有重复的，但不影响主线
+
+## 新的真实卡点：GUI 层仍未启动
+`backboardd` / `SpringBoard` / `runningboardd` / `WindowServer` 全部 **0 次**。
+
+而 `com.apple.runningboardd.plist` 是 **RunAtLoad: true + KeepAlive: true**，
+本该无条件启动，只依赖 Foundation/RunningBoard/RunningBoardServices 三个标准框架。
+
+它没启动，说明 launchd 在它之前就停了，或者它的 fork 没发生。
+**这是下一个要查的目标，而且现在底干净了，可以干净地查。**
