@@ -118,13 +118,12 @@ procedure = [
   "A photograph of the panel is the frame evidence until a swap is submitted.",
 ]
 findings = [
-  "The diagnostic page reaches DISPLAY stage=10 and a real client connects: CLIENT calls=4 with class=IOMobileFramebufferUserClient. No frame is ever submitted: SWAP calls=0.",
+  "Measured 2026-10-27 on boot-usb34: the lock screen is stable, SWAP calls=7 ok=7 rej=0, and backboardd creates its resources with kret=0. Earlier builds never submitted a frame at all.",
   "The panel is driven directly by the kernel's own renderer, which is why the boot-progress page and the colour bands are visible before any userspace renderer runs.",
 ]
 completion = ["A known frame appears with correct geometry and colors, then userland presentation and backlight controls work."]
 limits = [
-  "SWAP calls=0: nothing has ever presented a frame through this client. The panel shows only what the kernel draws.",
-  "backboardd, the render server, has not been started in any recent boot, so a userspace presentation path has never been exercised.",
+  "No wallpaper: the lock screen draws its date and time over a black field, so composition reaches the text layer only. gpu offered=0 confirms the GPU stack takes no part.",
 ]
 next_action = [
   "Get backboardd to start before investigating frame submission: with no render server there is no client that could call Swap.",

@@ -1068,3 +1068,39 @@ boot-usb34 已构建，两个参数都在镜像里。
 锁屏日期出现但壁纸缺失，说明 SpringBoard 的合成只到了文字层。
 这可能是 Metal/GPU 缺失的下游表现，也可能只是壁纸层还没加载完。
 **等面板稳定后再判断**——现在闪烁干扰了观察。
+
+## 【达成】桌面稳定显示 —— boot-usb34
+
+用户照片：锁屏稳定显示 **"Wednesday, December 31  4:09"**，不再闪烁。
+左上角红色状态条（`rdar.45025838`），底部有诊断页的少量文字，不再全屏抢面板。
+
+### 照片底部诊断文字的关键数据（放大后读出）
+```
+SWAP calls=7 ok=7 rej=0 | gpu offered=0 done=0 failed=0 abor=0 last=0 err=0/0
+p54 backboardd create arnd kret=0 flags=200000002 app=0   (×3)
+```
+
+**`SWAP calls=7 ok=7`** —— 帧真的被提交并接受了 7 次。
+这彻底改变了之前的判断：`SWAP calls=0` 是 boot-usb32 之前的状态，
+现在 `backboardd` 通过 `IOMobileFramebufferUserClient` 成功提交了帧。
+
+`p54 backboardd create ... kret=0` 说明 backboardd 创建资源成功。
+
+### 完整里程碑链
+| 阶段 | 镜像 | 关键修复 | 结果 |
+|---|---|---|---|
+| Data mount panic | boot-usb30 | 脏 UUID 在 .config | 修复后能启动 |
+| 用户态崩溃 | boot-usb31/32 | — | 崩溃收敛 |
+| /var ENOSPC | boot-usb33 | packed 3 GiB seed | cryptexd 23→0 |
+| **桌面稳定** | **boot-usb34** | `boot-diag-resume=0` | **锁屏常驻，SWAP=7 ok=7** |
+
+### 剩余问题
+1. **没有壁纸** —— 锁屏只有日期时间，背景是纯黑。合成只到文字层。
+2. **诊断页仍在底部画几行** —— 不影响使用，但占了底部一条。
+3. `gpu offered=0 done=0` —— GPU 栈仍未接入，这与"无壁纸"可能同源。
+
+### 下一步
+`gpu offered=0` 说明 GPU 完全没有参与。壁纸需要渲染层，
+而当前是纯 CPU 合成（`SWAP ok=7` 走的是内核的 CPU 拷贝路径）。
+要出壁纸，需要接入 A650 Metal 栈 —— 这是阶段 5 的工作，
+现在有了稳定的桌面作为基础，可以开始做了。
