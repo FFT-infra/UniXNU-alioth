@@ -72,6 +72,18 @@ archives = [
   # run after the driver recipes above, because it reads their compile records.
   "build-gop-legacy-display.py",
   "component:QcomXnuUsbDebug",
+  # Touch. QcomGeniSpi is the GENI SPI controller; ShengHidInput is the IOHIDFamily
+  # consumer that turns the probe's native_touch_* seqlock into HID digitizer events.
+  # The board's own FocalTech FT5652 probe and protocol come from kits/alioth-touch,
+  # built by build-alioth-touch.py, and must be linked with ShengHidInput: the probe
+  # only publishes the finger set, the consumer is what makes it an input device.
+  # Touch. Only the kit's own script runs: it compiles FocalTouchProbe.cpp,
+  # FocalTouchProtocol.c and GeniSpi.c, plus NativeHidInput.cpp when the ShengHidInput
+  # feed is present. Declaring "component:ShengHidInput" here instead would run
+  # build-sheng-hid-input.py, which asserts on a sheng prelink candidate
+  # (native-owner-ufs-cpu-desktop-v9-hid-init-candidate.macho) that this board never
+  # produces; that script is sheng's own CI regression check, not a hardware dependency.
+  "build-alioth-touch.py",
 ]
 
 [firmware]
