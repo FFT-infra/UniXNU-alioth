@@ -65,6 +65,15 @@ say "stage 3: fastboot boot $IMG"
 $FB boot "$IMG" >/dev/null 2>&1 || fail "fastboot boot"
 
 say "stage 4: wait up to ${TIMEOUT}s for the board to return to the bootloader by itself"
+# "fastboot boot" returns while the board is still in the bootloader, so the return check
+# below would pass in the same second it was issued. Wait for it to leave first.
+i=0
+while [ "$i" -lt 60 ]; do
+    sleep 1
+    i=$((i + 1))
+    if ! $FB devices 2>/dev/null | grep -q fastboot; then break; fi
+done
+say "left the bootloader after ${i}s"
 i=0
 RETURNED=0
 while [ "$i" -lt "$TIMEOUT" ]; do

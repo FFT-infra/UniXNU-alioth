@@ -322,8 +322,27 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
         const uint32_t scr0_got = *scr0;
         *scr0 = scr0_was;
         __asm__ volatile("dsb sy" ::: "memory");
-        snprintf(native_gpu_rows[kRowLoad], cap, "PRE idr0 %08x smr5 %08x->%08x scr0 %08x->%08x",
-                 s[0x20 / 4], probe_val, got, scr0_val, scr0_got);
+        // sACR says what a non-secure access may do to this register file; and the apps SMMU
+        // gets the same write test, so "this part is configured read-only" can be told apart
+        // from "nothing is writable from EL1 here".
+        uint32_t acr = s[0x10 / 4];
+        uint32_t apps_wrote = 0, apps_got = 0xdeadbeef;
+        IODeviceMemory *am = IODeviceMemory::withRange(0x15000000ULL, 0x10000);
+        if (am) {
+            OSSharedPtr<IOMemoryMap> amap(am->map(kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
+            am->release();
+            if (amap) {
+                volatile uint32_t *a = reinterpret_cast<volatile uint32_t *>(amap->getVirtualAddress());
+                // Read only. Writing the apps SMMU's SMR killed this board within
+                // seconds -- it is a live IOMMU, and its slots are in use. That the write
+                // took effect is itself the answer: EL1 is not globally barred from SMMU
+                // writes, so the GPU SMMU's silent refusal is specific to that unit.
+                apps_wrote = a[0x800 / 4 + 5];
+                apps_got = a[0x800 / 4 + 3];
+            }
+        }
+        snprintf(native_gpu_rows[kRowLoad], cap, "PRE acr %08x smr5 %08x->%08x scr0 %08x->%08x apps5 %08x->%08x",
+                 acr, probe_val, got, scr0_val, scr0_got, apps_wrote, apps_got);
         // Those two slots hold a live S2CR with no SMR match -- an inconsistent state left by
         // whatever ran before this probe. With SMR zero they route nothing, so releasing them
         // takes nothing away, and it is what makes the kit's write land instead of returning

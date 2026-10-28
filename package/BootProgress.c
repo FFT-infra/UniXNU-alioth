@@ -1332,8 +1332,8 @@ static void ufs_time_report(unsigned now) {
   if (n > 0) qcom_usb_debug_write(log, (size_t)n < sizeof(log) ? (size_t)n : sizeof(log) - 1);
   // Once the A650 probe has filled its summary row, say it on the console. Without this the
   // probe runs and nothing anywhere shows what it found.
-  static int gpuRowsSent;
-  if (!gpuRowsSent && &native_gpu_rows && native_gpu_rows[0][0]) {
+  static unsigned gpuRowsSentAt;
+  if (&native_gpu_rows && native_gpu_rows[0][0] && now >= gpuRowsSentAt + 15) {
     // The summary alone hides every step after it: modes 7 and above report in the GMU and
     // HFI rows. Print the summary and those, one line each.
     static const int rows[] = {0, 6, 7, 13, 14, 15};
@@ -1344,7 +1344,7 @@ static void ufs_time_report(unsigned now) {
       int m = snprintf(gpu, sizeof gpu, "GPUROW%d %s\n", rows[r], text);
       if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
     }
-    gpuRowsSent = 1;
+    gpuRowsSentAt = now;
   }
 }
 /* The touch frame loop, on the USB console. It starts its own thread and publishes through
@@ -1412,8 +1412,8 @@ static void touch_time_report(unsigned now) {
   if (n > 0) qcom_usb_debug_write(log, (size_t)n < sizeof(log) ? (size_t)n : sizeof(log) - 1);
   // Once the A650 probe has filled its summary row, say it on the console. Without this the
   // probe runs and nothing anywhere shows what it found.
-  static int gpuRowsSent;
-  if (!gpuRowsSent && &native_gpu_rows && native_gpu_rows[0][0]) {
+  static unsigned gpuRowsSentAt;
+  if (&native_gpu_rows && native_gpu_rows[0][0] && now >= gpuRowsSentAt + 15) {
     // The summary alone hides every step after it: modes 7 and above report in the GMU and
     // HFI rows. Print the summary and those, one line each.
     static const int rows[] = {0, 6, 7, 13, 14, 15};
@@ -1424,7 +1424,7 @@ static void touch_time_report(unsigned now) {
       int m = snprintf(gpu, sizeof gpu, "GPUROW%d %s\n", rows[r], text);
       if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
     }
-    gpuRowsSent = 1;
+    gpuRowsSentAt = now;
   }
 }
 static void monitor(void *arg, wait_result_t result) {
