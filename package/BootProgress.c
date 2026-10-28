@@ -171,6 +171,9 @@ extern volatile int native_hid_input_meta_status __attribute__((weak_import));
 extern volatile uint32_t native_hid_class_sizes[5] __attribute__((weak_import));
 extern volatile int native_hid_matching_load_status __attribute__((weak_import));
 extern volatile uint32_t native_hid_touch_status __attribute__((weak_import));
+// The A650 probe's rows. Row 0 is its verdict line ("GPU m1 gcc=... cc=... smmu=... gpu=...
+// io=..."); the board does not render these on the page, so the console carries the first one.
+extern char native_gpu_rows[][120] __attribute__((weak_import));
 extern volatile uint32_t native_touch_edge_stats[4] __attribute__((weak_import));
 extern volatile int native_hid_input_results[8] __attribute__((weak_import));
 extern volatile uint32_t native_touch_loop_step __attribute__((weak_import));
@@ -1327,6 +1330,15 @@ static void ufs_time_report(unsigned now) {
     done, now, vms, rms, now > spent ? (uint64_t)now - spent : 0, blocks, blocks * 4096 >> 20, reqs,
     reqs ? blocks / reqs : 0, vms + rms ? vms * 100 / (vms + rms) : 0);
   if (n > 0) qcom_usb_debug_write(log, (size_t)n < sizeof(log) ? (size_t)n : sizeof(log) - 1);
+  // Once the A650 probe has filled its summary row, say it on the console. Without this the
+  // probe runs and nothing anywhere shows what it found.
+  static int gpuRowSent;
+  if (!gpuRowSent && &native_gpu_rows && native_gpu_rows[0][0]) {
+    char gpu[144];
+    int m = snprintf(gpu, sizeof gpu, "GPUROW %s\n", native_gpu_rows[0]);
+    if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
+    gpuRowSent = 1;
+  }
 }
 /* The touch frame loop, on the USB console. It starts its own thread and publishes through
  * counters, so whether it is actually reading frames is invisible on the panel unless the touch
@@ -1391,6 +1403,15 @@ static void touch_time_report(unsigned now) {
     /* The split digitizer: 0 not asked for, 1 started, 2 the device refused to start. */
     &native_hid_touch_status ? native_hid_touch_status : 0);
   if (n > 0) qcom_usb_debug_write(log, (size_t)n < sizeof(log) ? (size_t)n : sizeof(log) - 1);
+  // Once the A650 probe has filled its summary row, say it on the console. Without this the
+  // probe runs and nothing anywhere shows what it found.
+  static int gpuRowSent;
+  if (!gpuRowSent && &native_gpu_rows && native_gpu_rows[0][0]) {
+    char gpu[144];
+    int m = snprintf(gpu, sizeof gpu, "GPUROW %s\n", native_gpu_rows[0]);
+    if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
+    gpuRowSent = 1;
+  }
 }
 static void monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
