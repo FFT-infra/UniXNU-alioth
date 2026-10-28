@@ -30,6 +30,7 @@ extern "C" void native_hid_static_init(void) __asm__("__GLOBAL__sub_I_NativeHidI
 extern "C" IOService *native_hid_input_allocate(void);
 extern "C" IOService *native_hid_touch_allocate(void);
 extern "C" kern_return_t OSKextLoadKextWithIdentifier(const char *);
+extern "C" size_t qcom_usb_debug_write(const void *, size_t);
 
 extern "C" {
 // Published for the diagnostic panel and the console report.
@@ -153,6 +154,11 @@ extern "C" void native_hid_live_checkpoint(IORegistryEntry *driver) {
    * !driver->getProperty("Built-In"), which is backwards: the reference waits for the DEVICE to
    * have Built-In and then sets the properties on the DRIVER, so a driver that already carried
    * Built-In but no PrimaryUsagePage would never get one. */
+  if (&qcom_usb_debug_write) {
+    char line[64];
+    int n = snprintf(line, sizeof line, "HIDPROPS set for %p\n", (void *) driver);
+    if (n > 0) qcom_usb_debug_write(line, (size_t) n);
+  }
   driver->setProperty("Built-In", kOSBooleanTrue);
   driver->setProperty("DisplayIntegrated", kOSBooleanTrue);
   driver->setProperty("PrimaryUsagePage", (unsigned long long) 0x0d, 32);
