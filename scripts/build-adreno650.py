@@ -7,7 +7,7 @@ SMMU context and memory (NativeAdrenoGmuContext/Memory), the HFI kit (kits/Adren
 (package/A650Gmu.c). NativeAdrenoService.cpp (sheng's A740 service) stays out; the board probe (package/GpuProbe.cpp,
 pipa-gpu=<mode>) drives these objects. No firmware is embedded here: the GMU, SQE and zap images are the board probe's
 (build-gop-legacy-display.py)."""
-import json, os, re, subprocess, sys
+import json, os, re, shutil, subprocess, sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 c_recipe = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/bsd/DEVELOPMENT/bsd_init.o.json').read_text().strip().rstrip(','))
@@ -123,9 +123,18 @@ asm.write_text(''.join('.globl %s\n.set %s, %#x\n' % (name, name, address) for n
 bind_obj = out / 'original-bindings.o'
 subprocess.run([compiler, '-c', '--target=arm64-apple-ios17.0', '-o', str(bind_obj), str(asm)], check=True)
 late = out / 'NativeAdrenoAccelerator.late.o'
-subprocess.run([str(llvm_bin / 'llvm-objcopy'), '--remove-section=__DATA,__mod_init_func',
+
+
+def tool(name):
+    found = shutil.which(name) or str(llvm_bin / name)
+    if not Path(found).exists():
+        sys.exit('missing ' + name + ' (the accelerator needs the LLVM binutils)')
+    return found
+
+
+subprocess.run([tool('llvm-objcopy'), '--remove-section=__DATA,__mod_init_func',
                 '--globalize-symbol=__GLOBAL__sub_I_NativeAdrenoAccelerator.cpp', str(accel_obj), str(late)], check=True)
-subprocess.run([str(llvm_bin / 'llvm-ar'), 'rcs', str(archive), str(late), str(bind_obj)], check=True)
+subprocess.run([tool('llvm-ar'), 'rcs', str(archive), str(late), str(bind_obj)], check=True)
 print('PASS: staged accelerator appended, IOAcceleratorES bound to %s'
       % ', '.join('%#x' % address for _, address in sorted(bindings.items())))
 
