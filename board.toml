@@ -232,7 +232,9 @@ kernel_args = [
   # Print the digitizer fields the event driver dispatches, without changing any of them. The
   # panel accepts a drag but never completes a tap, and a pull-down starts then retracts, so the
   # question is what the recognizer is being handed rather than whether the contact exists.
-  "sheng-touch-dump=1",
+  # The name is short because the command line is at its 1000-byte limit: a descriptive
+  # sheng-touch-dump=1 pushed it to 1007.
+  "hidump=1",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
