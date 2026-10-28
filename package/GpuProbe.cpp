@@ -295,6 +295,13 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
         volatile uint32_t *s = reinterpret_cast<volatile uint32_t *>(gSmmuMap->getVirtualAddress());
         snprintf(native_gpu_rows[kRowLoad], cap, "PRE smr2 %08x smr3 %08x s2cr2 %08x s2cr3 %08x",
                  s[0x800 / 4 + 2], s[0x800 / 4 + 3], s[0xc00 / 4 + 2], s[0xc00 / 4 + 3]);
+        // Those two slots hold a live S2CR with no SMR match -- an inconsistent state left by
+        // whatever ran before this probe. With SMR zero they route nothing, so releasing them
+        // takes nothing away, and it is what makes the kit's write land instead of returning
+        // kIOReturnNotPermitted.
+        if (s[0x800 / 4 + 2] == 0 && s[0xc00 / 4 + 2]) s[0xc00 / 4 + 2] = 0;
+        if (s[0x800 / 4 + 3] == 0 && s[0xc00 / 4 + 3]) s[0xc00 / 4 + 3] = 0;
+        __asm__ volatile("dsb sy" ::: "memory");
     }
     NativeAdrenoGmuContextReport &g = native_gpu_gmu_context;
     const IOReturn status = NativeAdrenoGmuContextBringupRoutes(reinterpret_cast<volatile uint8_t *>(gSmmuMap->getVirtualAddress()),
