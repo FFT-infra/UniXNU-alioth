@@ -38,6 +38,14 @@ KIT = next((c for c in _candidates if c.exists()), _candidates[0])
 DEVICE = KIT.parent.parent
 if not KIT.exists():
     sys.exit(f"alioth-touch kit not found (tried {[str(c) for c in _candidates]})")
+# Refuse the last resort. That copy lives inside the build tree, goes stale, and has already
+# compiled an older kit once: the C/C++ linkage fix then silently did not apply and the board
+# pressed Home every 1.1 s again, with no error anywhere. Failing here costs one build; not
+# failing costs a debugging session that starts from "the fix did not work".
+if KIT == ROOT.parent / "kits" / "alioth-touch":
+    sys.exit("alioth-touch: only the build tree's copy was found at %s. It can be stale, and a "
+             "stale copy compiles silently. Set UNIXNU_DEVICE to the device repository or restore "
+             "the kits/alioth link, then rebuild." % KIT)
 OUT = ROOT / "build" / "alioth-touch"
 
 # build-sheng-hid-input.py, which the display recipe runs, validates its work against a
