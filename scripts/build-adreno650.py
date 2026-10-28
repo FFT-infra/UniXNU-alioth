@@ -36,6 +36,11 @@ sources += [driver / (name + '.cpp') for name in (
     'NativeAdrenoMemory', 'NativeAdrenoCpu', 'NativeAdrenoVm', 'NativeAdrenoRing', 'NativeAdrenoSubmit', 'NativeAdrenoTimer',
     'NativeAdrenoUserClient', 'NativeAdrenoPublish', 'NativeAdrenoCpInit', 'NativeAdrenoIrq',
     'NativeAdrenoGmuContext', 'NativeAdrenoGmuMemory')]
+# The board probe and its firmware: both are package files. The probe exports
+# native_gpu_probe(), which the late display probe calls; the firmware object defines the
+# three arrays it weak-imports.
+PACKAGE = Path(os.environ.get('ADRENO650_PACKAGE', str(ROOT / 'package')))
+sources += [PACKAGE / 'GpuProbe.cpp', PACKAGE / 'GpuFirmwareA650.c']
 objects = []
 for source in sources:
     recipe = c_recipe if source.suffix == '.c' else cxx_recipe
@@ -57,7 +62,7 @@ for source in sources:
         i += 1
     command += ['-I', str(ROOT / 'kits/AdrenoPM4'), '-I', str(ROOT / 'kits/ArmSmmu4K'), '-I', str(ROOT / 'kits/AdrenoFirmware'),
                 '-I', str(KITS / 'pipa'), '-I', str(KITS / 'AdrenoFirmware'), '-I', str(KITS / 'AdrenoPM4'), '-I', str(KITS / 'ArmSmmu4K'), '-I', str(ROOT / '.cache/xnu-work/osfmk'),
-                '-I', str(driver), '-Wall', '-Wextra', '-Werror',
+                '-I', str(driver), '-I', str(PACKAGE), '-Wall', '-Wextra', '-Werror',
                 '-Wno-unused-parameter', '-Wno-incompatible-sysroot', '-Wno-c99-designator',
                 '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion',
                 '-Wno-unnecessary-virtual-specifier']

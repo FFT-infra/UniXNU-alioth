@@ -67,9 +67,17 @@ int get_preemption_level(void);
 IOReturn armcpu_spi_attach(uint32_t intid, bool edge, void (*handler)(void *), void *context, uint32_t *readback, uint64_t *router);
 // The staged AGXAccelerator (drivers/Adreno650/NativeAdrenoAccelerator.cpp, build-adreno740-accelerator.py --component Adreno650): its static
 // initializer runs only after the original IOGPUFamily kext has loaded, because the parent metaclass does not exist before that.
-void native_adreno_accelerator_static_init(void) __asm__("__GLOBAL__sub_I_NativeAdrenoAccelerator.cpp");
+// The staged AGXAccelerator is an IOAccelerator subclass and this kernel has no
+// IOAccelerator class at all (IOAcceleratorFamily2 is absent from this XNU tree), so mode 12
+// is compiled out. Modes 1-11 never touch it.
+#ifndef PIPA_GPU_ACCELERATOR
+#define PIPA_GPU_ACCELERATOR 0
+#endif
+#if PIPA_GPU_ACCELERATOR
+extern void native_adreno_accelerator_static_init(void) __asm__("__GLOBAL__sub_I_NativeAdrenoAccelerator.cpp");
 IOService *native_adreno_accelerator_allocate(void);
 unsigned native_adreno_accelerator_instance_size(void);
+#endif
 kern_return_t OSKextLoadKextWithIdentifier(const char *);
 extern kmod_info_t g_kernel_kmod_info;
 // Fence waits that slept until a GPU interrupt or spun.
@@ -1186,6 +1194,7 @@ bool selfTest() {
 // Mode 12: the staged AGXAccelerator for the original Metal discovery (sheng publishMetal, UniXNU-tb128fu naMetal). The plugin
 // bundle arrives through the boot-time addon mount (sheng-gpu-addon=1) and the owner trust module; the render server is the one
 // process granted its client, with the two that crashed in CoreImage's OpenGL ES path without a Metal device on UniXNU-tb128fu.
+#if PIPA_GPU_ACCELERATOR
 bool metal() {
     char *row = native_gpu_rows[kRowMetal];
     const size_t cap = sizeof native_gpu_rows[0];
@@ -1261,6 +1270,12 @@ bool metal() {
     changed();
     return true;
 }
+#else
+bool metal() {
+    publishRow("unavailable: this kernel has no IOAccelerator");
+    return false;
+}
+#endif
 
 // Where the CP stands when it stops moving. Once a submission is outstanding and RPTR, IB1 base and IB1 remaining dwords are the
 // same as one beat (2 s) before, the rows are refreshed (the ring itself may be drained: RPTR passes an IB's packet when the CP
