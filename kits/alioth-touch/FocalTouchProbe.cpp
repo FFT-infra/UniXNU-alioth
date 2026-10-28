@@ -28,6 +28,9 @@ volatile uint32_t native_touch_hid_reports;
 volatile int native_touch_error;
 volatile uint32_t native_touch_loop_step;
 volatile uint32_t native_touch_valid;
+/* Contacts the area rule removed. Cumulative over the boot; printed on the TOUCHREG line so a
+ * run says whether a light tap lands in this case at all. */
+volatile uint32_t native_touch_area0;
 // Consumer-side accounting that the HID digitizer (NativeHidInput) maintains;
 // defined here so the probe archive alone satisfies the digitizer's link.
 // native_touch_edge_stats and native_touch_hid_multi belong to ShengHidInput: NativeHidInput.cpp
@@ -300,7 +303,12 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
              * lift went out as a contact that is still down. The HID path signals a lift by the
              * contact disappearing from the count, so a contact whose event is "up" must not be
              * published. */
-            if (c[i].event == 1 || c[i].area == 0) continue;
+            if (c[i].event == 1) continue;
+            /* A zero area may be either the part's phantom points on an untouched panel or a
+             * short, light contact -- a tap. The rule below still drops them, unchanged, because
+             * publishing phantoms is what made iOS see a palm; the counter says which of the two
+             * a run is producing before the rule is touched again. */
+            if (c[i].area == 0) {native_touch_area0 = native_touch_area0 + 1; continue;}
             xs[kept] = xs[i]; ys[kept] = ys[i]; ids[kept] = ids[i];
             ++kept;
         }
@@ -371,8 +379,9 @@ static void touchHealthCheck(Session &s) {
     const bool lost = idhRc != 0 || idlRc != 0 || idh == 0x00 || idh == 0xff || idl == 0xff;
     char text[224];
     if (&qcom_usb_debug_write) {
-        int n = snprintf(text, sizeof(text), "TOUCHREG polls=%u power=%02x(rc=%d) id=%02x%02x(rc=%d/%d) int=%02x(rc=%d) work=%02x chg=%02x ges=%02x\n",
-            native_touch_reg_polls, power, powerRc, idh, idl, idhRc, idlRc, intCount, intRc, workCount, charger, gesture);
+        int n = snprintf(text, sizeof(text), "TOUCHREG polls=%u power=%02x(rc=%d) id=%02x%02x(rc=%d/%d) int=%02x(rc=%d) work=%02x chg=%02x ges=%02x a0=%u\n",
+            native_touch_reg_polls, power, powerRc, idh, idl, idhRc, idlRc, intCount, intRc, workCount, charger, gesture,
+            __atomic_load_n(&native_touch_area0, __ATOMIC_RELAXED));
         if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
     }
     if (!asleep && !lost) return;
