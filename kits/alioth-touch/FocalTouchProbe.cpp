@@ -295,7 +295,12 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
     {
         unsigned kept = 0;
         for (unsigned i = 0; i < count && i < 12; ++i) {
-            if (c[i].area == 0) continue;
+            /* The frame's per-contact event says down (0), up (1) or move (2), and nothing
+             * here ever looked at it: every published contact carried tip and valid set, so a
+             * lift went out as a contact that is still down. The HID path signals a lift by the
+             * contact disappearing from the count, so a contact whose event is "up" must not be
+             * published. */
+            if (c[i].event == 1 || c[i].area == 0) continue;
             xs[kept] = xs[i]; ys[kept] = ys[i]; ids[kept] = ids[i];
             ++kept;
         }
