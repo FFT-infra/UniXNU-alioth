@@ -4,7 +4,7 @@ schema_version = 1
 name = "alioth"
 soc = "SM8250"
 os_profile = "ipados-17.7.11-21H461"
-summary = "Device template. Complete each area with board-specific inputs and evidence."
+summary = "UFS root, launchd, touch and a published GPU device with the staged Metal accelerator; the desktop does not draw yet and there is no Wi-Fi."
 
 [[area]]
 id = "configuration"
