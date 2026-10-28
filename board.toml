@@ -474,7 +474,8 @@ kernel_args = [
   # "GPU m1 gcc=ok cc=ok smmu=ok gpu=ok io=0".
   "pipa-gpu=7",
   # The PCIe controller steps; step 1 only reads, criterion gcc pcie_0_gdscr = 0x22f001.
-  "pcie=4",
+  "pcie=9",
+  "pcie_skip=32",
   # Starts the HID publisher itself. The publisher is an IOHIDDevice compiled into this kernel,
   # so IOKit has no personality for it and nothing matches it; the board calls it from
   # native_legacy_display_late_probe, the second of the two start paths the driver adaption
