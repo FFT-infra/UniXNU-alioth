@@ -299,21 +299,11 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
         // Four consecutive ID registers. This part's IDR1 is known from a hardware run
         // (0x20000005); if the block reads as zeros or nonsense, the mapping is not this
         // SMMU and every conclusion drawn from it is void.
-        // The apps SMMU, read through the same construction. If it reports the ID pair this
-        // phone's notes record (0x4c017e06 / 0x20000005), the read path is sound and the kgsl
-        // SMMU simply is not what sits at 0x3da0000; if it also reads zero, the path is wrong.
-        uint32_t apps0 = 0, apps1 = 0;
-        IODeviceMemory *appsMem = IODeviceMemory::withRange(0x15000000ULL, 0x10000);
-        if (appsMem) {
-            OSSharedPtr<IOMemoryMap> appsMap(appsMem->map(kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
-            appsMem->release();
-            if (appsMap) {
-                volatile uint32_t *ap = reinterpret_cast<volatile uint32_t *>(appsMap->getVirtualAddress());
-                apps0 = ap[0]; apps1 = ap[1];
-            }
-        }
-        snprintf(native_gpu_rows[kRowLoad], cap, "PRE id0 %08x id1 %08x apps0 %08x apps1 %08x",
-                 s[0], s[1], apps0, apps1);
+        // IDR0 is at 0x20 and sCR0 at 0x00 (ArmSmmu4KStreams.c:16); reading offset 0 and
+        // calling it id0 was a mistake that invalidated several rounds of reasoning. 0x48 is
+        // sGFSR, the global fault status, which says whether a rejected write faulted.
+        snprintf(native_gpu_rows[kRowLoad], cap, "PRE idr0 %08x scr0 %08x gfsr %08x",
+                 s[0x20 / 4], s[0], s[0x48 / 4]);
         // Those two slots hold a live S2CR with no SMR match -- an inconsistent state left by
         // whatever ran before this probe. With SMR zero they route nothing, so releasing them
         // takes nothing away, and it is what makes the kit's write land instead of returning
