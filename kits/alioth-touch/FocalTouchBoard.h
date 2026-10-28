@@ -100,7 +100,7 @@
 // Health poll cadence: the power-mode and identity registers are read every this many frames
 // (about once a minute at the frame period), which is what decides whether the part needs the
 // recovery sequence.
-#define TB_REG_POLL_FRAMES 600u
+#define TB_REG_POLL_FRAMES 3000u
 #define TB_RESET_ASSERT_US 1200u
 #define TB_RESET_RELEASE_US 9000u
 // Rail settle time while reset is held low: the vendor driver and the ios-sweet port both wait

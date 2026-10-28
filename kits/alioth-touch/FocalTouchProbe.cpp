@@ -527,14 +527,16 @@ void touchThread(void *arg, wait_result_t) {
         IOSleep(TB_FRAME_PERIOD_US / 1000);
         frames = frames + 1;
         if (frames % TB_REG_POLL_FRAMES == 0) touchHealthCheck(s);
-        /* The part raises its interrupt line while it holds a report: the reference driver for
-         * this SoC family states it as "low = the chip has a report" and looks at the line
-         * rather than reading the frame register on a timer. Reading on a blind timer is what
-         * this loop used to do, and boot-usb64 saw one report in nine hundred seconds of
-         * polling while the user touched repeatedly. Read the line first and only fetch a frame
-         * when the part says it has one. */
+        /* The line is still read, but it no longer gates the fetch. It is low only a few dozen
+         * times in two minutes while a finger is on the panel -- usb185 counted 35 in 120 s -- so
+         * gating on it left the fallback path, one frame in fifty, as the real sample rate: 398
+         * frames in 120 s, about 3 Hz. A half-second drag then delivered two or three updates,
+         * which no gesture recogniser can track: the shade comes down and snaps back, and the
+         * lock screen will not follow a swipe. Read a frame every iteration instead, which is the
+         * 166 Hz this loop was designed for. The round that made high-rate polling look unsafe
+         * ran at 1200 Hz because IODelay was given microseconds where the constant means
+         * milliseconds, seven times the design rate, not one. */
         native_touch_irq_level = (unsigned)gpioRead(s, TB_GPIO_IRQ);
-        if (native_touch_irq_level != 0 && (frames % 50) != 0) { continue; }
         if (native_touch_irq_level == 0) native_touch_irq_low = native_touch_irq_low + 1;
         native_touch_loop_step = 1;
         unsigned count = 0;
