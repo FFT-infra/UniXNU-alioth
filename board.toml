@@ -228,7 +228,7 @@ kernel_args = [
   # The persistent log header carries this string, so a log read back through TWRP can say which
   # image wrote it. It was empty on every round up to usb171, which made the recovered log unable
   # to identify itself. Bump it with the image name on each build.
-  "sheng-build-tag=usb179",
+  "sheng-build-tag=usb180",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
@@ -434,7 +434,7 @@ kernel_args = [
   # Off: the page drew continuously into the console frame buffer, so its text stayed
   # visible at the edge of the desktop after the renderer came up. The serial console and
   # the persistent log carry the same rows.
-  "boot-progress=0",
+  "boot-progress=2",
   # boot-diag-resume=<seconds> lets the diagnostic page take the panel back that long after
   # scanout stops. Measured 2026-10-27 on boot-usb33: SpringBoard reached the lock screen, but
   # this page took the panel back every time the renderer paused for ten seconds, so the desktop
