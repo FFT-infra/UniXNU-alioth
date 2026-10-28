@@ -197,6 +197,40 @@ on the software renderer, which is what the plan's control predicts. The
 plugin is therefore the cause of backboardd's SIGBUS, not the accelerator, the
 driver or the SMMU.
 
+## What the plugin does before it dies
+
+The driver counts every ABI call it serves. In usb205, with the plugin in the
+seed:
+
+```
+GPUMETH m 2  calls 50 fail 0      BoAlloc
+GPUMETH m 3  calls 50 fail 0      BoMap
+GPUMETH m 13 calls 48 fail 0      BoCpuMap
+GPUMETH m 5  calls 7  fail 0      Submit
+GPUMETH m 6  calls 29 fail 2      WaitFence, two timeouts
+GPUMETH m 8  calls 8  fail 8 last e00002c7   GetStatus, always kIOReturnUnsupported
+GPUSLOT s 0 live 32 peak 32 refused 0 hi 128
+GPUMOUNT fail 1/e00002db slot 4 count 2      a later client: kIOReturnNoSpace
+```
+
+So the plugin is not failing at the connection: it allocates 50 buffers, maps
+all 50 to GPU addresses, CPU-maps 48, submits seven times and waits on fences.
+Slot 0 (backboardd) peaks at 32 live objects and 128 MiB of its window, with
+no refused allocation. `GetStatus` is unsupported and always was; the plugin
+calls it eight times and carries on.
+
+Then it reads through an address that has no mapping: `ESR 0x82000007` is a
+data abort from a lower exception level whose fault status decodes as a level-3
+translation fault and whose WnR bit is clear, so it is a **read**. The PC moves
+between boots (0x106da915c, 0x105ff3460) but is fixed within one, which is what
+a fixed code site under ASLR looks like.
+
+That matches the note the driver itself carries next to the BO counters:
+Turnip turns a refusal into `VK_ERROR_OUT_OF_DEVICE_MEMORY` and its command
+streams do not check it, "int-237: backboardd wrote through a NULL stream
+pointer". Here the plugin's reads are what fault, and the two buffers that were
+allocated but never CPU-mapped are the first place to look.
+
 ## The screenshot channel
 
 The USB console's `SCREENSHOT`/`SHOTNEXT` pair answers with a ready frame
