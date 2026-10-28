@@ -28,7 +28,13 @@ say() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 fail() {
     say "FAILED at $1"
     if $FB devices 2>/dev/null | grep -q fastboot; then
-        $FB --set-active=b >/dev/null 2>&1 && say "recovered: active slot b"
+        # Put back the slot the board started on. With "fastboot boot" the test image never
+        # touched a slot, so forcing b here would move a board that began on a.
+        if [ -n "${ORIG_SLOT:-}" ] && [ "${ORIG_SLOT}" != "a" ]; then
+            $FB --set-active="$ORIG_SLOT" >/dev/null 2>&1 && say "recovered: active slot $ORIG_SLOT"
+        else
+            say "recovered: nothing to undo, the test image wrote no slot"
+        fi
     else
         say "recovery: no bootloader answers, the board needs a hand"
     fi
@@ -44,8 +50,14 @@ ADBM="adb"
 
 say "stage 1: board must already be in the bootloader"
 $FB devices | grep -q fastboot || fail "no fastboot device"
+ORIG_SLOT=$($FB getvar current-slot 2>&1 | sed -n 's/.*current-slot: *//p' | head -1)
+say "starting on slot ${ORIG_SLOT:-unknown}"
 
-say "stage 2: test slot must carry TWRP on the other slot for the read-back"
+# Preconditions this board adds to the guide's: the reader is TWRP in slot a rather than a
+# separate reader image, and slot b must hold an image that returns to the bootloader on its
+# own, because the last stage reaches the ABL by letting that image time out rather than by
+# asking TWRP for the bootloader (TWRP's fastboot is a different, limited one).
+say "stage 2: slot a holds TWRP (the reader); slot b holds an image that self-returns"
 # docs/zh/porting/log-capture.md sections 5.2 and 6.3 both start the test image with
 # "fastboot boot": it writes no partition, so an interrupted round cannot leave a half-written
 # boot image behind, and a failed start does not touch the slot the board would otherwise use.

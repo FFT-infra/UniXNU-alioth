@@ -22,8 +22,11 @@ Output, matching the sheng example's convention:
                         /slots.txt   every written slot, oldest first
                         /latest.txt  the newest slot
 
-Exit 0 when a header was found and decoded, 1 when the window has no header (nothing was
-written), 2 when the window could not be read.
+Exit codes keep three different faults apart:
+  0  a header was found and decoded
+  2  the window could not be read at all (adb/dd failed or timed out)
+  3  the window was read but has no header or is short (nothing was written there)
+  4  decoded, but the header's LBA does not match where the window was read
 """
 import argparse
 import os
@@ -35,10 +38,13 @@ BLOCK = 4096
 MSG_FIRST, MSG_BLOCKS = 1, 32
 SLOT_FIRST, SLOT_BLOCKS = 33, 16
 MAGIC = b'SHLOG001'
-# Absolute 4096-byte LBA of the window on this board: the last 8192 blocks of userdata,
-# computed from the store geometry and confirmed against the header the writer emits
-# (header.first_lba == this value on every run so far).
-DEFAULT_SKIP = 61872123
+# Where the window sits, in the units dd uses. /dev/block/by-name/userdata is a partition, so
+# dd's skip counts blocks from the partition start, not from the disk: 59,086,843 is the last
+# 8192 blocks of a 59,095,035-block partition. The absolute LBA (61,872,123 here) is what the
+# header records, and the two differ by the partition's first_lba (0x2a8000); passing the
+# absolute value to dd seeks past the end of the partition and reads nothing at all.
+DEFAULT_FIRST_LBA = 0x2a8000
+DEFAULT_SKIP = 59086843
 DEFAULT_COUNT = 8192
 
 
@@ -99,7 +105,10 @@ def main():
     ap.add_argument('--port', help='adb serial; read the window from the running recovery')
     ap.add_argument('--image', help='decode a window already copied off the device')
     ap.add_argument('--out', default='build/sheng-logs')
-    ap.add_argument('--skip', type=int, default=DEFAULT_SKIP, help='absolute LBA of block 0')
+    ap.add_argument('--skip', type=int, default=DEFAULT_SKIP,
+                    help='blocks from the start of the userdata partition to the window')
+    ap.add_argument('--first-lba', type=lambda v: int(v, 0), default=DEFAULT_FIRST_LBA,
+                    help='the partition first_lba from board.toml, added back for the header check')
     ap.add_argument('--count', type=int, default=DEFAULT_COUNT)
     ap.add_argument('--tag', default='alioth', help='directory prefix when the header has none')
     args = ap.parse_args()
@@ -121,9 +130,13 @@ def main():
 
     d = open(raw_path, 'rb').read()
     if len(d) < BLOCK * 40 or d[0:8] != MAGIC:
-        print('read-sheng-log: no log header in the window (%d bytes read)' % len(d), file=sys.stderr)
+        # A short read and an unwritten window are different faults: the first means the read
+        # never happened (a degraded link, a wrong skip), the second means the writer did not
+        # run. Exit codes keep them apart for the caller.
+        print('read-sheng-log: window has no header (%d bytes read, wanted %d)'
+              % (len(d), args.count * BLOCK), file=sys.stderr)
         os.unlink(raw_path)
-        return 1
+        return 3
 
     h = header_fields(d)
     name = '%s-%016x' % (h['tag'] or args.tag, h['boot_id'])
@@ -156,15 +169,22 @@ def main():
     with open(os.path.join(dest, 'latest.txt'), 'w') as f:
         f.write(latest)
 
-    if h['first_lba'] != args.skip and not args.image:
-        print('read-sheng-log: header says first_lba %d, window was read at %d'
-              % (h['first_lba'], args.skip), file=sys.stderr)
+    # The header records the absolute LBA; the read was at --skip blocks into a partition that
+    # starts at --first-lba. A mismatch means the window moved (the partition geometry changed),
+    # which is worth a distinct exit code rather than a warning.
+    read_at = args.first_lba + args.skip
+    moved = False
+    if not args.image and h['first_lba'] != read_at:
+        print('read-sheng-log: header names LBA %d but the window was read at %d (partition '
+              'first_lba %d + skip %d); the log window moved'
+              % (h['first_lba'], read_at, args.first_lba, args.skip), file=sys.stderr)
+        moved = True
 
     print('read-sheng-log: %s' % dest)
     print('  boot %016x  uptime %us  rounds %u  slots %u/%u  errors %u  state %u'
           % (h['boot_id'], h['uptime_s'], h['rounds'], h['slots_written'], h['slot_count'],
              h['write_errors'], h['state']))
-    return 0
+    return 4 if moved else 0
 
 
 if __name__ == '__main__':
