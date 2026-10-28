@@ -313,8 +313,17 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
         const uint32_t got = *smr5;
         *smr5 = was;
         __asm__ volatile("dsb sy" ::: "memory");
-        snprintf(native_gpu_rows[kRowLoad], cap, "PRE idr0 %08x scr0 %08x gfsr %08x smr5 %08x->%08x",
-                 s[0x20 / 4], s[0], s[0x48 / 4], probe_val, got);
+        // Same test on a global control register: if sCR0 also refuses, EL1 does not own
+        // this SMMU's writes at all; if it takes, only the stream registers are locked.
+        volatile uint32_t *scr0 = &s[0];
+        const uint32_t scr0_was = *scr0, scr0_val = scr0_was ^ 8u;   // toggle GFIE: a bit that is clear, so a no-op cannot masquerade as success
+        *scr0 = scr0_val;
+        __asm__ volatile("dsb sy" ::: "memory");
+        const uint32_t scr0_got = *scr0;
+        *scr0 = scr0_was;
+        __asm__ volatile("dsb sy" ::: "memory");
+        snprintf(native_gpu_rows[kRowLoad], cap, "PRE idr0 %08x smr5 %08x->%08x scr0 %08x->%08x",
+                 s[0x20 / 4], probe_val, got, scr0_val, scr0_got);
         // Those two slots hold a live S2CR with no SMR match -- an inconsistent state left by
         // whatever ran before this probe. With SMR zero they route nothing, so releasing them
         // takes nothing away, and it is what makes the kit's write land instead of returning
