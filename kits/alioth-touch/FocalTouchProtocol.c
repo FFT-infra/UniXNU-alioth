@@ -260,12 +260,24 @@ int fts5652_frame(struct Fts5652 *chip, unsigned *count, struct Fts5652Contact *
          * algebraically the vendor value halved: every touch landed in the top-left 80 % of the
          * panel, and the FromEdgeTip band at 97.6 % of the height could never be reached -- so a
          * swipe up from the bottom could not produce an edge gesture at all. */
-        unsigned x = ((pre & 0xf0u) >> 4) + ((unsigned)r[1] << 4) + (((unsigned)(r[0] & 0x0fu)) << 12);
-        unsigned y = (pre & 0x0fu) + ((unsigned)r[3] << 4) + (((unsigned)(r[2] & 0x0fu)) << 12);
-        x = x * 10u / 16u;
-        y = y * 10u / 16u;
+        /* The vendor driver for this part is focaltech_spi/focaltech_core.c:706-712, and the
+         * packing is X_H bits 3..0 at bit 11, X_L at bit 3, and X's low three bits in PRE bits
+         * 7..5; Y the same with its low three bits in PRE bits 4..2. The form used before this
+         * was (PRE[7:4] >> 4) + (X_L << 4) + (X_H << 12), which is algebraically twice that
+         * value, and it then multiplied by 10/16 on top: every coordinate came out 1.25x the
+         * part's own value, and everything past about 80 % of an axis clamped to the maximum, so
+         * the right and bottom fifths of the panel were unreachable and taps landed off target.
+         * The vendor does no further scaling: it declares absmax 8639/19199 straight from the
+         * device tree and reports these values unchanged. */
+        unsigned x = (((unsigned)(r[0] & 0x0fu)) << 11) | ((unsigned)r[1] << 3) | ((pre & 0xe0u) >> 5);
+        unsigned y = (((unsigned)(r[2] & 0x0fu)) << 11) | ((unsigned)r[3] << 3) | ((pre & 0x1cu) >> 2);
         const int event = r[0] >> 6;
         const int id = r[2] >> 4;
+        /* The vendor stops parsing at the first id past its table (focaltech_core.c:700-701:
+         * "if (pointid >= FTS_MAX_ID) break"), because everything after it in the payload is
+         * not a contact. Passing those through produced contacts with ids this layer never
+         * sized for -- the arrays hold FTS5652_CONTACTS entries. */
+        if (id >= FTS5652_CONTACTS) break;
         if (event == 0 && x == 0 && y == 0) {
             continue;
         }

@@ -360,26 +360,18 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
             __asm__ volatile("dsb sy" ::: "memory");
             ml_io_unmap(ml, 0x10000);
         }
-        // The context-bank side of this unit has never been written. Two candidate group offsets
-        // exist for it: the ARM SMMU-500 layout puts GROUP 1 at 0x8000 (which is also where this
-        // kit's own context banks land, (pages+bank)*stride with pages=8, stride=0x1000), while
-        // the kit derives its group offset from IDR1 as 1<<((IDR1>>31)?16:12), which is 0x1000
-        // for this part. Rather than bet on one, write the same free bank's CBAR and CBA2R at
-        // both and read back. A non-zero read-back that equals the write means that offset is the
-        // real one and this unit is writable outside the stream table.
+        // The context-bank registers are read, never written. A previous round wrote CBAR and
+        // CBA2R for a bank it believed free, at both candidate group offsets, and the console
+        // went silent a second into the boot: CBA2R pointing nowhere makes the unit fetch a
+        // page table that does not exist, and this block is live, not ours to reprogram. Reading
+        // both candidates costs nothing and still says whether the offsets hold anything.
         uint32_t cb_std = 0, cba2_std = 0, cb_kit = 0, cba2_kit = 0;
         {
             const unsigned bank = 4;                 // the last of this part's five; the GMU uses 2 and 3
-            volatile uint32_t *cbarStd  = &s[(0x8000u + bank * 4) / 4];
-            volatile uint32_t *cba2rStd = &s[(0x8800u + bank * 4) / 4];
-            volatile uint32_t *cbarKit  = &s[(0x1000u + bank * 4) / 4];
-            volatile uint32_t *cba2rKit = &s[(0x1800u + bank * 4) / 4];
-            const uint32_t s0 = *cbarStd, s1 = *cba2rStd, k0 = *cbarKit, k1 = *cba2rKit;
-            *cbarStd = 1u; *cba2rStd = 3u; *cbarKit = 1u; *cba2rKit = 3u;
-            __asm__ volatile("dsb sy" ::: "memory");
-            cb_std = *cbarStd; cba2_std = *cba2rStd; cb_kit = *cbarKit; cba2_kit = *cba2rKit;
-            *cbarStd = s0; *cba2rStd = s1; *cbarKit = k0; *cba2rKit = k1;
-            __asm__ volatile("dsb sy" ::: "memory");
+            cb_std  = s[(0x8000u + bank * 4) / 4];
+            cba2_std = s[(0x8800u + bank * 4) / 4];
+            cb_kit  = s[(0x1000u + bank * 4) / 4];
+            cba2_kit = s[(0x1800u + bank * 4) / 4];
         }
         snprintf(native_gpu_rows[kRowLoad], cap, "PRE acr %08x smr5 %08x->%08x ml %08x->%08x apps5 %08x cb8k %08x/%08x cb1k %08x/%08x",
                  acr, probe_val, got, ml_wrote, ml_got, apps_wrote, cb_std, cba2_std, cb_kit, cba2_kit);
