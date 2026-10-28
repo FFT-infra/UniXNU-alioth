@@ -234,6 +234,7 @@ procedure = [
   "./unixnu build kernel, then build payload and bootimg, then fastboot flash boot_b.",
   "Read the console at /dev/tty.usbmodem<N> with a raw 115200 8N1 tty; the dock's SN234567892 node is not the phone.",
   "Control frames are SXNU1 <16 hex session> <8 hex seq> <VERB> <8 hex crc32>, HELLO first to learn the session.",
+  "One unattended round is scripts/run-sheng-unattended.sh <image> [timeout]: fastboot boot the image, wait for the board's own return, boot the reader from slot a, read and decode into build/sheng-logs/<tag>-<boot id>/, then restore the slot. Fail-closed, and the timeout must exceed sheng-autoreset by 60 s.",
 ]
 findings = [
   "The CDC-ACM console refused to start with error=10 core=0 domain=5. QcomUsbDomainInstall calls halted() before scan(), so a PRTCAPDIR of 3 would have returned CoreRunning=4; it returned 5, which proves the controller already reported device mode.",
@@ -242,6 +243,10 @@ findings = [
   "printf and kprintf both fail to reach the console: a DEVELOPMENT kernel leaves disable_kprintf_output true without -enable_kprintf_spam, and printf's console path did not reach the _cnputs tee either. qcom_usb_debug_write() is the entry point that works.",
   "Exit records measured over 420 s: 180 xpcproxy exits with status=0 (normal fork and exit), 13 cryptexd SIGABRT with ns=18 code=2 (OS_REASON_LIBSYSTEM_CODE_FAULT), 11 liveactivitiesd SIGTRAP, 2 lsd SIGSEGV. Each process crashes at one fixed PC repeated, so the fault is deterministic rather than a race.",
   "A software REBOOT via the control channel is acknowledged (state=queued) but does not reach fastboot: the worker calls reboot_kernel(0, NULL), an orderly restart that unmounts every filesystem and returns through UEFI. Entering fastboot needs the ABL IMEM handshake, whose address is not measured here.",
+  "The persistent log writer runs: boot-usb101 recorded 273 rounds over 546 s with zero write errors after the console had already stopped, so the medium is the only record past the link's death.",
+  "Returning to fastboot works with sheng-log=1 and sheng-autoreset=<seconds> together: boot-usb102 rebooted at 153 s and boot-usb103 at 120 s, both landing in the board's own bootloader with the PON spare cell written ('pon: subtype 04 shift 1 spare 00 -> 04 want 04 rc=0 ok pon_rc=0') and IMEM reading the reason back (known=1). PSCI alone cannot do it: SYSTEM_RESET, SYSTEM_RESET2(32) and SYSTEM_RESET2(64) all report NOT_SUPPORTED, so PS_HOLD is the path that works.",
+  "The reader must seek relative to the partition: /dev/block/by-name/userdata starts at LBA 0x2a8000, so the window's last 8192 blocks are skip=59086843, not the absolute LBA 61872123 the header records. Passing the absolute value reads nothing at all and looks like a hung read.",
+  "The console's death is a latch, not a transient: dwc3_poll() returns -1 forever once d->failed is set (Dwc3.c:570/581/584), and nothing in the driver clears it, so the worker's retry path cannot revive the link.",
 ]
 completion = [
   "The console enumerates and answers HELLO and STATUS on the board; STATUS reports usb=3 er=0.",
@@ -253,6 +258,7 @@ limits = [
   "Symbolication of the crash PCs against the extracted dyld shared cache was attempted and produced implausible image names, so it is not reported as a result.",
 ]
 next_action = [
+  "Make the console survive its first error: clear d->failed and re-initialise the controller from the worker, with backoff, and draw the worker's retry and error counters on the diagnostic page so the failure is readable without the link it is about.",
   "Attribute cryptexd's fault, then decide whether the fix is a stub, a mount change, or accepting the crash.",
   "Wait for the MAC refusal to reproduce and read the ip_mac_return value it now prints.",
 ]
