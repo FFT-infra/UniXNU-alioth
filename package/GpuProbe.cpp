@@ -293,8 +293,11 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
     // already owns them, which is what kIOReturnNotPermitted with smr reading back 0 suggests.
     {
         volatile uint32_t *s = reinterpret_cast<volatile uint32_t *>(gSmmuMap->getVirtualAddress());
-        snprintf(native_gpu_rows[kRowLoad], cap, "PRE smr2 %08x smr3 %08x s2cr2 %08x s2cr3 %08x",
-                 s[0x800 / 4 + 2], s[0x800 / 4 + 3], s[0xc00 / 4 + 2], s[0xc00 / 4 + 3]);
+        // IDR0 carries the SID width at bits[12:9]; scan() derives its sidmask from it and
+        // rejects a stream id wider than that mask before writing anything, so the value is
+        // the difference between "0x405 is legal here" and "it never was".
+        snprintf(native_gpu_rows[kRowLoad], cap, "PRE idr0 %08x idr1 %08x smr2 %08x s2cr2 %08x smr3 %08x s2cr3 %08x",
+                 s[0], s[1], s[0x800 / 4 + 2], s[0xc00 / 4 + 2], s[0x800 / 4 + 3], s[0xc00 / 4 + 3]);
         // Those two slots hold a live S2CR with no SMR match -- an inconsistent state left by
         // whatever ran before this probe. With SMR zero they route nothing, so releasing them
         // takes nothing away, and it is what makes the kit's write land instead of returning
