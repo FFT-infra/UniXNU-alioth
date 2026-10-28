@@ -101,7 +101,9 @@ def main():
     ap.add_argument('--count', type=int, default=DEFAULT_COUNT)
     ap.add_argument('--tag', default='alioth', help='directory prefix when the header has none')
     args = ap.parse_args()
-    if not args.port and not args.image:
+    # None means the option was not given; '' means adb with no serial, which is what the
+    # unattended script passes when SERIAL is unset. Both must stay distinguishable.
+    if args.port is None and not args.image:
         ap.error('one of --port or --image is required')
 
     out_root = os.path.abspath(args.out)
