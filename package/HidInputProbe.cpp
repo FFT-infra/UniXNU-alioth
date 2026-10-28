@@ -144,9 +144,9 @@ extern "C" int native_hid_input_probe(void) {
 // combined device lists its keyboard collection first, so without this the services publish
 // (1,6) and the event is ignored -- the reference board sets exactly these, on the driver and on
 // its parent interface, once per driver rather than every tick.
-extern "C" void native_hid_live_checkpoint(IOService *driver) {
+extern "C" void native_hid_live_checkpoint(IORegistryEntry *driver) {
   if (!driver) return;
-  static IOService *publishedFor;
+  static IORegistryEntry *publishedFor;
   if (publishedFor == driver) return;
   if (!driver->getProperty("Built-In")) {
     driver->setProperty("Built-In", kOSBooleanTrue);
