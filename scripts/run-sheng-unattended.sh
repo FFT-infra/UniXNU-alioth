@@ -85,7 +85,16 @@ while [ "$i" -lt "$TIMEOUT" ]; do
     i=$((i + 3))
     if $FB devices 2>/dev/null | grep -q fastboot; then RETURNED=1; break; fi
 done
-[ "$RETURNED" = 1 ] || fail "no return to the bootloader within ${TIMEOUT}s (test slot holds the image)"
+if [ "$RETURNED" != 1 ]; then
+    # Tell a slow boot apart from a hung kernel, because the two need different actions and only
+    # one of them is worth waiting for. Nothing arms the APSS watchdog on this board and the
+    # timed reset runs inside the kernel, so a bad MMIO write stops the reset thread too: the
+    # board then sits there with neither fastboot nor adb, and no amount of waiting helps.
+    if ! $FB devices 2>/dev/null | grep -q fastboot && ! $ADBM devices 2>/dev/null | grep -qE 'recovery|device$'; then
+        fail "board is unreachable after ${TIMEOUT}s: no fastboot and no adb. The kernel most likely stopped (no APSS watchdog, the timed reset runs in-kernel). Power-cycle the board, then re-run; waiting will not recover it."
+    fi
+    fail "no return to the bootloader within ${TIMEOUT}s (test slot holds the image)"
+fi
 say "returned after ${i}s"
 
 say "stage 5: boot the reader on slot a"
