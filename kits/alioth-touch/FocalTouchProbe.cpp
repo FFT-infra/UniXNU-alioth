@@ -52,9 +52,16 @@ static int lastSeenX, lastSeenY, lastSeenEv = -1;
 }
 
 extern "C" bool native_hid_input_requested(void) {
-    // The HID digitizer is always wanted on this board: the FT5652 is the only
-    // touch input, and the consumer is force-linked with the probe archive.
-    return true;
+    /* This has to answer no. The HID object asks it before each report of its scripted button
+     * device, and arms a press when the answer is yes: press for 100 ms, wait a second, repeat
+     * (NativeHidInput.cpp:327-337). With true here the board fired a Home press every 1.1 s,
+     * which closed the notification shade as soon as it opened, took the lock screen straight to
+     * the home screen, and pushed Settings to the background the moment it launched. The package
+     * has the correct answer in this same function (HidInputProbe.cpp:53-55 returns false), but
+     * that definition has C++ linkage and the caller asks for the C symbol, so this one is what
+     * the link resolved to. Keep it false, and keep the C linkage: the digitizer's own link needs
+     * a definition, and a second one under a different name silently shadows this. */
+    return false;
 }
 
 // GPIO_CFG as written and as read back, for the three SPI pins.
