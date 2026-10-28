@@ -112,6 +112,49 @@ The live row is the proof that the path is alive: it moved from
 128 MiB pool taken, so two processes outside the kernel opened the GPU
 service and completed five more submissions.
 
+## Who opens the GPU service, and why it leaves
+
+Rows 25 and 28 count clients but never named them, so the driver's own records
+were printed instead (`GPUOPEN`, `GPUCCLI`, `GPUCLIENT`, `GPUMOUNT`, usb201):
+
+```
+GPUOPEN  backboardd type 1    macf 1 res e00002e2 attach 1 foreign 1
+GPUOPEN  backboardd type 4147 macf 1 res e00002e2 attach 1 foreign 0
+GPUOPEN  backboardd type 4148 macf 1 res e00002e2 attach 1 foreign 1
+GPUCCLI  backboardd opens 2 refused 0 closes 2 slot 0 peak 650 last 0
+GPUMOUNT fail 1/e00002db slot 4 count 2
+```
+
+`0xe00002e2` is `kIOReturnNotPermitted` (the sandbox gate's answer) and
+`0xe00002db` is `kIOReturnNoSpace`, both read from this tree's IOReturn.h. So
+backboardd does reach the accelerator (type 1) and the plugin types (0x4147,
+0x4148), the grant admits it anyway, it takes slot 0 and maps up to 650 MiB of
+GPU address. The mount that fails with NoSpace is a later client: four windows
+and four processes that each want one (the render server, PosterBoard,
+iconservicesagent, WidgetRenderer).
+
+Then backboardd dies:
+
+```
+EXITCRASH pid=54 name=backboardd sig10 PC106da915c LR106dbbd24 E82000007 bt 106cf852c 106d60780 ...
+```
+
+`0x82000007` is a data abort that translates as a level-3 translation fault,
+so a userspace pointer in backboardd is bad; the PC and the backtrace are the
+same on every respawn, SpringBoard, PosterBoard and WidgetRenderer are
+terminated with it, and ReportCrash dies the same way, which is why no crash
+report is written.
+
+## The context-bank FSR is not a fault
+
+`cb0 fsr 400` looked like a translation fault. The vendor kernel's
+`arm-smmu-regs.h` settles it: `FSR_TF` is bit 1, and the fault mask is
+`0xc00001fe` (bits 31, 30, 8, 7, 6, 5, 4, 3, 2, 1). `0x400` is bit 10, outside
+that mask, which is exactly why the kit's own fault test never fired. Bit 10 is
+either implementation-defined on this part or the readback is not the register
+it is taken for; it stays recorded and unexplained, and it is not the reason
+the desktop does not draw.
+
 ## The screenshot channel
 
 The USB console's `SCREENSHOT`/`SHOTNEXT` pair answers with a ready frame
