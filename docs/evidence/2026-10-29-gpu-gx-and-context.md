@@ -75,6 +75,52 @@ The board inputs were confirmed against the K40 vendor tree
 `qcom,firmware-name = "a650_zap"`, `pil_gpu_region@8681a000` (size 0x2000,
 no-map) and `interrupts = <0 300 IRQ_TYPE_LEVEL_HIGH>`.
 
+## Mode 11 — the published device
+
+```
+GPUROW23 PUBLISH ok submit 0 timer 0 publish 0 | uc 36/36 first 0 at 0 cpumap 0 | rounds 4 4
+```
+
+`submit 0` and `timer 0` are the attach results, `publish 0` is
+`native_adreno_publish`, and `uc 36/36` means every step of two kernel-side
+user-client rounds passed: open, two BOs, an IB of three CP_MEM_WRITEs, the
+fence and close. No process outside the kernel had opened the service.
+
+## Mode 12 and the Metal staging
+
+The original Metal discovery starts at `IOAcceleratorES`, so the published
+device alone is not enough: something has to register a service that names
+the plugin. The staged accelerator does that. It compiles from the A650
+checkout into the same `libAdreno740.a` the kernel links, with three
+`IOAcceleratorES` imports bound to the audited addresses
+(`0xfffffff004bd3b20` constructor alias, `0xfffffff004bd3b64` destructor,
+`0xfffffff006aeb688` metaclass), its `__mod_init_func` registration removed
+and its initializer globalised so the probe runs it after `IOGPUFamily`.
+
+Turnip, the plugin bundle and the owner trust module are staged by
+`build-turnip-darwin.py`, `build-adreno-metal-plugin.py` and
+`add-gpu-plugin-data.py --publish`; the staged seed is the payload's
+`--data-ramdisk`.
+
+```
+GPUROW24 METAL ok: accelerator registered (IOGPUFamily loaded, class size 136), Turnip options nocb
+GPUROW25 LIVE irq9 ... | sub 7/7 t2 p0 | uc 4/4 | pool 128/128/768 ... | busy 0
+```
+
+The live row is the proof that the path is alive: it moved from
+`sub 2/2 | uc 2/2` (the probe's own rounds) to `sub 7/7 | uc 4/4` with the
+128 MiB pool taken, so two processes outside the kernel opened the GPU
+service and completed five more submissions.
+
+## The screenshot channel
+
+The USB console's `SCREENSHOT`/`SHOTNEXT` pair answers with a ready frame
+(1080x2400, RLE) and then loses the device with ENXIO about a second into the
+transfer. The same happens on an image without the plugin, so it is
+independent of the graphics stack. Until it is fixed, the LIVE and FAULTS
+rows are the only machine-readable evidence, and the picture itself needs a
+person or a different read-back path.
+
 ## Open
 
 `cb0 fsr 00000400` on the GPU's context bank, next to a successful write and a
