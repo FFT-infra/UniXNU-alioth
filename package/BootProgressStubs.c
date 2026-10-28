@@ -171,9 +171,15 @@ __attribute__((weak)) uint64_t boot_ui_trace_rows[14][120];
 __attribute__((weak)) uint64_t debug_buf_base;
 __attribute__((weak)) uint64_t kernel_debugger_entry_count;
 __attribute__((weak)) uint64_t native_adreno_cache_stats[5];
-__attribute__((weak)) uint64_t native_adreno_client_log[8];
+/* The real layouts, from NativeAdrenoPublish.cpp: open record 20 + 5*4 = 40 B, client record
+ * 20 + 6*4 = 44 B, client text 20 + 64 = 84 B. A uint64_t placeholder was 8 B an entry, so a
+ * build that linked the page without the driver would mis-address every field BootProgress.c
+ * reads (the same trap native_hid_input_events had with uint64_t against uint32_t). */
+__attribute__((weak)) uint8_t native_adreno_open_log[8][40];
+__attribute__((weak)) uint8_t native_adreno_client_log[8][44];
+__attribute__((weak)) uint32_t native_adreno_open_log_count;
 __attribute__((weak)) uint64_t native_adreno_client_stats[5][6];
-__attribute__((weak)) uint64_t native_adreno_client_text[4];
+__attribute__((weak)) uint8_t native_adreno_client_text[4][84];
 __attribute__((weak)) uint64_t native_adreno_coherence[8];
 __attribute__((weak)) uint64_t native_adreno_coherent_skips[4];
 __attribute__((weak)) uint64_t native_adreno_export_stats[4];
