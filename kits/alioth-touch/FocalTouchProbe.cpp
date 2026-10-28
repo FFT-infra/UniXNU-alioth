@@ -283,6 +283,19 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
         if (y < 0) y = 0; if (y >= FTS5652_HID_AXIS_Y) y = FTS5652_HID_AXIS_Y - 1;
         xs[i] = (int)x; ys[i] = (int)y; ids[i] = c[i].id;
     }
+    /* The part reports up to five points on a panel nobody is touching, each carrying no area.
+     * Published as they are, iOS sees a palm and ignores every contact -- which is what a round
+     * with reports=781, max=5 and no reaction looks like. Keep only contacts the part gives a
+     * non-zero area. */
+    {
+        unsigned kept = 0;
+        for (unsigned i = 0; i < count && i < 12; ++i) {
+            if (c[i].area == 0) continue;
+            xs[kept] = xs[i]; ys[kept] = ys[i]; ids[kept] = ids[i];
+            ++kept;
+        }
+        count = kept;
+    }
     native_touch_seq = native_touch_seq + 1;
     __asm__ volatile("dmb ish" ::: "memory");
     native_touch_count = count;
