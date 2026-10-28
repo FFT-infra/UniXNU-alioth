@@ -108,11 +108,12 @@ CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a"
 # family, which is why scripts/build-gop-legacy-display.py re-proves each address against this
 # kernel before it links: the family is prelinked here, not exported.
 CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
-# The A650 kernel GPU driver (drivers/Adreno650, built by scripts/build-adreno650.py) and the
-# board probe that drives it. Off until the probe's read-only mode has been run on the board:
-# with it on, the archive is linked and package/GpuProbe.cpp runs at pipa-gpu=<mode>.
-CONFIG_XNU_NATIVE_ADRENO=y
-CONFIG_XNU_NATIVE_ADRENO_ARCHIVE="libAdreno650.a"
+# The A650 GPU driver stays off for now. scripts/build-adreno650.py builds
+# build/adreno650/libAdreno650.a (verified: 1.29 MB), but the kernel step checks the same
+# CONFIG_XNU_NATIVE_ADRENO_ARCHIVE from two different working directories -- unixnu checks it
+# against the checkout root in scripts/unixnu/kernel.py:145, and build-xnu-4k-baseline.sh:637
+# checks it against the tree -- so no single value satisfies both. Resolving that needs a
+# normalisation in kernel.py, not another path guess.
 # NATIVE_MOBILE_DISPLAY stays off. offline-component-load-probes.patch calls
 # native_mobile_display_provider_probe() under that switch, and the definition lives in
 # NativeMobileDisplay.cpp, which this archive does not carry. Turning it on adds an undefined

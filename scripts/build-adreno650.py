@@ -7,18 +7,25 @@ SMMU context and memory (NativeAdrenoGmuContext/Memory), the HFI kit (kits/Adren
 (package/A650Gmu.c). NativeAdrenoService.cpp (sheng's A740 service) stays out; the board probe (package/GpuProbe.cpp,
 pipa-gpu=<mode>) drives these objects. No firmware is embedded here: the GMU, SQE and zap images are the board probe's
 (build-gop-legacy-display.py)."""
-import json, re, subprocess, sys
+import json, os, re, subprocess, sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 c_recipe = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/bsd/DEVELOPMENT/bsd_init.o.json').read_text().strip().rstrip(','))
 cxx_recipe = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json').read_text().strip().rstrip(','))
 out = ROOT / 'build/adreno650'
 out.mkdir(parents=True, exist_ok=True)
-driver = ROOT / 'drivers/Adreno650'
-sources = sorted((ROOT / 'kits/ArmSmmu4K').glob('ArmSmmu4K*.c')) + [ROOT / 'kits/AdrenoPM4/AdrenoPM4.c']
+# The driver checkout is an input for the same reason as the kits: Adreno650 is not a
+# component in UniXNU's catalogue, so the tree has no drivers/Adreno650 unless this names it.
+driver = Path(os.environ.get('ADRENO650_DRIVER', str(ROOT / 'drivers/Adreno650')))
+# The three upstream kits this recipe compiles are not copied into the generated tree unless a
+# selected component asks for them, so the directory is an input rather than an assumption:
+# ADRENO650_KITS names it, and a build passes this repository's kits directory.
+import os
+KITS = Path(os.environ.get('ADRENO650_KITS', str(ROOT / 'kits')))
+sources = sorted(KITS.joinpath('ArmSmmu4K').glob('ArmSmmu4K*.c')) + [KITS / 'AdrenoPM4' / 'AdrenoPM4.c']
 # The HFI kit and the A650 cold start that uses it.
-sources += [ROOT / 'kits/AdrenoFirmware' / (name + '.c') for name in ('AdrenoFirmware', 'AdrenoHfi', 'AdrenoHfiStartup', 'AdrenoHfiVotes')]
-sources += [ROOT / 'kits/pipa/A650Gmu.c']
+sources += [KITS / 'AdrenoFirmware' / (name + '.c') for name in ('AdrenoFirmware', 'AdrenoHfi', 'AdrenoHfiStartup', 'AdrenoHfiVotes')]
+sources += [KITS / 'pipa' / 'A650Gmu.c']
 # The GPU half of NativeAdreno and the GMU's SMMU context. Left out: sheng's GMU platform nodes and service
 # (NativeAdrenoService.cpp, NativeAdrenoGmuService/Platform/Config) and the accelerator.
 sources += [driver / (name + '.cpp') for name in (
@@ -46,7 +53,7 @@ for source in sources:
             command.append(value)
         i += 1
     command += ['-I', str(ROOT / 'kits/AdrenoPM4'), '-I', str(ROOT / 'kits/ArmSmmu4K'), '-I', str(ROOT / 'kits/AdrenoFirmware'),
-                '-I', str(ROOT / 'kits/pipa'), '-I', str(ROOT / '.cache/xnu-work/osfmk'),
+                '-I', str(KITS / 'pipa'), '-I', str(KITS / 'AdrenoFirmware'), '-I', str(KITS / 'AdrenoPM4'), '-I', str(KITS / 'ArmSmmu4K'), '-I', str(ROOT / '.cache/xnu-work/osfmk'),
                 '-I', str(driver), '-Wall', '-Wextra', '-Werror',
                 '-Wno-unused-parameter', '-Wno-incompatible-sysroot', '-Wno-c99-designator',
                 '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion',
