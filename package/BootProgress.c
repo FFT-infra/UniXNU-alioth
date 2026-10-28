@@ -192,6 +192,10 @@ extern volatile uint32_t native_adreno_mount_fail[4] __attribute__((weak_import)
 extern volatile uint32_t native_adreno_method_stats[20][4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_client_stats[5][6] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_map_fail[7][2] __attribute__((weak_import));
+// Fence waits and the stall recovery: [2] is the fence the CPU waited for, [3] the value the GPU
+// had written at that moment, so [3] < [2] says the GPU is behind rather than the wait being wrong.
+extern volatile uint32_t native_adreno_fence_wait[8] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_unstick[15] __attribute__((weak_import));
 static void gpu_client_report(void) {
   static uint32_t lastOpens, lastCloses, lastFail;
   uint32_t closes = 0, fail = &native_adreno_mount_fail ? native_adreno_mount_fail[3] : 0;
@@ -243,6 +247,18 @@ static void gpu_client_report(void) {
                  native_adreno_map_fail[5][1], native_adreno_map_fail[6][0], native_adreno_map_fail[6][1]);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
     break;
+  }
+  if (&native_adreno_fence_wait) {
+    const volatile uint32_t *f = native_adreno_fence_wait;
+    n = snprintf(line, sizeof line, "GPUFENCE calls %u timeouts %u waited %u gpu %u newest %u done %u observe %u refused %u\n",
+                 f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+  if (&native_adreno_unstick) {
+    const volatile uint32_t *u = native_adreno_unstick;
+    n = snprintf(line, sizeof line, "GPUUNSTICK enter %u fence %u stage3 %u rec %u/%u/%u/%u max %u\n",
+                 u[0], u[1], u[4], u[8], u[9], u[10], u[11], u[12]);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   if (&native_adreno_mount_fail && (native_adreno_mount_fail[0] || fail)) {
     n = snprintf(line, sizeof line, "GPUMOUNT fail %u/%x slot %u count %u\n", native_adreno_mount_fail[0],
