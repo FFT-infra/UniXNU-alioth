@@ -288,6 +288,14 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
         memory->release();
     }
     if (!gSmmuMap) {snprintf(ctx, cap, "GMUCTX nomap"); changed(); return;}
+    // What SMR/S2CR hold for the GMU's two slots *before* the kit programs them. Zero means
+    // the slots are free and the kit's own write failed; non-zero means something else
+    // already owns them, which is what kIOReturnNotPermitted with smr reading back 0 suggests.
+    {
+        volatile uint32_t *s = reinterpret_cast<volatile uint32_t *>(gSmmuMap->getVirtualAddress());
+        snprintf(native_gpu_rows[kRowLoad], cap, "PRE smr2 %08x smr3 %08x s2cr2 %08x s2cr3 %08x",
+                 s[0x800 / 4 + 2], s[0x800 / 4 + 3], s[0xc00 / 4 + 2], s[0xc00 / 4 + 3]);
+    }
     NativeAdrenoGmuContextReport &g = native_gpu_gmu_context;
     const IOReturn status = NativeAdrenoGmuContextBringupRoutes(reinterpret_cast<volatile uint8_t *>(gSmmuMap->getVirtualAddress()),
         kSmmuWindow, kGmuBank, kGmuAsid, kGmuSlots, kGmuSids, 2, contextProgress, &g);
