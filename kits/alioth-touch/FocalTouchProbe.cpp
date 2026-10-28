@@ -44,6 +44,7 @@ volatile int native_touch_raw_miny = 0x7fffffff, native_touch_raw_maxy = -1;
 volatile uint32_t native_touch_ev[4];
 volatile int native_touch_rel_x, native_touch_rel_y, native_touch_rel_ev = -1;
 static int lastSeenX, lastSeenY, lastSeenEv = -1;
+static unsigned emptyRun;   /* consecutive frames with no contact, see publish() */
 // Consumer-side accounting that the HID digitizer (NativeHidInput) maintains;
 // defined here so the probe archive alone satisfies the digitizer's link.
 // native_touch_edge_stats and native_touch_hid_multi belong to ShengHidInput: NativeHidInput.cpp
@@ -298,6 +299,17 @@ void panelStage(void *ctx, const char *name, unsigned value, int result) {
 // Map the touch 12-bit raw coordinates onto the 0.1 mm axes the HID layer expects.
 void publish(const struct Fts5652Contact *c, unsigned count) {
     int xs[12], ys[12], ids[12];
+    /* A frame with no contacts is not the same as a finger leaving. At this poll rate the part
+     * answers with an empty frame between its own reports -- usb186 read 17,347 frames and only
+     * 91 carried a contact -- and every one of those empty frames made the HID layer synthesise
+     * a lift, so one continuous press reached the system as dozens of press/release pairs. The
+     * reference implementation holds a contact for three frames before declaring it gone
+     * (NvtTouchCore.c:294-299, NVT_HOLD_FRAMES 3). Hold the same way: publish nothing until the
+     * gap is longer than that, which leaves the previous contact set in place. */
+    if (count == 0 && emptyRun < TB_EMPTY_HOLD_FRAMES) {
+        emptyRun = emptyRun + 1;
+        return;
+    }
     if (count == 0) {
         /* Nothing in this frame: the one before it was the release. Keep its last contact so the
          * diagnostic can say whether the part tags a release as up (1, dropped before it can be
@@ -306,6 +318,7 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
         native_touch_rel_y = lastSeenY;
         native_touch_rel_ev = lastSeenEv;
     } else {
+        emptyRun = 0;
         for (unsigned i = 0; i < count && i < 12; ++i) {
             if (c[i].event < 4) native_touch_ev[c[i].event] = native_touch_ev[c[i].event] + 1;
         }

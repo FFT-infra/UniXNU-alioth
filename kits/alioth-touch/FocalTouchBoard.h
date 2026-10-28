@@ -101,6 +101,9 @@
 // (about once a minute at the frame period), which is what decides whether the part needs the
 // recovery sequence.
 #define TB_REG_POLL_FRAMES 3000u
+// Frames with no contact to tolerate before a contact counts as lifted; the reference holds 3
+// (NvtTouchCore.c:294-299). At the 6 ms poll this is about 18 ms.
+#define TB_EMPTY_HOLD_FRAMES 3u
 #define TB_RESET_ASSERT_US 1200u
 #define TB_RESET_RELEASE_US 9000u
 // Rail settle time while reset is held low: the vendor driver and the ios-sweet port both wait
