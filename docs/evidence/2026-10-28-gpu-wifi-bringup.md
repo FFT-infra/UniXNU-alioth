@@ -56,3 +56,21 @@ PCIE 9: parf_axi_mstr_wr_addr_halt_v2 = 0x80000014
 
 结论：控制器可从完全塌陷上电并经 PARF 配置，全部与 ios-sweet 系列在这台机器上的记录一致。
 step 10（DBI/配置空间/链路训练）在参考实现里也从未运行。
+
+## 追加：step 5 通过，step 10 仍未通过
+
+`pcie=5`（不跳过 PHY）：
+
+```
+PCIE 5: gcc pcie_phy_aux after the reset (0xfffffff274507004) = 0x1
+PCIE 5: gcc pcie_0_phy_bcr after (0xfffffff27450401c) = 0
+PCIE 5: about to write gcc pcie_phy_com_bcr (release) at 0xfffffff274507010: 0
+PCIE 5: the PHY IS READY (status 0x69, bit 6 is its ready)
+PCIE 5: step 5: done
+```
+
+ios-sweet 当年跳过这一步（`pcie_skip=32`），因为它释放 PHY common reset 时会把整机打死。
+**在本内核与本板上它跑完且 PHY 就绪（0x69）**，所以那条限制不适用于这里。
+
+`pcie=10`（已有 pipe clock）：日志停在 `step 9: done`，设备回到 bootloader。
+所以"step 10 需要 pipe clock"这个判断**最多只对了一半**，下一步要读的是它第一个访问碰了什么。
