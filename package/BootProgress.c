@@ -170,6 +170,7 @@ extern volatile int native_hid_load_status __attribute__((weak_import));
 extern volatile int native_hid_input_meta_status __attribute__((weak_import));
 extern volatile uint32_t native_hid_class_sizes[5] __attribute__((weak_import));
 extern volatile int native_hid_matching_load_status __attribute__((weak_import));
+extern volatile uint32_t native_hid_touch_status __attribute__((weak_import));
 extern volatile uint32_t native_touch_edge_stats[4] __attribute__((weak_import));
 extern volatile int native_hid_input_results[8] __attribute__((weak_import));
 extern volatile uint32_t native_touch_loop_step __attribute__((weak_import));
@@ -1367,9 +1368,9 @@ static void touch_time_report(unsigned now) {
   }
   last_frames = frames; last_count = count;
   sent = 1;
-  char log[176];
+  char log[224];
   int n = snprintf(log, sizeof(log),
-    "TOUCHSTAT t=%us frames=%u valid=%u contacts=%u irq=%u low=%u hid=%u xy=%d,%d raw=%02x%02x%02x%02x%02x%02x hstage=%u hload=%d hml=%d hmeta=%d hcls=%u hevdrv=%u hres=%d edge=%u,%u loop=%u fail=%u\n",
+    "TOUCHSTAT t=%us frames=%u valid=%u contacts=%u irq=%u low=%u hid=%u xy=%d,%d raw=%02x%02x%02x%02x%02x%02x hstage=%u hload=%d hml=%d hmeta=%d hcls=%u hevdrv=%u hres=%d edge=%u,%u loop=%u fail=%u tsplit=%u\n",
     now, frames, valid, count,
     &native_touch_irq_level ? __atomic_load_n(&native_touch_irq_level, __ATOMIC_RELAXED) : 9,
     &native_touch_irq_low ? __atomic_load_n(&native_touch_irq_low, __ATOMIC_RELAXED) : 0,
@@ -1386,7 +1387,9 @@ static void touch_time_report(unsigned now) {
     &native_hid_input_results ? native_hid_input_results[6] : 99,
     &native_touch_edge_stats ? native_touch_edge_stats[0] : 0,
     &native_touch_edge_stats ? native_touch_edge_stats[1] : 0,
-    loop, fail);
+    loop, fail,
+    /* The split digitizer: 0 not asked for, 1 started, 2 the device refused to start. */
+    &native_hid_touch_status ? native_hid_touch_status : 0);
   if (n > 0) qcom_usb_debug_write(log, (size_t)n < sizeof(log) ? (size_t)n : sizeof(log) - 1);
 }
 static void monitor(void *arg, wait_result_t result) {

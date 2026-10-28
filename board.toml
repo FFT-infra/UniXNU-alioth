@@ -410,7 +410,10 @@ kernel_args = [
   # That round is the only observation so far, and it is not clear the writer thread was running
   # through it, so the persistent log has to record the reset before the reading is trusted.
   # The timer lives in the writer thread, so it needs sheng-log=1 further down this list.
-  "sheng-autoreset=150",
+  # 120 s, not 150: measured on boot-usb102 the desktop is up well before 150, and an
+  # unattended run has nobody to touch the panel, so the reset should not wait past the
+  # desktop. The timer counts from the writer's own start, a few seconds after boot.
+  "sheng-autoreset=120",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
@@ -456,6 +459,12 @@ kernel_args = [
   # started (TOUCH start=1) and the desktop came up, but nothing reached the system.
   # The reference board passes the same argument.
   "sheng-touch-hid=1",
+  # Publishes the digitizer as its own IOHIDDevice, the way the reference board does. The
+  # combined device has never reached the window server here: reports are attempted (hid
+  # rises), handleReport refuses them (hres=1), and edge still counts real touches. The
+  # driver already implements the split (NativeHidInput.cpp setTouchOnly /
+  # native_hid_touch_allocate); this argument is the only thing that was missing.
+  "sheng-touch-split=1",
   # Starts the HID publisher itself. The publisher is an IOHIDDevice compiled into this kernel,
   # so IOKit has no personality for it and nothing matches it; the board calls it from
   # native_legacy_display_late_probe, the second of the two start paths the driver adaption

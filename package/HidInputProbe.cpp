@@ -37,7 +37,9 @@ volatile int native_hid_matching_load_status = -1;
 volatile uint32_t native_hid_stage, native_hid_resource_found;
 volatile int native_hid_load_status = -1, native_hid_input_meta_status = -1;
 volatile uint32_t native_hid_class_sizes[5];
-volatile uint64_t native_hid_input_object;
+volatile uint64_t native_hid_input_object, native_hid_touch_object;
+// 0 not asked for, 1 started, 2 the device refused to start.
+volatile uint32_t native_hid_touch_status;
 // The publisher's tick asks whether it should run. The touch core feeds it directly through
 // the sink, so nothing has to poll: answer yes once the board has asked for the digitizer.
 volatile uint32_t native_hid_input_command;
@@ -106,6 +108,27 @@ extern "C" int native_hid_input_probe(void) {
     return result;
   }
   native_hid_stage = 8;
+  // A second IOHIDDevice carrying only the digitizer. The combined device above publishes
+  // whatever the touch core hands it, and on this board that has never reached the window
+  // server: reports are attempted (hid rises) and handleReport refuses them (hres=1), while
+  // edge keeps counting real touches. sheng publishes the digitizer as its own service when
+  // sheng-touch-split=1, and the driver already carries both halves
+  // (NativeHidInput.cpp:267 setTouchOnly / :320 native_hid_touch_allocate); only the call was
+  // missing here. Gated on the same sheng-touch-hid=1 the reference requires.
+  unsigned split = 0, touchHid = 0;
+  if (PE_parse_boot_argn("sheng-touch-split", &split, sizeof split) && split == 1 &&
+      PE_parse_boot_argn("sheng-touch-hid", &touchHid, sizeof touchHid) && touchHid == 1) {
+    IOService *touch = native_hid_touch_allocate();
+    native_hid_touch_object = (uintptr_t) touch;
+    bool touchStarted = touch && touch->metaCast("IOHIDDevice") && touch->init() &&
+                        touch->attach(resource) && touch->start(resource);
+    if (!touchStarted && touch) {
+      touch->detach(resource);
+      OSSafeReleaseNULL(touch);
+      native_hid_touch_object = 0;
+    }
+    native_hid_touch_status = touchStarted ? 1 : 2;
+  }
   result = 0;
   OSSafeReleaseNULL(resource);
   return result;
