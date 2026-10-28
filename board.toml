@@ -132,7 +132,11 @@ volume = "ALIOTHESP"
 # boot shim, the firmware volume and the appended device tree does not fit;
 # 184 MiB also leaves less than the required 8 MiB safety margin. 176 MiB is
 # the value the archived alioth port booted on hardware.
-size_mib = 176
+# 180 since the Metal staging: the Data seed grew from 1.2 MiB to 40 MiB with
+# the plugin bundle and Turnip, the payload files now take 168 MiB, and the
+# builder refuses content above 95% of this value. 180 leaves 12 MiB against
+# the partition.
+size_mib = 180
 loader = "firmware"
 title = "Boot"
 # The board's DRAM from 0x80000000 to the end of the last bank.
@@ -143,12 +147,16 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # and AMFI refuses the first exec: launchd's code signature is not in any loaded cache,
 # so mpo_cred_label_update_execve sets ip_mac_return and the kernel kills initproc with
 # OS_REASON_EXEC (9) / EXEC_EXIT_REASON_SECURITY_POLICY (0x8).
-# The bundle is the two unchanged 21H461 modules, StaticTrustCache then
+# The bundle was the two unchanged 21H461 modules, StaticTrustCache then
 # Cryptex1,SystemTrustCache, exactly as scripts/build-original-system-trust.py builds them.
 # Measured: launchd's cdhash 1d52c69747dffc4b1937d241bdbc9cee3b22df18 is one of the 2478
 # StaticTrustCache entries and is absent from the 76-entry SystemTrustCache.
+# Since the Metal staging it is the three-module owner bundle that
+# scripts/make-owner-trust-bundle.py builds: one owner module carrying the Adreno Metal
+# plugin's CDHash (0d246bc7) plus the same two original modules byte for byte, which the
+# script verifies against build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
+  "b5bae85925a8e78b1dda46d6cf0fb937299e38ee4059377e91c472a2ba322e0f",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -435,12 +443,12 @@ kernel_args = [
   # visible at the edge of the desktop after the renderer came up. The serial console and
   # the persistent log carry the same rows.
   "boot-progress=2",
-  # boot-diag-resume=<seconds> lets the diagnostic page take the panel back that long after
-  # scanout stops. Measured 2026-10-27 on boot-usb33: SpringBoard reached the lock screen, but
+  # boot-diag-resume=<seconds> let the diagnostic page take the panel back that long after
+  # scanout stopped. Measured 2026-10-27 on boot-usb33: SpringBoard reached the lock screen, but
   # this page took the panel back every time the renderer paused for ten seconds, so the desktop
-  # appeared and vanished in alternation. The console carries the diagnostics now, so the page
-  # no longer has to hold the panel: 0 leaves it to the renderer for good.
-  "boot-diag-resume=0",
+  # appeared and vanished in alternation. Dropped on 2026-10-29: resume_after is file-scope zero
+  # and BootProgress.c:635 only writes it when the argument is present and in range, so the
+  # argument repeated the default and the command line needed the room for sheng-banner=0.
   # qcom-usb-debug=1 starts the CDC-ACM console over the board's DWC3 controller. It tees
   # printf, IOLog, kprintf and the panic drain onto a USB serial port, so the log can be read
   # live on the host instead of photographed off the panel. The firmware already brings the
