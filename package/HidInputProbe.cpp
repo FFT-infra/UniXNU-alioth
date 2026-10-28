@@ -148,13 +148,15 @@ extern "C" void native_hid_live_checkpoint(IORegistryEntry *driver) {
   if (!driver) return;
   static IORegistryEntry *publishedFor;
   if (publishedFor == driver) return;
-  if (!driver->getProperty("Built-In")) {
-    driver->setProperty("Built-In", kOSBooleanTrue);
-    driver->setProperty("DisplayIntegrated", kOSBooleanTrue);
-    driver->setProperty("PrimaryUsagePage", (unsigned long long) 0x0d, 32);
-    driver->setProperty("PrimaryUsage", (unsigned long long) 4, 32);
-  }
   publishedFor = driver;
+  /* Set unconditionally, once per driver. An earlier version guarded this with
+   * !driver->getProperty("Built-In"), which is backwards: the reference waits for the DEVICE to
+   * have Built-In and then sets the properties on the DRIVER, so a driver that already carried
+   * Built-In but no PrimaryUsagePage would never get one. */
+  driver->setProperty("Built-In", kOSBooleanTrue);
+  driver->setProperty("DisplayIntegrated", kOSBooleanTrue);
+  driver->setProperty("PrimaryUsagePage", (unsigned long long) 0x0d, 32);
+  driver->setProperty("PrimaryUsage", (unsigned long long) 4, 32);
   if (IORegistryEntry *interface = driver->getParentEntry(gIOServicePlane)) {
     interface->setProperty("Built-In", kOSBooleanTrue);
     interface->setProperty("DisplayIntegrated", kOSBooleanTrue);
