@@ -1482,7 +1482,7 @@ void memBench() {
 }
 
 void gpuThread(void *, wait_result_t) {
-    IOSleep(5000);
+    IOSleep(200);   // early enough that the SMMU, if it is locked at some point during boot, may not be yet
     memBench();
     native_gpu_step = 1;
     unsigned have = 0;
