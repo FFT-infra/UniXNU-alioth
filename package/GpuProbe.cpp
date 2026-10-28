@@ -362,9 +362,18 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
         }
         snprintf(native_gpu_rows[kRowLoad], cap, "PRE acr %08x smr5 %08x->%08x ml %08x->%08x apps5 %08x",
                  acr, probe_val, got, ml_wrote, ml_got, apps_wrote);
-        // Leave S2CR alone. Clearing a slot whose SMR is zero turned its type from FAULT into
-        // TRANSLATE, and a slot is only recognised as free while its type is FAULT: the write
-        // meant to help is what kept the attach failing.
+        /* The kit calls a stream slot free only when its S2CR reads exactly 0x00020000, and this
+         * unit's firmware leaves 0x000203ff in the unused ones: type FAULT with CBNDX 0xff still
+         * in the low byte. Writing the canonical FAULT word makes those slots recognisable
+         * without changing the kit, which belongs upstream and is not ours to fork here. With
+         * type FAULT the hardware ignores the rest of the word, so an unmatched stream is
+         * treated exactly as before. Only slots already in FAULT are touched, and clearing a
+         * slot to zero is what went wrong before: zero is type TRANSLATE, not free. */
+        for (unsigned i = 0; i < sizeof(kGmuSlots) / sizeof(kGmuSlots[0]); ++i) {
+            volatile uint32_t *s2cr = &s[(0xc00 / 4) + kGmuSlots[i]];
+            if ((*s2cr & (3u << 16)) == (2u << 16)) *s2cr = 0x00020000u;
+        }
+        __asm__ volatile("dsb sy" ::: "memory");
     }
     NativeAdrenoGmuContextReport &g = native_gpu_gmu_context;
     const IOReturn status = NativeAdrenoGmuContextBringupRoutes(reinterpret_cast<volatile uint8_t *>(gSmmuMap->getVirtualAddress()),
@@ -625,6 +634,17 @@ bool gpuContext() {
     unsigned pool = 768;
     PE_parse_boot_argn("pipa-gpu-pool", &pool, sizeof pool);
     native_adreno_pool_mib = pool;
+    /* Same normalisation the GMU slots get: the kit's free-slot test compares the whole S2CR
+     * word, and this unit's unused slots carry CBNDX 0xff beside a FAULT type. Rewrite only
+     * those, so a slot that is really in use is left alone. */
+    {
+        volatile uint32_t *s2 = reinterpret_cast<volatile uint32_t *>(gSmmuMap->getVirtualAddress());
+        for (unsigned i = 0; i < sizeof(kGpuSlots) / sizeof(kGpuSlots[0]); ++i) {
+            volatile uint32_t *s2cr = &s2[(0xc00 / 4) + kGpuSlots[i]];
+            if ((*s2cr & (3u << 16)) == (2u << 16)) *s2cr = 0x00020000u;
+        }
+        __asm__ volatile("dsb sy" ::: "memory");
+    }
     NativeAdrenoGmuContextReport &g = native_gpu_context;
     const IOReturn ctx = NativeAdrenoGpuContextBringupRoutes(reinterpret_cast<volatile uint8_t *>(gSmmuMap->getVirtualAddress()),
         kSmmuWindow, kGpuBank, kGpuAsid, kGpuSlots, kGpuSids, 4, naProgress, &g);
