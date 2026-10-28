@@ -174,6 +174,53 @@ extern volatile uint32_t native_hid_touch_status __attribute__((weak_import));
 // The A650 probe's rows. Row 0 is its verdict line ("GPU m1 gcc=... cc=... smmu=... gpu=...
 // io=..."); the board does not render these on the page, so the console carries the first one.
 extern char native_gpu_rows[][120] __attribute__((weak_import));
+// Who opens the published GPU service apart from the probe, whether the two sandbox gates let
+// them in, and the last line each streamed. Without these the console only shows that clients
+// came and went (the LIVE row's uc counter), not which process or why it left.
+struct gpu_open_record {char name[20]; uint32_t type, macf, res, attach, foreign;};
+struct gpu_client_record {char name[20]; uint32_t opens, refused, closes, slot, peak_mib, last_refusal;};
+struct gpu_client_text {char name[20]; char text[64];};
+extern struct gpu_open_record native_adreno_open_log[8] __attribute__((weak_import));
+extern struct gpu_client_record native_adreno_client_log[8] __attribute__((weak_import));
+extern struct gpu_client_text native_adreno_client_text[4] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_open_log_count __attribute__((weak_import));
+extern volatile uint32_t native_adreno_mount_fail[4] __attribute__((weak_import));
+static void gpu_client_report(void) {
+  static uint32_t lastOpens, lastCloses, lastFail;
+  uint32_t closes = 0, fail = &native_adreno_mount_fail ? native_adreno_mount_fail[3] : 0;
+  if (&native_adreno_client_log)
+    for (unsigned i = 0; i < 8; ++i) closes += native_adreno_client_log[i].closes;
+  const uint32_t opens = &native_adreno_open_log_count ? native_adreno_open_log_count : 0;
+  if (opens == lastOpens && closes == lastCloses && fail == lastFail) return;
+  lastOpens = opens; lastCloses = closes; lastFail = fail;
+  char line[144];
+  int n;
+  for (unsigned i = 0; &native_adreno_open_log && i < opens && i < 8; ++i) {
+    const struct gpu_open_record *r = &native_adreno_open_log[i];
+    if (!r->name[0]) continue;
+    n = snprintf(line, sizeof line, "GPUOPEN %s type %x macf %x res %x attach %x foreign %x\n",
+                 r->name, r->type, r->macf, r->res, r->attach, r->foreign);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+  for (unsigned i = 0; &native_adreno_client_log && i < 8; ++i) {
+    const struct gpu_client_record *r = &native_adreno_client_log[i];
+    if (!r->name[0]) continue;
+    n = snprintf(line, sizeof line, "GPUCCLI %s opens %u refused %u closes %u slot %u peak %u last %x\n",
+                 r->name, r->opens, r->refused, r->closes, r->slot, r->peak_mib, r->last_refusal);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+  for (unsigned i = 0; &native_adreno_client_text && i < 4; ++i) {
+    const struct gpu_client_text *r = &native_adreno_client_text[i];
+    if (!r->name[0]) continue;
+    n = snprintf(line, sizeof line, "GPUCLIENT %s %s\n", r->name, r->text);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+  if (&native_adreno_mount_fail && (native_adreno_mount_fail[0] || fail)) {
+    n = snprintf(line, sizeof line, "GPUMOUNT fail %u/%x slot %u count %u\n", native_adreno_mount_fail[0],
+                 native_adreno_mount_fail[1], native_adreno_mount_fail[2], fail);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+}
 // The wallpaper overlay's mount: stage says how far it got, status is the refusal code.
 extern volatile int native_gpu_addon3_stage __attribute__((weak_import));
 extern volatile int native_gpu_addon3_status __attribute__((weak_import));
@@ -1348,6 +1395,7 @@ static void ufs_time_report(unsigned now) {
       if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
     }
     gpuRowsSentAt = now;
+    gpu_client_report();
     if (&native_gpu_addon3_stage) {
       char wall[96];
       int w = snprintf(wall, sizeof wall, "WALLPAPER stage=%d status=%d\n",
@@ -1434,6 +1482,7 @@ static void touch_time_report(unsigned now) {
       if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
     }
     gpuRowsSentAt = now;
+    gpu_client_report();
     if (&native_gpu_addon3_stage) {
       char wall[96];
       int w = snprintf(wall, sizeof wall, "WALLPAPER stage=%d status=%d\n",
@@ -1500,6 +1549,7 @@ static void gpu_rows_report(unsigned now) {
     if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
   }
   sentAt = now;
+  gpu_client_report();
   if (&native_gpu_addon3_stage) {
     char wall[96];
     int w = snprintf(wall, sizeof wall, "WALLPAPER stage=%d status=%d\n",
