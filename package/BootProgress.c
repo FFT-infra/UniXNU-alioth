@@ -185,6 +185,13 @@ extern struct gpu_client_record native_adreno_client_log[8] __attribute__((weak_
 extern struct gpu_client_text native_adreno_client_text[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_open_log_count __attribute__((weak_import));
 extern volatile uint32_t native_adreno_mount_fail[4] __attribute__((weak_import));
+// Which ABI methods a client actually calls and which of them fail, the per-slot refusals, and why
+// maps failed. NativeAdrenoUserClient.cpp notes that Turnip turns any refusal into
+// VK_ERROR_OUT_OF_DEVICE_MEMORY and its command streams do not check it, which is how a client
+// ends up writing through a NULL pointer; these counters say which call it was.
+extern volatile uint32_t native_adreno_method_stats[20][4] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_client_stats[5][6] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_map_fail[7][2] __attribute__((weak_import));
 static void gpu_client_report(void) {
   static uint32_t lastOpens, lastCloses, lastFail;
   uint32_t closes = 0, fail = &native_adreno_mount_fail ? native_adreno_mount_fail[3] : 0;
@@ -214,6 +221,28 @@ static void gpu_client_report(void) {
     if (!r->name[0]) continue;
     n = snprintf(line, sizeof line, "GPUCLIENT %s %s\n", r->name, r->text);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+  for (unsigned m = 1; &native_adreno_method_stats && m < 20; ++m) {
+    if (!native_adreno_method_stats[m][0]) continue;
+    n = snprintf(line, sizeof line, "GPUMETH m %u calls %u fail %u last %x us %u\n", m,
+                 native_adreno_method_stats[m][0], native_adreno_method_stats[m][1],
+                 native_adreno_method_stats[m][2], native_adreno_method_stats[m][3]);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+  for (unsigned s = 0; &native_adreno_client_stats && s < 5; ++s) {
+    const volatile uint32_t *r = native_adreno_client_stats[s];
+    if (!r[0] && !r[1] && !r[2]) continue;
+    n = snprintf(line, sizeof line, "GPUSLOT s %u live %u peak %u refused %u last %x bytes %u hi %u\n", s,
+                 r[0], r[1], r[2], r[3], r[4], r[5]);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+  for (unsigned i = 0; &native_adreno_map_fail && i < 5; ++i) {
+    if (!native_adreno_map_fail[i][0]) continue;
+    n = snprintf(line, sizeof line, "GPUMAPF status %x count %u spans %u objects %u iova %x handle %x\n",
+                 native_adreno_map_fail[i][0], native_adreno_map_fail[i][1], native_adreno_map_fail[5][0],
+                 native_adreno_map_fail[5][1], native_adreno_map_fail[6][0], native_adreno_map_fail[6][1]);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+    break;
   }
   if (&native_adreno_mount_fail && (native_adreno_mount_fail[0] || fail)) {
     n = snprintf(line, sizeof line, "GPUMOUNT fail %u/%x slot %u count %u\n", native_adreno_mount_fail[0],
