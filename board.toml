@@ -236,7 +236,7 @@ kernel_args = [
   # The persistent log header carries this string, so a log read back through TWRP can say which
   # image wrote it. It was empty on every round up to usb171, which made the recovered log unable
   # to identify itself. Bump it with the image name on each build.
-  "sheng-build-tag=usb207",
+  "sheng-build-tag=u208",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
@@ -495,6 +495,11 @@ kernel_args = [
   # The PCIe controller steps; step 1 only reads, criterion gcc pcie_0_gdscr = 0x22f001.
   # Mounts the payload addon; the wallpaper overlay arrives through it.
   "sheng-gpu-addon=1",
+  # The display hand-off (NativeGOPPresenter.cpp:94): with it the composited frame is offered to
+  # the privileged GPU client instead of being copied by the CPU. The live row's swap counter
+  # (sc) has not moved without it, so the desktop may be compositing and never presenting.
+  # The tag is shortened to u208 because the command line is at 983 of its 1000 bytes.
+  "sheng-fb-gpu=1",
   "pcie=9",
   "pcie_skip=32",
   # Starts the HID publisher itself. The publisher is an IOHIDDevice compiled into this kernel,
