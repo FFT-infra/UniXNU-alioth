@@ -296,8 +296,11 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
         // IDR0 carries the SID width at bits[12:9]; scan() derives its sidmask from it and
         // rejects a stream id wider than that mask before writing anything, so the value is
         // the difference between "0x405 is legal here" and "it never was".
-        snprintf(native_gpu_rows[kRowLoad], cap, "PRE idr0 %08x idr1 %08x smr2 %08x s2cr2 %08x smr3 %08x s2cr3 %08x",
-                 s[0], s[1], s[0x800 / 4 + 2], s[0xc00 / 4 + 2], s[0x800 / 4 + 3], s[0xc00 / 4 + 3]);
+        // Four consecutive ID registers. This part's IDR1 is known from a hardware run
+        // (0x20000005); if the block reads as zeros or nonsense, the mapping is not this
+        // SMMU and every conclusion drawn from it is void.
+        snprintf(native_gpu_rows[kRowLoad], cap, "PRE id0 %08x id1 %08x id2 %08x id3 %08x",
+                 s[0], s[1], s[2], s[3]);
         // Those two slots hold a live S2CR with no SMR match -- an inconsistent state left by
         // whatever ran before this probe. With SMR zero they route nothing, so releasing them
         // takes nothing away, and it is what makes the kit's write land instead of returning
