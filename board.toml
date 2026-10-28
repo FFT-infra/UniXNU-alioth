@@ -228,7 +228,7 @@ kernel_args = [
   # The persistent log header carries this string, so a log read back through TWRP can say which
   # image wrote it. It was empty on every round up to usb171, which made the recovered log unable
   # to identify itself. Bump it with the image name on each build.
-  "sheng-build-tag=usb195",
+  "sheng-build-tag=usb196",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
@@ -530,6 +530,13 @@ kernel_args = [
   # deadline: "no reset at 150 s" was the writer never having started, not the reset path
   # failing. The official unattended example passes both arguments together.
   "sheng-log=1",
+  # The on-screen diagnostic banner paints its rows straight into the frame buffer every 30 ms.
+  # Until the GPU composites, nothing else draws, so it was the only live view; with the GPU
+  # publishing and a wallpaper to judge, it paints over the frames it is meant to help read and
+  # costs CPU on a machine with no acceleration yet. The rows still reach the serial console and
+  # the persistent log (sheng-log=1 above), so nothing is lost. boot-progress=0 is not the
+  # switch for this: it turns the page and the log thread off together.
+  "sheng-banner=0",
   # boot-usb99 was the first image that passed this pair, and it faulted in the writer's
   # read-back of the previous run: the header struct was handed straight to a block-addressed
   # read, which copied 4096 bytes into a 152-byte stack object and ran into the guard page
