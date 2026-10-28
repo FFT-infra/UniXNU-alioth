@@ -416,13 +416,17 @@ static void touchHealthCheck(Session &s) {
     native_touch_power_mode = powerRc ? 0xffffu : power;
     const bool asleep = powerRc == 0 && power == 0x03;
     const bool lost = idhRc != 0 || idlRc != 0 || idh == 0x00 || idh == 0xff || idl == 0xff;
-    char text[224];
+    char text[288];
     if (&qcom_usb_debug_write) {
-        int n = snprintf(text, sizeof(text), "TOUCHREG polls=%u power=%02x(rc=%d) id=%02x%02x(rc=%d/%d) int=%02x(rc=%d) work=%02x chg=%02x ges=%02x a0=%u rx=%d..%d ry=%d..%d\n",
+        int n = snprintf(text, sizeof(text), "TOUCHREG polls=%u power=%02x(rc=%d) id=%02x%02x(rc=%d/%d) int=%02x(rc=%d) work=%02x chg=%02x ges=%02x a0=%u rx=%d..%d ry=%d..%d ev=%u/%u/%u/%u rel=%d,%d,e%d\n",
             native_touch_reg_polls, power, powerRc, idh, idl, idhRc, idlRc, intCount, intRc, workCount, charger, gesture,
             __atomic_load_n(&native_touch_area0, __ATOMIC_RELAXED),
             __atomic_load_n(&native_touch_raw_minx, __ATOMIC_RELAXED), __atomic_load_n(&native_touch_raw_maxx, __ATOMIC_RELAXED),
-            __atomic_load_n(&native_touch_raw_miny, __ATOMIC_RELAXED), __atomic_load_n(&native_touch_raw_maxy, __ATOMIC_RELAXED));
+            __atomic_load_n(&native_touch_raw_miny, __ATOMIC_RELAXED), __atomic_load_n(&native_touch_raw_maxy, __ATOMIC_RELAXED),
+            __atomic_load_n(&native_touch_ev[0], __ATOMIC_RELAXED), __atomic_load_n(&native_touch_ev[1], __ATOMIC_RELAXED),
+            __atomic_load_n(&native_touch_ev[2], __ATOMIC_RELAXED), __atomic_load_n(&native_touch_ev[3], __ATOMIC_RELAXED),
+            __atomic_load_n(&native_touch_rel_x, __ATOMIC_RELAXED), __atomic_load_n(&native_touch_rel_y, __ATOMIC_RELAXED),
+            __atomic_load_n(&native_touch_rel_ev, __ATOMIC_RELAXED));
         if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
     }
     /* The USB console has stopped a second or two into some boots and taken every measurement

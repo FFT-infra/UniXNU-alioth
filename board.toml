@@ -228,7 +228,7 @@ kernel_args = [
   # The persistent log header carries this string, so a log read back through TWRP can say which
   # image wrote it. It was empty on every round up to usb171, which made the recovered log unable
   # to identify itself. Bump it with the image name on each build.
-  "sheng-build-tag=usb182",
+  "sheng-build-tag=usb183",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
