@@ -40,7 +40,7 @@ sources += [driver / (name + '.cpp') for name in (
 # native_gpu_probe(), which the late display probe calls; the firmware object defines the
 # three arrays it weak-imports.
 PACKAGE = Path(os.environ.get('ADRENO650_PACKAGE', str(ROOT / 'package')))
-sources += [PACKAGE / 'GpuProbe.cpp', PACKAGE / 'GpuFirmwareA650.c']
+sources += [PACKAGE / 'GpuProbe.cpp', PACKAGE / 'GpuFirmwareA650.c', PACKAGE / 'alioth_pcie.c']
 objects = []
 for source in sources:
     recipe = c_recipe if source.suffix == '.c' else cxx_recipe
@@ -64,6 +64,9 @@ for source in sources:
                 '-I', str(KITS / 'pipa'), '-I', str(KITS / 'AdrenoFirmware'), '-I', str(KITS / 'AdrenoPM4'), '-I', str(KITS / 'ArmSmmu4K'), '-I', str(ROOT / '.cache/xnu-work/osfmk'),
                 '-I', str(driver), '-I', str(PACKAGE), '-Wall', '-Wextra', '-Werror',
                 '-Wno-unused-parameter', '-Wno-incompatible-sysroot', '-Wno-c99-designator',
+                # alioth_pcie.c leaves struct fields implicit on purpose (the ios-sweet tree
+                # compiled it without -Werror); the kernel's record turns that into an error.
+                '-Wno-missing-field-initializers',
                 '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion',
                 '-Wno-unnecessary-virtual-specifier']
     result = subprocess.run(command, cwd=recipe['directory'], capture_output=True, text=True)

@@ -35,7 +35,7 @@
  * Boot-arg pcie=N performs steps 1 to N and stops; pcie_pause=MS is how long a step waits after
  * announcing a group of accesses (default 2200, as the loader notes the log every two seconds).
  */
-#if defined(ARM64_BOARD_CONFIG_SWEET)
+#if defined(ARM64_BOARD_CONFIG_SWEET) || defined(ARM64_BOARD_CONFIG_BCM2837)
 #include <kern/clock.h>
 #include <kern/thread.h>
 #include <libkern/libkern.h>
@@ -721,3 +721,13 @@ run_steps(void)
 	line("steps done; the controller is left as it was found");
 }
 #endif /* ARM64_BOARD_CONFIG_SWEET */
+
+/* ---- board shim ---------------------------------------------------------------------------- */
+/* The driver asks the ios-sweet log to reach the medium before it touches the controller, so a
+ * step that hangs the machine does not take the preceding lines with it. This board has no such
+ * log; the persistent log writer owns that job here, and it flushes on its own cadence. */
+int
+sweet_log_flush(void)
+{
+	return 0;
+}

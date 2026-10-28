@@ -916,6 +916,10 @@ void native_legacy_display_late_probe(void) {
 	extern void native_gpu_probe(void);
 	native_gpu_probe();
 
+	// The Wi-Fi controller's power and clock steps. Opt-in through pcie=<n>; step 1 only reads.
+	extern void alioth_pcie_init(void);
+	alioth_pcie_init();
+
 	// The AppleKeyStore stand-in. Same reason as the HID publisher: a selected component that
 	// nothing references is dropped from a static link, and without it there is no keybag to
 	// answer the post-restart passcode prompt. Opt-in through offline-key-events=1.
