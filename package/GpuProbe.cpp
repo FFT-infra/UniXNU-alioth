@@ -46,6 +46,10 @@
 #include <mach/kmod.h>
 #include <kern/thread.h>
 #include <kern/clock.h>
+// Firmware-style device mapping (KMA_IO). Declared at file scope: inside the anonymous
+// namespace they would get internal linkage and never link.
+extern "C" vm_offset_t ml_io_map_unmappable(vm_offset_t, vm_size_t, uint32_t);
+extern "C" void ml_io_unmap(vm_offset_t, vm_size_t);
 #include <pexpert/pexpert.h>
 #include <string.h>
 extern "C" {
@@ -319,7 +323,7 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
         const uint32_t scr0_was = *scr0, scr0_val = scr0_was ^ 8u;   // toggle GFIE: a bit that is clear, so a no-op cannot masquerade as success
         *scr0 = scr0_val;
         __asm__ volatile("dsb sy" ::: "memory");
-        const uint32_t scr0_got = *scr0;
+        const uint32_t scr0_got = *scr0; (void)scr0_got;
         *scr0 = scr0_was;
         __asm__ volatile("dsb sy" ::: "memory");
         // sACR says what a non-secure access may do to this register file; and the apps SMMU
@@ -338,11 +342,26 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
                 // took effect is itself the answer: EL1 is not globally barred from SMMU
                 // writes, so the GPU SMMU's silent refusal is specific to that unit.
                 apps_wrote = a[0x800 / 4 + 5];
-                apps_got = a[0x800 / 4 + 3];
+                apps_got = a[0x800 / 4 + 3]; (void)apps_got;
             }
         }
-        snprintf(native_gpu_rows[kRowLoad], cap, "PRE acr %08x smr5 %08x->%08x scr0 %08x->%08x apps5 %08x->%08x",
-                 acr, probe_val, got, scr0_val, scr0_got, apps_wrote, apps_got);
+        // The ios-sweet path established an SMMU context on this phone with ml_io_map, and
+        // GPUCC written through an IOMemoryMap does take effect, so the question is whether
+        // this window is writable through a KMA_IO mapping instead. Same write, other view.
+        uint32_t ml_wrote = 0, ml_got = 0xdeadbeef;
+        vm_offset_t ml = ml_io_map_unmappable(0x3da0000, 0x10000, 7);
+        if (ml) {
+            volatile uint32_t *m = reinterpret_cast<volatile uint32_t *>(ml);
+            ml_wrote = 0x8000007fu;
+            m[0x800 / 4 + 5] = ml_wrote;
+            __asm__ volatile("dsb sy" ::: "memory");
+            ml_got = m[0x800 / 4 + 5];
+            m[0x800 / 4 + 5] = 0;
+            __asm__ volatile("dsb sy" ::: "memory");
+            ml_io_unmap(ml, 0x10000);
+        }
+        snprintf(native_gpu_rows[kRowLoad], cap, "PRE acr %08x smr5 %08x->%08x ml %08x->%08x apps5 %08x",
+                 acr, probe_val, got, ml_wrote, ml_got, apps_wrote);
         // Those two slots hold a live S2CR with no SMR match -- an inconsistent state left by
         // whatever ran before this probe. With SMR zero they route nothing, so releasing them
         // takes nothing away, and it is what makes the kit's write land instead of returning
