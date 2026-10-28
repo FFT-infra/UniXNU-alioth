@@ -236,7 +236,7 @@ kernel_args = [
   # The persistent log header carries this string, so a log read back through TWRP can say which
   # image wrote it. It was empty on every round up to usb171, which made the recovered log unable
   # to identify itself. Bump it with the image name on each build.
-  "sheng-build-tag=usb198",
+  "sheng-build-tag=usb199",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
@@ -491,7 +491,7 @@ kernel_args = [
   # cannot wedge the kernel and the route can be checked before anything is written.
   # Mode 6 adds CX power-on, the GPU SMMU clock and the 200 MHz GMU clock. Judgement line:
   # "GPU m1 gcc=ok cc=ok smmu=ok gpu=ok io=0".
-  "pipa-gpu=11",
+  "pipa-gpu=12",
   # The PCIe controller steps; step 1 only reads, criterion gcc pcie_0_gdscr = 0x22f001.
   # Mounts the payload addon; the wallpaper overlay arrives through it.
   "sheng-gpu-addon=1",
