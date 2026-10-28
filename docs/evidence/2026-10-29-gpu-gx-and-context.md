@@ -184,6 +184,19 @@ types, and it did not crash; six SpringBoard traps were all that was left. That
 is avoidance rather than a cure: the desktop still does not draw, and the
 plugin is not exercised at all.
 
+The plan's control is the same experiment done properly: usb204 registers the
+accelerator but carries the original Data seed, so no plugin bundle exists.
+
+| Image | Accelerator | Plugin | backboardd |
+| --- | --- | --- | --- |
+| usb204 | registered | absent | **no crash in 170 s**, opens only type 1 |
+| usb201 | registered | present | 39 crashes in 120 s, opens type 1, 0x4147 and 0x4148 |
+
+With the plugin absent the whole crash loop disappears and the desktop stays
+on the software renderer, which is what the plan's control predicts. The
+plugin is therefore the cause of backboardd's SIGBUS, not the accelerator, the
+driver or the SMMU.
+
 ## The screenshot channel
 
 The USB console's `SCREENSHOT`/`SHOTNEXT` pair answers with a ready frame
