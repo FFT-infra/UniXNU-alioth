@@ -64,11 +64,24 @@ done
 [ "$UP" = 1 ] || fail "reader did not bring adb up"
 
 say "stage 6: read the window and decode it"
+# A dd left running by an interrupted read keeps the block device claimed and every later
+# read returns nothing, so clear it first (measured: two runs stuck at 0 bytes until the
+# reader was rebooted).
+$ADBM shell 'killall -9 dd 2>/dev/null; true' >/dev/null 2>&1
 python3 "$HERE/read-sheng-log.py" --port "$SERIAL" --out "$OUT" || fail "read-sheng-log"
 
-say "stage 7: back to the bootloader on the test slot"
-$ADBM reboot bootloader >/dev/null 2>&1 || fail "reader reboot to bootloader"
-sleep 4
+say "stage 7: back to the test slot and the board's own bootloader"
+# Not "$ADBM reboot bootloader": this reader is TWRP, whose cmdline carries
+# twrpfastboot=1, and that lands in TWRP's own fastboot (serial 9c6a8eb6, empty
+# version-bootloader, is-userspace=no) rather than the board's ABL. Reach the ABL the way
+# the board does it on its own: boot the test slot and let its timed reset return.
 $FB --set-active=b >/dev/null 2>&1 || fail "set-active=b after read"
+$ADBM reboot >/dev/null 2>&1 || fail "reader reboot"
+i=0
+while [ "$i" -lt "$TIMEOUT" ]; do
+    sleep 3
+    i=$((i + 3))
+    if $FB devices 2>/dev/null | grep -q fastboot; then break; fi
+done
 $FB devices | grep -q fastboot || fail "final fastboot check"
 say "done"

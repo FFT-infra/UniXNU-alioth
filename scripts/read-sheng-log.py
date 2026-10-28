@@ -47,11 +47,13 @@ def read_via_adb(serial, skip, count, path):
     cmd = ['adb']
     if serial:
         cmd += ['-s', serial]
+    # stdin must be closed: `adb shell` forwards its own stdin to the remote command, so a
+    # caller whose stdin never ends (a background job, a pipe) leaves dd running forever.
     rc = subprocess.run(cmd + ['shell', 'dd if=/dev/block/by-name/userdata of=%s bs=4096 skip=%d count=%d'
-                               % (target, skip, count)]).returncode
+                               % (target, skip, count)], stdin=subprocess.DEVNULL).returncode
     if rc:
         return False
-    rc = subprocess.run(cmd + ['pull', target, path]).returncode
+    rc = subprocess.run(cmd + ['pull', target, path], stdin=subprocess.DEVNULL).returncode
     return rc == 0
 
 
