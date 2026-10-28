@@ -8,6 +8,7 @@
 #include <libkern/c++/OSSymbol.h>
 #include <pexpert/pexpert.h>
 #include <mach/kmod.h>
+#include <libkern/libkern.h>
 extern kmod_info_t g_kernel_kmod_info;
 extern "C" void native_keyevents_static_init(void) __asm__("__GLOBAL__sub_I_NativeKeyStoreEvents.cpp");
 extern "C" IOService *native_keyevents_allocate(void);
@@ -75,6 +76,14 @@ void native_aks_call(uint32_t selector, int32_t result) {
     native_aks_calls = native_aks_calls + 1;
     if (selector < 96) { aks_count[selector] = aks_count[selector] + 1; aks_rc[selector] = result; }
     aks_publish();
+    /* The counters above only reach the diagnostic page's extension rows, and a boot with the
+     * page off carries no AKS line at all -- usb180's log showed the two rows empty, which is not
+     * the same as "the queries completed". The component's acceptance is that the required state
+     * queries complete, so record the calls in the kernel log too: the first few to show the
+     * order, then every sixteenth to stay readable. */
+    if (native_aks_calls <= 8 || (native_aks_calls % 16) == 0)
+        printf("AKS opens=%u calls=%u sel=%u rc=%d\n",
+               native_aks_opens, native_aks_calls, selector, (int)result);
 }
 static void native_keyevents_probe(void) {
     unsigned enabled = 0, original = 0;

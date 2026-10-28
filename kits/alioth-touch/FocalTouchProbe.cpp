@@ -407,7 +407,7 @@ static void touchHealthCheck(Session &s) {
      * 120 s, 61 rounds and a clean reset for exactly such a run. Write the same numbers into the
      * kernel log once a second as well, because that one reaches the log on userdata and survives
      * whatever happens to the console. */
-    if ((native_touch_reg_polls % 10) == 0) {
+    {
         printf("TREG a0=%u rx=%d..%d ry=%d..%d int=%02x work=%02x\n",
                __atomic_load_n(&native_touch_area0, __ATOMIC_RELAXED),
                __atomic_load_n(&native_touch_raw_minx, __ATOMIC_RELAXED),
