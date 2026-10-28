@@ -225,11 +225,14 @@ static void gpu_client_report(void) {
   if (&native_adreno_client_log)
     for (unsigned i = 0; i < 8; ++i) closes += native_adreno_client_log[i].closes;
   const uint32_t opens = &native_adreno_open_log_count ? native_adreno_open_log_count : 0;
-  if (opens == lastOpens && closes == lastCloses && fail == lastFail) return;
+  static int first = 1;
+  if (first && !opens && !closes && !fail) return;   /* nothing has happened yet: stay quiet */
+  if (!first && opens == lastOpens && closes == lastCloses && fail == lastFail) return;
+  first = 0;
   lastOpens = opens; lastCloses = closes; lastFail = fail;
   char line[144];
   int n;
-  for (unsigned i = 0; &native_adreno_open_log && i < opens && i < 8; ++i) {
+  for (unsigned i = 0; &native_adreno_open_log && &native_adreno_open_log_count && i < native_adreno_open_log_count && i < 8; ++i) {
     const struct gpu_open_record *r = &native_adreno_open_log[i];
     if (!r->name[0]) continue;
     n = snprintf(line, sizeof line, "GPUOPEN %s type %x macf %x res %x attach %x foreign %x\n",
