@@ -69,6 +69,10 @@ for source in sources:
                 '-Wno-missing-field-initializers',
                 '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion',
                 '-Wno-unnecessary-virtual-specifier']
+    # Mode 12: the staged AGXAccelerator registers the IOAcceleratorES service that the original
+    # Metal discovery needs (IOAcceleratorES -> MetalPluginName -> NSBundle -> the plugin).
+    if source.name == 'GpuProbe.cpp':
+        command.append('-DPIPA_GPU_ACCELERATOR=1')
     result = subprocess.run(command, cwd=recipe['directory'], capture_output=True, text=True)
     if result.returncode:
         sys.exit(str(source) + ':\n' + result.stderr[-2500:])
@@ -90,3 +94,50 @@ absent = [s for s in required if s not in defined]
 if absent:
     sys.exit('Required definitions absent: ' + ', '.join(absent))
 print('PASS: %d NativeAdreno a650 objects archived' % len(objects))
+
+# Mode 12's staged accelerator, the job scripts/build-adreno740-accelerator.py does for the A740
+# checkout. The class derives from the original IOAcceleratorES, which this kernel does not
+# build, so its three base symbols are bound to the addresses the audited record names
+# (scripts/data/ioaccelerator-base-abi.json), and its initializer registration is stripped from
+# __mod_init_func so the board probe can run it after IOGPUFamily has loaded. build-xnu links
+# only libAdreno740.a, so it rides in the same archive.
+plan = json.loads(Path('scripts/data/ioaccelerator-base-abi.json').read_text())
+bindings = {
+    '__ZN15IOAcceleratorESC2EPK11OSMetaClass': int(plan['protected_compatible_constructor_aliases'][0], 16),
+    '__ZN15IOAcceleratorESD2Ev': int(plan['nondeleting_destructor'], 16),
+    '__ZN15IOAcceleratorES10gMetaClassE': int(plan['metaclass'], 16),
+}
+compiler = cxx_recipe['arguments'][0]
+llvm_bin = Path(compiler).parent
+accel_obj = out / 'NativeAdrenoAccelerator.o'
+command, i = [], 0
+while i < len(cxx_recipe['arguments']):
+    value = cxx_recipe['arguments'][i]
+    if value == cxx_recipe['file']:
+        command.append(str(driver / 'NativeAdrenoAccelerator.cpp'))
+    elif value == '-o':
+        command += ['-o', str(accel_obj)]
+        i += 1
+    elif value in ('-MF', '-MJ'):
+        i += 1
+    elif value == '-Xclang' and cxx_recipe['arguments'][i + 1].startswith('-W'):
+        i += 1
+    elif not value.startswith('-W') and value not in ('-MD', '-MP'):
+        command.append(value)
+    i += 1
+command += ['-I', str(Path('.cache/xnu-work/osfmk')), '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
+            '-Wno-unnecessary-virtual-specifier', '-Wno-c99-designator', '-Wno-reorder-init-list',
+            '-Wno-deprecated-enum-enum-conversion', '-Wno-overloaded-virtual']
+result = subprocess.run(command, cwd=cxx_recipe['directory'], capture_output=True, text=True)
+if result.returncode:
+    sys.exit('NativeAdrenoAccelerator.cpp:\n' + result.stderr[-2500:])
+asm = out / 'original-bindings.S'
+asm.write_text(''.join('.globl %s\n.set %s, %#x\n' % (name, name, address) for name, address in sorted(bindings.items())))
+bind_obj = out / 'original-bindings.o'
+subprocess.run([compiler, '-c', '--target=arm64-apple-ios17.0', '-o', str(bind_obj), str(asm)], check=True)
+late = out / 'NativeAdrenoAccelerator.late.o'
+subprocess.run([str(llvm_bin / 'llvm-objcopy'), '--remove-section=__DATA,__mod_init_func',
+                '--globalize-symbol=__GLOBAL__sub_I_NativeAdrenoAccelerator.cpp', str(accel_obj), str(late)], check=True)
+subprocess.run([str(llvm_bin / 'llvm-ar'), 'rcs', str(archive), str(late), str(bind_obj)], check=True)
+print('PASS: staged accelerator appended, IOAcceleratorES bound to %s'
+      % ', '.join('%#x' % address for _, address in sorted(bindings.items())))
