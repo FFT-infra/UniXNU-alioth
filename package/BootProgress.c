@@ -1483,10 +1483,36 @@ static void cpu0_park(void *arg, wait_result_t result) {
 // with boot-progress=0 left no slot in the log and never came back to fastboot (measured on
 // boot-usb106, where the log held only the previous boot's 120 s record). This thread keeps both
 // alive when the page is off and touches no display state.
+// The A650 rows and the wallpaper stage are reported from the page's monitor only, so a run with
+// the page off showed nothing at all about the GPU: no GPUROW lines, no WALLPAPER line. That is
+// the same coupling that took the log and the autoreset with it. Print them here as well, so the
+// page being off stops hiding the probe's result.
+static void gpu_rows_report(unsigned now) {
+  if (!&qcom_usb_debug_write || !&native_gpu_rows || !native_gpu_rows[0][0]) return;
+  static unsigned sentAt;
+  if (now < sentAt + 15) return;
+  static const int rows[] = {0, 6, 7, 13, 14, 15};
+  for (unsigned r = 0; r < sizeof rows / sizeof rows[0]; ++r) {
+    const char *text = native_gpu_rows[rows[r]];
+    if (!text[0]) continue;
+    char gpu[152];
+    int m = snprintf(gpu, sizeof gpu, "GPUROW%d %s\n", rows[r], text);
+    if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
+  }
+  sentAt = now;
+  if (&native_gpu_addon3_stage) {
+    char wall[96];
+    int w = snprintf(wall, sizeof wall, "WALLPAPER stage=%d status=%d\n",
+                     native_gpu_addon3_stage, &native_gpu_addon3_status ? native_gpu_addon3_status : 0);
+    if (w > 0) qcom_usb_debug_write(wall, (size_t)w < sizeof(wall) ? (size_t)w : sizeof(wall) - 1);
+  }
+}
 static void log_only_monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
   for (;;) {
-    if(boot_log_tick)boot_log_tick(seconds());
+    const unsigned now=seconds();
+    if(boot_log_tick)boot_log_tick(now);
+    gpu_rows_report(now);
     assert_wait_timeout((event_t)&thread_count,THREAD_UNINT,1000,NSEC_PER_MSEC);
     thread_block(THREAD_CONTINUE_NULL);
   }
@@ -1494,6 +1520,10 @@ static void log_only_monitor(void *arg, wait_result_t result) {
 void boot_progress_start(void) {
   if (started) return;
   started=1;thread_t thread;
+  /* boot_progress_init returns before this is parsed when the page is off, so a log written by a
+   * page-off run carried an empty tag and could not say which image produced it. Parse it on both
+   * paths; the value only reaches the persistent log header. */
+  PE_parse_boot_argn("sheng-build-tag",build_tag,sizeof(build_tag));build_tag[sizeof(build_tag)-1]=0;
   if (!enabled) {
     if(kernel_thread_start_priority(log_only_monitor,0,BASEPRI_KERNEL,&thread)==KERN_SUCCESS)
       thread_deallocate(thread);
