@@ -50,8 +50,12 @@ ADBM="adb"
 
 say "stage 1: board must already be in the bootloader"
 $FB devices | grep -q fastboot || fail "no fastboot device"
-ORIG_SLOT=$($FB getvar current-slot 2>&1 | sed -n 's/.*current-slot: *//p' | head -1)
-say "starting on slot ${ORIG_SLOT:-unknown}"
+# Never query the bootloader here. getvar can stall after a flash, and this line feeds the
+# failure path, so a hang at this point would defeat the recovery it exists to provide. The
+# script is the only thing that changes the active slot, and a run that fails should end on the
+# slot holding the OS image, which is b: set it directly and stop depending on a round trip.
+ORIG_SLOT=b
+say "failure path will return the board to slot ${ORIG_SLOT}"
 
 # Preconditions this board adds to the guide's: the reader is TWRP in slot a rather than a
 # separate reader image, and slot b must hold an image that returns to the bootloader on its
