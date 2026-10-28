@@ -199,6 +199,7 @@ extern volatile uint32_t native_adreno_unstick[15] __attribute__((weak_import));
 // Frames that actually reached the panel: native_gop_transfers counts the CPU copy path and
 // native_gop_gpu_offers/completions the hand-off the GPU client takes with sheng-fb-gpu=1.
 // This is the only frame-rate evidence the board has while the screenshot channel is broken.
+extern volatile uint32_t native_legacy_surfaces[14] __attribute__((weak_import));
 extern volatile uint32_t native_gop_ready __attribute__((weak_import));
 extern volatile uint32_t native_gop_failures __attribute__((weak_import));
 extern volatile uint64_t native_gop_transfers __attribute__((weak_import));
@@ -259,12 +260,13 @@ static void gpu_client_report(void) {
     break;
   }
   if (&native_gop_transfers) {
-    n = snprintf(line, sizeof line, "GPUFRAME ready %u fail %u copied %llu gpu offered %llu done %llu fail %llu abandon %llu\n",
+    n = snprintf(line, sizeof line, "GPUFRAME ready %u fail %u copied %llu gpu offered %llu done %llu fail %llu abandon %llu | legacy surfaces %u swaps %u\n",
                  &native_gop_ready ? native_gop_ready : 0, &native_gop_failures ? native_gop_failures : 0,
                  (unsigned long long)native_gop_transfers, &native_gop_gpu_offers ? (unsigned long long)native_gop_gpu_offers : 0ull,
                  &native_gop_gpu_completions ? (unsigned long long)native_gop_gpu_completions : 0ull,
                  &native_gop_gpu_failures ? (unsigned long long)native_gop_gpu_failures : 0ull,
-                 &native_gop_gpu_abandoned ? (unsigned long long)native_gop_gpu_abandoned : 0ull);
+                 &native_gop_gpu_abandoned ? (unsigned long long)native_gop_gpu_abandoned : 0ull,
+                 &native_legacy_surfaces ? native_legacy_surfaces[0] : 0, &native_legacy_surfaces ? native_legacy_surfaces[1] : 0);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   if (&native_adreno_fence_wait) {
