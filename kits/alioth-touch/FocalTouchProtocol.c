@@ -230,17 +230,22 @@ int fts5652_frame(struct Fts5652 *chip, unsigned *count, struct Fts5652Contact *
     // the board's own touch driver: payload[0] status, payload[1] contact count in bits 0..3,
     // then six bytes per contact.
     const uint8_t *d = chip->rx + 7;
-    /* A frame of all 0xFF is the part's "not ready" answer, not ten fingers. The board's own
-     * driver detects point count 0xF with the following bytes all 0xFF and runs a recovery
-     * sequence; publishing ours reported ten fingers at 32767,32767 a hundred and forty times
-     * a second until the part woke up, which is what boot-usb61 showed in its first three
-     * minutes. Publish no contacts for such a frame. */
-    if (d[0] == 0xff && d[1] == 0xff) {
+    /* The part answers "not ready" with a count nibble of 0xF and 0xFF in the bytes that follow
+     * it (focaltech_core.c:684-690). The guard here additionally required the status byte to be
+     * 0xFF, so a not-ready frame whose status byte held anything else fell through: the count
+     * decoded as 15, was clamped to ten, and ten contacts were built out of 0xFF bytes. Every
+     * one of them lands at 32767 on both axes, which after scaling is the far corner -- ten
+     * fingers on the bottom edge is a home gesture, and that is a shade that opens and then
+     * lands on the home screen. Test the same bytes the vendor tests. */
+    if (d[1] == 0xff && d[2] == 0xff && d[3] == 0xff && d[4] == 0xff && d[5] == 0xff) {
         return 0;
     }
     unsigned points = d[1] & 0x0f;
+    /* The vendor rejects a count past its table instead of clamping it (focaltech_core.c:692).
+     * Clamping turned a count the part never meant into contacts, which is where the phantoms
+     * came from. */
     if (points > FTS5652_CONTACTS) {
-        points = FTS5652_CONTACTS;
+        return 0;
     }
     unsigned out = 0;
     for (unsigned i = 0; i < points; ++i) {
