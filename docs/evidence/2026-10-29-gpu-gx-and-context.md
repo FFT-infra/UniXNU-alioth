@@ -155,6 +155,12 @@ either implementation-defined on this part or the readback is not the register
 it is taken for; it stays recorded and unexplained, and it is not the reason
 the desktop does not draw.
 
+The base arithmetic checks out with the values already on the row: `GPUROW3`
+reports `id 4c017e06 20000005 00005511`, so IDR1 = 0x20000005, bit 31 clear
+(4 KiB pages) and bits 30:28 = 2, giving context banks at 0x1000 << 3 = 0x8000
+and CB0_FSR at 0x8058, which is the standard SMMU-500 placement. The read is
+of the register it claims to be.
+
 ## The screenshot channel
 
 The USB console's `SCREENSHOT`/`SHOTNEXT` pair answers with a ready frame
