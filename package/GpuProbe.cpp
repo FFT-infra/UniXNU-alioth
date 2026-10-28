@@ -115,7 +115,7 @@ enum {kRowSummary, kRowGcc, kRowGpucc, kRowSmmu, kRowClk, kRowClk2, kRowGmu, kRo
       kRowContext = kRowLevels + 3, kRowLoad, kRowHfi, kRowAfter, kRowGx, kRowGpuCtx, kRowCp, kRowCpState, kRowZap, kRowIrq,
       kRowPublish, kRowMetal, kRowLive, kRowHang, kRowHang2, kRowFaults, kRowUche, kRowTiling, kRows};
 extern "C" {
-char native_gpu_rows[kRows][160];
+char native_gpu_rows[kRows][120];
 volatile uint32_t native_gpu_changes;
 volatile uint32_t native_gpu_step;
 struct gpb_result native_gpu_result;
@@ -360,21 +360,8 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
             __asm__ volatile("dsb sy" ::: "memory");
             ml_io_unmap(ml, 0x10000);
         }
-        // The context-bank registers are read, never written. A previous round wrote CBAR and
-        // CBA2R for a bank it believed free, at both candidate group offsets, and the console
-        // went silent a second into the boot: CBA2R pointing nowhere makes the unit fetch a
-        // page table that does not exist, and this block is live, not ours to reprogram. Reading
-        // both candidates costs nothing and still says whether the offsets hold anything.
-        uint32_t cb_std = 0, cba2_std = 0, cb_kit = 0, cba2_kit = 0;
-        {
-            const unsigned bank = 4;                 // the last of this part's five; the GMU uses 2 and 3
-            cb_std  = s[(0x8000u + bank * 4) / 4];
-            cba2_std = s[(0x8800u + bank * 4) / 4];
-            cb_kit  = s[(0x1000u + bank * 4) / 4];
-            cba2_kit = s[(0x1800u + bank * 4) / 4];
-        }
-        snprintf(native_gpu_rows[kRowLoad], cap, "PRE acr %08x smr5 %08x->%08x ml %08x->%08x apps5 %08x cb8k %08x/%08x cb1k %08x/%08x",
-                 acr, probe_val, got, ml_wrote, ml_got, apps_wrote, cb_std, cba2_std, cb_kit, cba2_kit);
+        snprintf(native_gpu_rows[kRowLoad], cap, "PRE acr %08x smr5 %08x->%08x ml %08x->%08x apps5 %08x",
+                 acr, probe_val, got, ml_wrote, ml_got, apps_wrote);
         // Those two slots hold a live S2CR with no SMR match -- an inconsistent state left by
         // whatever ran before this probe. With SMR zero they route nothing, so releasing them
         // takes nothing away, and it is what makes the kit's write land instead of returning
