@@ -45,6 +45,36 @@ GPUROW20 CPSTATE rbbm 00000001 rptr 1b wptr 1b hwfault 0 cpint 0 int0 00100000 c
 - `hwfault 0`, `cpint 0`: no CP hardware fault.
 - `hwcg 0>8aa8aa82`: the clock-gating table was written and reads back.
 
+## Mode 10 — the zap shader, the secure-mode exit and the GPU interrupt
+
+The first attempt (usb193) stopped at `ZAP stopped step -6`. The vendor
+`a650_zap.mdt` is packed as `[ELF header 148 B][hash 6712 B]`, but its own
+program headers address the hash at `0x1000` and the `a650_zap.b02` segment at
+`0x3000`. Concatenating the two files into 8536 bytes put `hashOff + hashBytes`
+at `0x2a38`, past the end of the image, and `zapLoad` stops when that happens.
+
+The embedded image is now 13964 bytes in the addressed layout (header at 0,
+hash at `0x1000`, segment at `0x3000`); each range was compared byte for byte
+with the vendor files.
+
+```
+GPUROW21 ZAP ok step 7 init 0/0 mem 0/0 auth 0/0 resumes 0 ms 7/0/0 phdrs 3 reloc 1 span 1000 secure 0 meta 13ed13000
+GPUROW22 IRQ attach 0 readback a002 router 0 count 1>2 nop fence 1 seen 00100000 status now 00000000 masked 0
+```
+
+- `init 0/0`, `mem 0/0`, `auth 0/0`: `qcom_scm_pas_init_image` (7 ms),
+  `pas_mem_setup` and `pas_auth_and_reset` all returned success, so TrustZone
+  accepted this zap image for PAS 13.
+- `secure 0`: the `CP_SET_SECURE_MODE(0)` packet's fence completed.
+- `attach 0`, `readback a002`: SPI 300 attached as level high through ArmCpu.
+- `count 1>2`, `nop fence 1`: a `CP_NOP` fence raised the interrupt.
+- `seen 00100000`, `masked 0`: the fence status bit arrived and no storm built.
+
+The board inputs were confirmed against the K40 vendor tree
+(`reference/k40-kernel/arch/arm64/boot/dts/vendor/qcom/`): `qcom,pas-id = <13>`,
+`qcom,firmware-name = "a650_zap"`, `pil_gpu_region@8681a000` (size 0x2000,
+no-map) and `interrupts = <0 300 IRQ_TYPE_LEVEL_HIGH>`.
+
 ## Open
 
 `cb0 fsr 00000400` on the GPU's context bank, next to a successful write and a
