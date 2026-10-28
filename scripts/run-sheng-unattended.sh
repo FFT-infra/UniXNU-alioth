@@ -22,7 +22,18 @@ OUT=${SHENG_LOG_OUT:-$HERE/../build/sheng-logs}
 SERIAL=${SERIAL:-}
 
 say() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
-fail() { say "FAILED at $1"; exit 1; }
+# docs/zh/porting/log-capture.md section 6.4: a timed-out stage records its name and leaves the
+# board able to take the next image. Recovery is best effort: put the test slot back if a
+# bootloader answers, otherwise say so instead of pretending.
+fail() {
+    say "FAILED at $1"
+    if $FB devices 2>/dev/null | grep -q fastboot; then
+        $FB --set-active=b >/dev/null 2>&1 && say "recovered: active slot b"
+    else
+        say "recovery: no bootloader answers, the board needs a hand"
+    fi
+    exit 1
+}
 
 [ -f "$IMG" ] || fail "image $IMG does not exist"
 
@@ -35,10 +46,11 @@ say "stage 1: board must already be in the bootloader"
 $FB devices | grep -q fastboot || fail "no fastboot device"
 
 say "stage 2: test slot must carry TWRP on the other slot for the read-back"
-say "stage 3: flash $IMG to boot_b"
-$FB flash boot_b "$IMG" >/dev/null 2>&1 || fail "flash boot_b"
-$FB --set-active=b >/dev/null 2>&1 || fail "set-active=b"
-$FB reboot >/dev/null 2>&1 || fail "reboot"
+# docs/zh/porting/log-capture.md sections 5.2 and 6.3 both start the test image with
+# "fastboot boot": it writes no partition, so an interrupted round cannot leave a half-written
+# boot image behind, and a failed start does not touch the slot the board would otherwise use.
+say "stage 3: fastboot boot $IMG"
+$FB boot "$IMG" >/dev/null 2>&1 || fail "fastboot boot"
 
 say "stage 4: wait up to ${TIMEOUT}s for the board to return to the bootloader by itself"
 i=0
