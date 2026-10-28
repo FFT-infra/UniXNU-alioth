@@ -1477,9 +1477,28 @@ static void cpu0_park(void *arg, wait_result_t result) {
   thread_block(THREAD_CONTINUE_NULL);
   for (;;) __asm__ volatile("yield");
 }
+// The persistent log writer and the 120 s bootloader deadline both live in boot_log_tick, which
+// used to be called only from monitor() above. monitor() is created only when the diagnostic page
+// is on, so turning the page off turned the log and the autoreset off with it, silently: a run
+// with boot-progress=0 left no slot in the log and never came back to fastboot (measured on
+// boot-usb106, where the log held only the previous boot's 120 s record). This thread keeps both
+// alive when the page is off and touches no display state.
+static void log_only_monitor(void *arg, wait_result_t result) {
+  (void)arg;(void)result;
+  for (;;) {
+    if(boot_log_tick)boot_log_tick(seconds());
+    assert_wait_timeout((event_t)&thread_count,THREAD_UNINT,1000,NSEC_PER_MSEC);
+    thread_block(THREAD_CONTINUE_NULL);
+  }
+}
 void boot_progress_start(void) {
-  if (!enabled || started) return;
+  if (started) return;
   started=1;thread_t thread;
+  if (!enabled) {
+    if(kernel_thread_start_priority(log_only_monitor,0,BASEPRI_KERNEL,&thread)==KERN_SUCCESS)
+      thread_deallocate(thread);
+    return;
+  }
   if(kernel_thread_start_priority(monitor,0,BASEPRI_PREEMPT,&thread)!=KERN_SUCCESS) {
     boot_progress_stage("monitor thread creation FAILED; IRQ sampling remains"); return;
   }
