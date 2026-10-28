@@ -79,6 +79,12 @@ archives = [
   # prelinked IOMobileFramebufferLegacy are re-proven against this kernel on every run. It must
   # run after the driver recipes above, because it reads their compile records.
   "build-gop-legacy-display.py",
+  # Adreno650 (NativeAdreno for the Adreno 650) with the GMU's SMMU context, the HFI kit and
+  # the A650 cold start. The sources are in this repository: package/GpuProbe.cpp (the board
+  # probe, pipa-gpu=<mode>) and kits/pipa/A650Gmu.{c,h}, which is byte-identical to
+  # UniXNU-sm8250-common's copy. Without CONFIG_XNU_NATIVE_ADRENO the archive builds and is
+  # never linked, so the probe cannot run.
+  "build-adreno650.py",
   "component:QcomXnuUsbDebug",
   # Touch. QcomGeniSpi is the GENI SPI controller; ShengHidInput is the IOHIDFamily
   # consumer that turns the probe's native_touch_* seqlock into HID digitizer events.
@@ -465,6 +471,12 @@ kernel_args = [
   # driver already implements the split (NativeHidInput.cpp setTouchOnly /
   # native_hid_touch_allocate); this argument is the only thing that was missing.
   "sheng-touch-split=1",
+  # pipa-gpu=<mode>: the A650 probe. Mode 1 only reads -- the GPU's clock sources in the
+  # global clock controller and the fuses that say which part this is -- so a wrong address
+  # cannot wedge the kernel and the route can be checked before anything is written.
+  # Mode 6 adds CX power-on, the GPU SMMU clock and the 200 MHz GMU clock. Judgement line:
+  # "GPU m1 gcc=ok cc=ok smmu=ok gpu=ok io=0".
+  "pipa-gpu=1",
   # Starts the HID publisher itself. The publisher is an IOHIDDevice compiled into this kernel,
   # so IOKit has no personality for it and nothing matches it; the board calls it from
   # native_legacy_display_late_probe, the second of the two start paths the driver adaption
