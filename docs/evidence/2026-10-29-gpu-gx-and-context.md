@@ -178,6 +178,12 @@ So the SIGBUS in backboardd appears only once the plugin is loaded, and the
 SIGTRAP in SpringBoard is a different failure that is there without it. The
 plugin is the first suspect for backboardd; nothing yet explains the trap.
 
+A third image asked Turnip for system memory everywhere (`pipa-tu=6`). In its
+170 s window backboardd opened the accelerator (`type 1`) but never the plugin
+types, and it did not crash; six SpringBoard traps were all that was left. That
+is avoidance rather than a cure: the desktop still does not draw, and the
+plugin is not exercised at all.
+
 ## The screenshot channel
 
 The USB console's `SCREENSHOT`/`SHOTNEXT` pair answers with a ready frame
