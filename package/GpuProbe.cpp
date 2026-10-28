@@ -325,9 +325,11 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
     NativeAdrenoGmuContextReport &g = native_gpu_gmu_context;
     const IOReturn status = NativeAdrenoGmuContextBringupRoutes(reinterpret_cast<volatile uint8_t *>(gSmmuMap->getVirtualAddress()),
         kSmmuWindow, kGmuBank, kGmuAsid, kGmuSlots, kGmuSids, 2, contextProgress, &g);
-    snprintf(ctx, cap, "GMUCTX step %u status %x kit %u/%u routes %u id2 %x program %u/%u/%u ttbr0 %llx smr %08x s2cr %08x",
-             g.step, static_cast<unsigned>(status), g.program_status, g.route_status, g.routes_verified, g.id2, g.program_phase,
-             g.program_readback_valid, g.program_enabled, static_cast<unsigned long long>(g.ttbr0), g.smr, g.s2cr);
+    // program_writes is the kit's own count of streams it finished writing: phase 5 with
+    // writes 1 means the second stream failed, writes 2 means it got past the loop.
+    snprintf(ctx, cap, "GMUCTX step %u status %x kit %u/%u routes %u id2 %x phase %u wr %u rb %u en %u",
+             g.step, static_cast<unsigned>(status), g.program_status, g.route_status, g.routes_verified, g.id2,
+             g.program_phase, g.program_writes, g.program_readback_valid, g.program_enabled);
     changed();
     if (status) return;
     // The five regions (icache, dummy, debug, log, hfi): the GMU maps them Normal non-cacheable, the CPU writes them combined.
