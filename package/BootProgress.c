@@ -196,6 +196,14 @@ extern volatile uint32_t native_adreno_map_fail[7][2] __attribute__((weak_import
 // had written at that moment, so [3] < [2] says the GPU is behind rather than the wait being wrong.
 extern volatile uint32_t native_adreno_fence_wait[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_unstick[15] __attribute__((weak_import));
+// Frames that actually reached the panel: native_gop_transfers counts the CPU copy path and
+// native_gop_gpu_offers/completions the hand-off the GPU client takes with sheng-fb-gpu=1.
+// This is the only frame-rate evidence the board has while the screenshot channel is broken.
+extern volatile uint64_t native_gop_transfers __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_offers __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_completions __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_failures __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_abandoned __attribute__((weak_import));
 static void gpu_client_report(void) {
   static uint32_t lastOpens, lastCloses, lastFail;
   uint32_t closes = 0, fail = &native_adreno_mount_fail ? native_adreno_mount_fail[3] : 0;
@@ -247,6 +255,14 @@ static void gpu_client_report(void) {
                  native_adreno_map_fail[5][1], native_adreno_map_fail[6][0], native_adreno_map_fail[6][1]);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
     break;
+  }
+  if (&native_gop_transfers) {
+    n = snprintf(line, sizeof line, "GPUFRAME copied %llu gpu offered %llu done %llu fail %llu abandon %llu\n",
+                 (unsigned long long)native_gop_transfers, &native_gop_gpu_offers ? (unsigned long long)native_gop_gpu_offers : 0ull,
+                 &native_gop_gpu_completions ? (unsigned long long)native_gop_gpu_completions : 0ull,
+                 &native_gop_gpu_failures ? (unsigned long long)native_gop_gpu_failures : 0ull,
+                 &native_gop_gpu_abandoned ? (unsigned long long)native_gop_gpu_abandoned : 0ull);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   if (&native_adreno_fence_wait) {
     const volatile uint32_t *f = native_adreno_fence_wait;
