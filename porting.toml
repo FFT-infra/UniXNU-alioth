@@ -148,31 +148,69 @@ evidence = [{ kind = "source", reference = "kits/alioth-touch/FocalTouchProtocol
 
 [[area]]
 id = "gpu"
-status = "planned"
-components = []
-paths = ["package/*Gpu*", "package/*Gmu*", "package/*Adreno*", "scripts/*adreno*", "scripts/*gpu*", "scripts/*metal*", "scripts/*turnip*", "scripts/*air*"]
-inputs = ["Identify the gpu hardware, resources and existing component interfaces for this board."]
-configuration = ["Record the board.toml fields, DTS properties and defconfig values used for gpu."]
-procedure = ["Follow the gpu stage in the porting guide and record the actual commands."]
-findings = ["Collect the first gpu observation, its cause when established, and the resulting implementation decision."]
+status = "device-verified"
+components = ["Adreno650"]
+paths = ["package/*Gpu*", "package/*Gmu*", "package/*Adreno*", "kits/pipa/*", "scripts/*adreno*", "scripts/*gpu*", "scripts/*metal*", "scripts/*turnip*", "scripts/*air*"]
+inputs = [
+  "Adreno 650 on SM8250-AC; chip id 0x06050002; blocks GPU 0x3d00000, GMU 0x3d6a000, GPUCC 0x3d90000, SMMU 0x3da0000.",
+  "Firmware already embedded in package/GpuFirmwareA650.c: gmu 41548 B, sqe 31632 B, zap.mdt 6860 B + zap.b02 1676 B, concatenated for the probe's single zap image.",
+  "The pipa fork's A650 driver (reference/repo/Adreno650) is the same generation as this board; the upstream Adreno740 is not.",
+]
+configuration = [
+  "board.toml passes pipa-gpu=<mode>; CONFIG_XNU_NATIVE_ADRENO=y links the archive, which must be produced at build/adreno740/libAdreno740.a because build-xnu-4k-baseline.sh hard-codes that name and ignores CONFIG_XNU_NATIVE_ADRENO_ARCHIVE.",
+  "CONFIG_XNU_NATIVE_ADRENO_ARCHIVE uses the {tree} token so the path is absolute and satisfies both the checkout-rooted check in scripts/unixnu/kernel.py and the tree-rooted check in the shell script.",
+  "Mode 12 (the Metal accelerator) is compiled out with PIPA_GPU_ACCELERATOR=0: the accelerator is an IOAccelerator subclass and this kernel has no IOAccelerator class (IOAcceleratorFamily2 is absent).",
+]
+procedure = [
+  "Build with --local-module driver:Adreno650=<checkout>, ADRENO650_DRIVER, ADRENO650_KITS and ADRENO650_PACKAGE set; the kits and the driver are not in the generated tree because Adreno650 is not in UniXNU's catalogue.",
+  "Boot with pipa-gpu=<n> and read the GPUROW lines on the console; native_gpu_rows is not rendered by this board's page.",
+]
+findings = [
+  "Mode 1 (read only) runs: GPU m1 gcc=ok cc=ok smmu=skip gpu=skip io=0.",
+  "Mode 6 powers the GPU: GPU m6 gcc=ok cc=ok smmu=ok io=0 cx1 clocks1 — the CX domain comes out of collapse and the SMMU/GMU clocks run.",
+  "Mode 7 stops at the GMU context's Attach step: status e00002ca, routes 0, programme phase 5 with 13 writes issued and no global fault.",
+  "Two writes to the SMMU, each with a value different from the one present, are accepted and do not take effect: SMR slot 5 0x8000007f reads back 0, sCR0 0x0026040e reads back 0x00260406. Reads through the same mapping are correct (IDR0 0x4c017e06) and GPUCC writes through an identically constructed window do take effect. The readable, silently unwritable register file is what a resource owned above EL1 looks like.",
+]
 completion = ["GPU submissions complete, mapping/fence handling is correct, a known image renders, and the selected Metal client presents it."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required gpu inputs before implementation."]
-evidence = []
+limits = [
+  "The GMU context cannot be built because this SMMU accepts no writes from EL1; every later step depends on it.",
+  "Metal is unreachable for the same reason plus the missing IOAccelerator class, so the wallpaper overlay and poster rendering stay on the CPU path.",
+]
+next_action = ["Decide the route past the SMMU's EL1 write refusal: an EL2-side channel, a presentation path that needs no SMMU programming, or accepting CPU presentation on this board."]
+evidence = [{ kind = "device", command = "sh scripts/run-sheng-unattended.sh tmp/boot-usb107.img 180; grep GPUROW tmp/serial-usb107.log", revision = "002ccaa75267bcc70ea1ba97dfefea14c6f7211d", reference = "docs/evidence/2026-10-28-gpu-wifi-bringup.md", result = "Mode 1 reads and mode 6 powers the CX domain with the SMMU and GMU clocks running: gcc=ok cc=ok smmu=ok cx1 clocks1." }, { kind = "device", command = "fastboot flash boot_b tmp/boot-usb106.img; grep GPUROW14 tmp/serial-usb122.log", revision = "e240b0e810988bf1012b2aa37bd3ae4fd6d84e67", reference = "docs/evidence/2026-10-28-gpu-wifi-bringup.md", result = "Writes to SMR slot 5 (0x8000007f) and sCR0 (0x0026040e) both read back the pre-existing value while IDR0 reads 0x4c017e06 through the same window." }]
 
 [[area]]
 id = "network"
-status = "planned"
+status = "device-verified"
 components = []
-paths = ["drivers/Ath12kWifi", "package/*Wifi*", "package/MhiBoot*", "scripts/*wifi*", "scripts/*mhi*"]
-inputs = ["Identify the network hardware, resources and existing component interfaces for this board."]
-configuration = ["Record the board.toml fields, DTS properties and defconfig values used for network."]
-procedure = ["Follow the network stage in the porting guide and record the actual commands."]
-findings = ["Collect the first network observation, its cause when established, and the resulting implementation decision."]
+paths = ["package/alioth_pcie.c", "drivers/Ath12kWifi", "package/*Wifi*", "package/MhiBoot*", "scripts/*wifi*", "scripts/*mhi*"]
+inputs = [
+  "QCA6390 at 17cb:1101 behind qcom,pcie@1c00000; parf 0x01c00000+0x3000, phy 0x01c06000+0x1000, dm_core 0x60000000+0xf1d, ELBI 0x60000f20+0xa8, IATU 0x60001000+0x1000, conf 0x60100000+0x100000.",
+  "package/alioth_pcie.c is the 723-line bring-up measured on this phone in the ios-sweet series.",
+]
+configuration = [
+  "board.toml passes pcie=<steps>; pcie_skip=<mask> skips a step, and pcie_skip=32 skips the PHY sequence.",
+  "The file was wrapped in #if defined(ARM64_BOARD_CONFIG_SWEET) and compiled to an empty object under this board; the guard now accepts BCM2837 as well.",
+  "The kernel's C record carries -Werror and the driver leaves struct fields implicit, so the recipe passes -Wno-missing-field-initializers; sweet_log_flush is shimmed because that log belongs to the ios-sweet tree.",
+  "printf does not reach this board's console, so the driver's line() tees to qcom_usb_debug_write and the rows appear as PCIE <step>: <text>.",
+]
+procedure = [
+  "Build with the archive entry and call alioth_pcie_init() from the late display probe; a run is pcie=<n> on the kernel command line.",
+]
+findings = [
+  "Step 1 reads gcc pcie_0_gdscr = 0x22f001: PWR_ON clear, SW_COLLAPSE set, the controller fully off — the same value the ios-sweet series recorded.",
+  "Step 2 powers it: writing 0x22f000 reads back 0xf822f000 within a millisecond.",
+  "Step 3 finds the halt registers already zero; step 2's power-up cleared them.",
+  "Step 4 reports phy_status 0x68 with bit 6 set before any PHY write, so the bootloader left the PHY initialised and the sequence can be skipped.",
+  "Step 9 with pcie_skip=32 reaches the PARF: parf_mhi_clock_reset_ctrl 0x3 written to 0x13, parf_axi_mstr_wr_addr_halt_v2 unchanged at 0x80000014, both matching the reference.",
+]
 completion = ["Scanning, association, address configuration and sustained receive/transmit traffic pass with the selected firmware."]
-limits = ["Hardware inputs and implementation are pending for this example board."]
-next_action = ["Inventory the required network inputs before implementation."]
-evidence = []
+limits = [
+  "Step 10 (DBI, configuration space, link training) has never run here or in the reference: it needs the pipe clock the skipped PHY step would produce, and accessing DBI without it is expected to hang the bus.",
+  "No link has ever trained (parf_ltssm 0) and no endpoint has been enumerated; MHI, QMI and ath11k do not exist in this tree, and the local reference Ath12kWifi is ath12k, a different driver for a different part.",
+]
+next_action = ["Establish the pipe clock without the PHY sequence that hangs this phone, then run step 10 and read the configuration space for 17cb:1101."]
+evidence = [{ kind = "device", command = "fastboot flash boot_b tmp/boot-usb108.img; grep 'PCIE 1' tmp/serial-usb129.log", revision = "dc3ab04aa4b05d38a1c372fa2ec257b3ae8547ce", reference = "docs/evidence/2026-10-28-gpu-wifi-bringup.md", result = "gcc pcie_0_gdscr reads 0x22f001, the value the ios-sweet series recorded for a fully collapsed controller." }, { kind = "device", command = "grep 'PCIE 2' tmp/serial-usb130.log", revision = "28be364f4dc9223a006770635dbc0f352d230401", reference = "docs/evidence/2026-10-28-gpu-wifi-bringup.md", result = "Writing 0x22f000 reads back 0xf822f000 within a millisecond: the controller has power." }, { kind = "device", command = "grep 'PCIE 9' tmp/serial-usb133.log", revision = "eeda5a8139786ca8029044708679c40e7382eb1e", reference = "docs/evidence/2026-10-28-gpu-wifi-bringup.md", result = "With pcie_skip=32 the PARF setup completes and parf_mhi_clock_reset_ctrl 0x3 becomes 0x13, matching the reference." }]
 
 [[area]]
 id = "audio"
