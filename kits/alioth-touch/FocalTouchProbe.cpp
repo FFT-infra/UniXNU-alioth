@@ -36,6 +36,14 @@ volatile uint32_t native_touch_area0;
  * possible if the real raw maximum is at or above 8640. */
 volatile int native_touch_raw_minx = 0x7fffffff, native_touch_raw_maxx = -1;
 volatile int native_touch_raw_miny = 0x7fffffff, native_touch_raw_maxy = -1;
+/* How often the part tags a contact down (0), up (1), move (2) or either of the two spare codes,
+ * and the last contact of the frame that preceded a release. A swipe that ends near the bottom of
+ * the panel and still arrives tagged 0 or 2 would be published as a press at the release point,
+ * which is one candidate for the system going home on its own; a release tagged 1 is dropped
+ * before publishing and cannot do that. */
+volatile uint32_t native_touch_ev[4];
+volatile int native_touch_rel_x, native_touch_rel_y, native_touch_rel_ev = -1;
+static int lastSeenX, lastSeenY, lastSeenEv = -1;
 // Consumer-side accounting that the HID digitizer (NativeHidInput) maintains;
 // defined here so the probe archive alone satisfies the digitizer's link.
 // native_touch_edge_stats and native_touch_hid_multi belong to ShengHidInput: NativeHidInput.cpp
@@ -283,6 +291,21 @@ void panelStage(void *ctx, const char *name, unsigned value, int result) {
 // Map the touch 12-bit raw coordinates onto the 0.1 mm axes the HID layer expects.
 void publish(const struct Fts5652Contact *c, unsigned count) {
     int xs[12], ys[12], ids[12];
+    if (count == 0) {
+        /* Nothing in this frame: the one before it was the release. Keep its last contact so the
+         * diagnostic can say whether the part tags a release as up (1, dropped before it can be
+         * published) or as down/move (0 or 2, published as a press where the finger left). */
+        native_touch_rel_x = lastSeenX;
+        native_touch_rel_y = lastSeenY;
+        native_touch_rel_ev = lastSeenEv;
+    } else {
+        for (unsigned i = 0; i < count && i < 12; ++i) {
+            if (c[i].event < 4) native_touch_ev[c[i].event] = native_touch_ev[c[i].event] + 1;
+        }
+        lastSeenX = c[0].x;
+        lastSeenY = c[0].y;
+        lastSeenEv = c[0].event;
+    }
     for (unsigned i = 0; i < count && i < 12; ++i) {
         /* The decoded coordinate is a 15-bit field (0..32767): the low three bits of each axis
          * ride in the pressure byte. The part's own range is this board's display-coords from
@@ -408,13 +431,34 @@ static void touchHealthCheck(Session &s) {
      * kernel log once a second as well, because that one reaches the log on userdata and survives
      * whatever happens to the console. */
     {
-        printf("TREG a0=%u rx=%d..%d ry=%d..%d int=%02x work=%02x\n",
-               __atomic_load_n(&native_touch_area0, __ATOMIC_RELAXED),
-               __atomic_load_n(&native_touch_raw_minx, __ATOMIC_RELAXED),
-               __atomic_load_n(&native_touch_raw_maxx, __ATOMIC_RELAXED),
-               __atomic_load_n(&native_touch_raw_miny, __ATOMIC_RELAXED),
-               __atomic_load_n(&native_touch_raw_maxy, __ATOMIC_RELAXED),
-               intCount, workCount);
+        const int minx = __atomic_load_n(&native_touch_raw_minx, __ATOMIC_RELAXED);
+        const int maxx = __atomic_load_n(&native_touch_raw_maxx, __ATOMIC_RELAXED);
+        const int miny = __atomic_load_n(&native_touch_raw_miny, __ATOMIC_RELAXED);
+        const int maxy = __atomic_load_n(&native_touch_raw_maxy, __ATOMIC_RELAXED);
+        const unsigned a0 = __atomic_load_n(&native_touch_area0, __ATOMIC_RELAXED);
+        static int lastMinx = -2, lastMaxx = -2, lastMiny = -2, lastMaxy = -2;
+        static unsigned lastA0 = 0xffffffffu;
+        static int reported = 0;
+        const int changed = a0 != lastA0 || minx != lastMinx || maxx != lastMaxx ||
+                            miny != lastMiny || maxy != lastMaxy;
+        /* The kernel message buffer holds the last second or two of output at most -- a usb180
+         * sample spanned one second -- so a line printed every second is gone long before the log
+         * is read. Print when a value changes, and once more late in the boot so at least one
+         * complete line survives. */
+        if (changed || (!reported && native_touch_reg_polls >= 55)) {
+            reported = 1;
+            lastA0 = a0; lastMinx = minx; lastMaxx = maxx; lastMiny = miny; lastMaxy = maxy;
+            printf("TREG a0=%u rx=%d..%d ry=%d..%d ev=%u/%u/%u/%u rel=%d,%d,e%d int=%02x work=%02x\n",
+                   a0, minx, maxx, miny, maxy,
+                   __atomic_load_n(&native_touch_ev[0], __ATOMIC_RELAXED),
+                   __atomic_load_n(&native_touch_ev[1], __ATOMIC_RELAXED),
+                   __atomic_load_n(&native_touch_ev[2], __ATOMIC_RELAXED),
+                   __atomic_load_n(&native_touch_ev[3], __ATOMIC_RELAXED),
+                   __atomic_load_n(&native_touch_rel_x, __ATOMIC_RELAXED),
+                   __atomic_load_n(&native_touch_rel_y, __ATOMIC_RELAXED),
+                   __atomic_load_n(&native_touch_rel_ev, __ATOMIC_RELAXED),
+                   intCount, workCount);
+        }
     }
     if (!asleep && !lost) return;
     gpioReset(s, 1);

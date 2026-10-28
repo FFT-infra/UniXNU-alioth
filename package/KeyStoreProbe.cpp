@@ -81,7 +81,7 @@ void native_aks_call(uint32_t selector, int32_t result) {
      * the same as "the queries completed". The component's acceptance is that the required state
      * queries complete, so record the calls in the kernel log too: the first few to show the
      * order, then every sixteenth to stay readable. */
-    if (native_aks_calls <= 8 || (native_aks_calls % 16) == 0)
+    if (native_aks_calls <= 8 || (native_aks_calls % 64) == 0)
         printf("AKS opens=%u calls=%u sel=%u rc=%d\n",
                native_aks_opens, native_aks_calls, selector, (int)result);
 }
