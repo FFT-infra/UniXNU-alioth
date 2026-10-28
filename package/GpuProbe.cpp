@@ -1403,6 +1403,9 @@ void gpuThread(void *, wait_result_t) {
     native_gpu_step = 1;
     unsigned have = 0;
     for (unsigned w = 0; w < GPB_WINDOWS; ++w) if (mapWindow(w)) have |= 1u << w;
+    // Which of the probe's register windows actually mapped. Without this, a step that skips
+    // because its window is missing is indistinguishable from one that ran and failed.
+    snprintf(native_gpu_rows[kRowLoad], sizeof native_gpu_rows[0], "MAP have=%02x want=%02x", have, (1u << GPB_WINDOWS) - 1);
     const gpb_io io = {nullptr, rd, wr, delayUs};
     gpb_result &r = native_gpu_result;
     native_gpu_step = 10;
