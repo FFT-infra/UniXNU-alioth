@@ -161,6 +161,23 @@ reports `id 4c017e06 20000005 00005511`, so IDR1 = 0x20000005, bit 31 clear
 and CB0_FSR at 0x8058, which is the standard SMMU-500 placement. The read is
 of the register it claims to be.
 
+## A/B: with and without the accelerator
+
+The plan's control is "remove the publish file and the desktop falls back to
+software rendering". The APFS staging that would rebuild that seed needs the
+host's disk-image tools, which wedged, so the nearest available control is the
+same staged seed on an image that does not register the accelerator (mode 11
+against mode 12):
+
+| Image | Accelerator | backboardd | SpringBoard |
+| --- | --- | --- | --- |
+| usb196, mode 11 | none | no crash in 170 s | 4 crashes, SIGTRAP at 0x1ae4406b4 (ESR 0xf2000000, a BRK) |
+| usb201, mode 12 | registered | crash loop, 39 crashes in 120 s | terminated with backboardd each time |
+
+So the SIGBUS in backboardd appears only once the plugin is loaded, and the
+SIGTRAP in SpringBoard is a different failure that is there without it. The
+plugin is the first suspect for backboardd; nothing yet explains the trap.
+
 ## The screenshot channel
 
 The USB console's `SCREENSHOT`/`SHOTNEXT` pair answers with a ready frame
