@@ -402,6 +402,20 @@ static void touchHealthCheck(Session &s) {
             __atomic_load_n(&native_touch_raw_miny, __ATOMIC_RELAXED), __atomic_load_n(&native_touch_raw_maxy, __ATOMIC_RELAXED));
         if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
     }
+    /* The USB console has stopped a second or two into some boots and taken every measurement
+     * with it, while the kernel itself kept running to its deadline: the persistent log showed
+     * 120 s, 61 rounds and a clean reset for exactly such a run. Write the same numbers into the
+     * kernel log once a second as well, because that one reaches the log on userdata and survives
+     * whatever happens to the console. */
+    if ((native_touch_reg_polls % 10) == 0) {
+        printf("TREG a0=%u rx=%d..%d ry=%d..%d int=%02x work=%02x\n",
+               __atomic_load_n(&native_touch_area0, __ATOMIC_RELAXED),
+               __atomic_load_n(&native_touch_raw_minx, __ATOMIC_RELAXED),
+               __atomic_load_n(&native_touch_raw_maxx, __ATOMIC_RELAXED),
+               __atomic_load_n(&native_touch_raw_miny, __ATOMIC_RELAXED),
+               __atomic_load_n(&native_touch_raw_maxy, __ATOMIC_RELAXED),
+               intCount, workCount);
+    }
     if (!asleep && !lost) return;
     gpioReset(s, 1);
     ioDelayUs(nullptr, TB_RESET_ASSERT_US);
