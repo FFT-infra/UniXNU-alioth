@@ -542,6 +542,11 @@ owned_memory_size = "0x100000000"
 # 32 MiB container, which keeps the volume UUID and therefore the defconfig value.
 # CONFIG_XNU_NATIVE_RAM_BLOCK is on, so the kernel reads the DBRDISK1 extent table.
 packed_data_ramdisk = true
+# "required" is deliberate, not an unreplaced placeholder: payload.py reads the seed only
+# from --unique-chip-id or UNIXNU_UNIQUE_CHIP_ID (scripts/unixnu/payload.py:120), and
+# devicetree.py writes the platform identity only from that argument. Putting a literal here
+# would silence the error and then silently drop /chosen/unique-chip-id and chip-id, because
+# neither file falls back to this field. Every build passes the value on the command line.
 unique_chip_id = "required"
 # IOFindBSDRoot selects its root media by three predicates, in order: rd=/rootdev= on the
 # command line, /chosen/root-matching, /chosen/boot-uuid, and only then a fallback of
