@@ -218,6 +218,11 @@ int gpioRead(Session &s, unsigned pin) {
 void gpioReset(Session &s, int asserted) {
     gpioConfigure(s, TB_GPIO_RESET, 0, TB_CFG_PULL_UP, TB_CFG_DRIVE_MA8, true);
     gpioDrive(s, TB_GPIO_RESET, !asserted);   // active low
+    /* The interrupt line was only ever read, never configured: function 0 (GPIO), pulled up,
+     * as an input. Left in whatever state the bootloader chose, gpioRead on it says nothing
+     * about the part -- which is what "the part reports int=01 while we never see the line go
+     * low" looks like. */
+    gpioConfigure(s, TB_GPIO_IRQ, 0, TB_CFG_PULL_UP, TB_CFG_DRIVE_MA8, false);
 }
 
 void panelReset(void *ctx, int asserted) {

@@ -415,7 +415,7 @@ kernel_args = [
   # 120 s, not 150: measured on boot-usb102 the desktop is up well before 150, and an
   # unattended run has nobody to touch the panel, so the reset should not wait past the
   # desktop. The timer counts from the writer's own start, a few seconds after boot.
-  "sheng-autoreset=120",
+  "sheng-autoreset=300",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
@@ -466,7 +466,11 @@ kernel_args = [
   # rises), handleReport refuses them (hres=1), and edge still counts real touches. The
   # driver already implements the split (NativeHidInput.cpp setTouchOnly /
   # native_hid_touch_allocate); this argument is the only thing that was missing.
-  "sheng-touch-split=1",
+  # Off for this round: the reference board (sheng, pipa) does not split the digitizer, and
+  # splitting here creates a second Touch Screen while the sink is a global singleton, so the
+  # merged device stops publishing and whichever one the window server bound to may be the dead
+  # one. The merged device now has the per-driver edge hook and the area filter.
+  # "sheng-touch-split=1",
   # pipa-gpu=<mode>: the A650 probe. Mode 1 only reads -- the GPU's clock sources in the
   # global clock controller and the fuses that say which part this is -- so a wrong address
   # cannot wedge the kernel and the route can be checked before anything is written.

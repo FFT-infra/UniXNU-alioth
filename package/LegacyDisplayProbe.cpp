@@ -18,6 +18,8 @@
 #include <libkern/c++/OSMetaClass.h>
 #include <libkern/c++/OSSerialize.h>
 #include <libkern/c++/OSData.h>
+// What the screenshot collector answered when the frame buffer was offered. -1 not tried.
+static int native_screenshot_register_status = -1;
 #include <kern/task.h>
 #include <sys/proc.h>
 // allproc and struct proc's list entry, for the process-table walk in the state dump.
@@ -492,8 +494,17 @@ __attribute__((noinline)) bool native_legacy_gop_mapping_observed(IOService *obj
 			framebuffer.stride = PE_current_console(&published) == 0 && published.v_rowBytes
 			    ? (uint32_t)published.v_rowBytes : width * 4u;
 			framebuffer.format = 1; /* QCOM_USB_BGRA8888 */
-			(void)qcom_usb_debug_register_framebuffer(&framebuffer);
+			/* The return value used to be discarded, so "registration refused" and "registered
+			 * but never asked for a frame" looked identical from outside. Keep it and print it. */
+			native_screenshot_register_status = qcom_usb_debug_register_framebuffer(&framebuffer);
 		}
+	}
+	// Whether the screenshot collector accepted the frame buffer: 0 registered, otherwise the
+	// refusal. Printed once, because a capture that never happens is otherwise unattributable.
+	if (&qcom_usb_debug_write) {
+		char shot[64];
+		int n = snprintf(shot, sizeof shot, "SCREENSHOT register=%d\n", native_screenshot_register_status);
+		if (n > 0) qcom_usb_debug_write(shot, (size_t)n);
 	}
 	// offline-legacy-unit-scale=<1..3> publishes /chosen display-scale as an offline UI policy:
 	// that many actual scanout pixels per logical point. It changes only the published scale;
