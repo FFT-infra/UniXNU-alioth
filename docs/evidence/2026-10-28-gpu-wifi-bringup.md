@@ -74,3 +74,22 @@ ios-sweet 当年跳过这一步（`pcie_skip=32`），因为它释放 PHY common
 
 `pcie=10`（已有 pipe clock）：日志停在 `step 9: done`，设备回到 bootloader。
 所以"step 10 需要 pipe clock"这个判断**最多只对了一半**，下一步要读的是它第一个访问碰了什么。
+
+## step 10 是只读的，却把机器打死
+
+`alioth_pcie.c:603` 的 `step_dbi()` 全部是 `get()`（读）：
+
+```
+get(4, "iatu_viewport", 0x00);
+get(5, "conf_vendor_device (bus 0, device 0, function 0)", 0x00);
+get(5, "conf_header_type", 0x0c);
+get(6, "dbi_vendor_device", 0x00);
+get(6, "dbi_capability", 0x70);
+get(3, "elbi_sys_ctrl", 0x04);
+```
+
+所以在有 pipe clock 的情况下它仍然复位，**不是写坏了什么，而是第一次访问就挂了**——
+按顺序是窗口 4 的 `iatu_viewport`（`0x60001000`）。
+
+这条把下一步缩小到一个具体动作：**单独读窗口 4 的 0x00**，其它都不碰。
+如果那一读就挂，问题在 IATU 窗口的映射或它的访问许可；如果读得回来，再往后一个一个试。
