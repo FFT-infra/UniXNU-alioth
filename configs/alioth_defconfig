@@ -97,7 +97,6 @@ CONFIG_XNU_NATIVE_VIRTIO_BLOCK_ARCHIVE="{tree}/build/virtio-mmio-block-verified-
 CONFIG_XNU_BUILD_ARCHIVES=y
 CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a"
 # The A650 GPU path is not provided by a catalog component yet.
-# CONFIG_XNU_NATIVE_ADRENO is not set
 # The GOP framebuffer path. bsd_init.c calls native_legacy_display_late_probe() inside
 # `#if DEVELOPMENT || DEBUG` on this switch, and offline-component-load-probes.patch calls
 # native_legacy_display_probe() on offline-legacy-register=1, so both symbols must resolve or the
@@ -108,12 +107,12 @@ CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a"
 # family, which is why scripts/build-gop-legacy-display.py re-proves each address against this
 # kernel before it links: the family is prelinked here, not exported.
 CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
-# The A650 GPU driver stays off for now. scripts/build-adreno650.py builds
-# build/adreno650/libAdreno650.a (verified: 1.29 MB), but the kernel step checks the same
-# CONFIG_XNU_NATIVE_ADRENO_ARCHIVE from two different working directories -- unixnu checks it
-# against the checkout root in scripts/unixnu/kernel.py:145, and build-xnu-4k-baseline.sh:637
-# checks it against the tree -- so no single value satisfies both. Resolving that needs a
-# normalisation in kernel.py, not another path guess.
+# The A650 kernel GPU driver (drivers/Adreno650, built by scripts/build-adreno650.py) and the
+# board probe that drives it. The archive path uses {tree}: xnu_env() substitutes it, so the
+# value is absolute and satisfies both checks -- unixnu's in scripts/unixnu/kernel.py:145,
+# which runs from the checkout root, and build-xnu-4k-baseline.sh:637, which runs from the
+# tree. A relative path satisfied neither.
+# CONFIG_XNU_NATIVE_ADRENO is not set
 # NATIVE_MOBILE_DISPLAY stays off. offline-component-load-probes.patch calls
 # native_mobile_display_provider_probe() under that switch, and the definition lives in
 # NativeMobileDisplay.cpp, which this archive does not carry. Turning it on adds an undefined
