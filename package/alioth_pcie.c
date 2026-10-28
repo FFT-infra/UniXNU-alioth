@@ -54,6 +54,9 @@ extern void thread_terminate(thread_t thread);
  * reference used (loader_return.c), which this tree does not have.
  */
 extern int sweet_log_flush(void);
+/* This board's console. printf() does not reach it (a DEVELOPMENT kernel leaves
+ * disable_kprintf_output set); this is the channel that does. */
+extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
 
 static uint32_t pcie_last_step, pcie_step, pcie_pause_ms = 2200;
 static uint32_t pcie_skip_steps;
@@ -145,6 +148,17 @@ line(const char *fmt, ...)
 	vprintf(fmt, ap);
 	__builtin_va_end(ap);
 	printf("\n");
+	if (&qcom_usb_debug_write) {
+		char body[192], out[224];
+		int n;
+		__builtin_va_start(ap, fmt);
+		n = vsnprintf(body, sizeof body, fmt, ap);
+		__builtin_va_end(ap);
+		if (n > 0) {
+			int m = snprintf(out, sizeof out, "PCIE %u: %s\n", pcie_step, body);
+			if (m > 0) qcom_usb_debug_write(out, (size_t)m < sizeof(out) ? (size_t)m : sizeof(out) - 1);
+		}
+	}
 }
 
 /* Put the ring on the medium now: the access that follows may never return. */
