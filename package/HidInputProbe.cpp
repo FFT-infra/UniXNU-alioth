@@ -45,8 +45,12 @@ volatile uint32_t native_hid_touch_status;
 volatile uint32_t native_hid_input_command;
 }
 
+// The publisher's tick asks whether to send the Home/consumer report. Answering yes made it
+// press Home every 1.1 s, which competes with touch and changes the screen on its own. There is
+// no scripted press here, so nothing is requested; the reference board answers yes only while
+// an offline auto-home command is armed.
 bool native_hid_input_requested(void) {
-  return true;
+  return false;
 }
 
 // Runs once, from native_legacy_display_late_probe, after the display and the touch core are up.

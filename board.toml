@@ -415,7 +415,7 @@ kernel_args = [
   # 120 s, not 150: measured on boot-usb102 the desktop is up well before 150, and an
   # unattended run has nobody to touch the panel, so the reset should not wait past the
   # desktop. The timer counts from the writer's own start, a few seconds after boot.
-  "sheng-autoreset=300",
+  "sheng-autoreset=120",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the

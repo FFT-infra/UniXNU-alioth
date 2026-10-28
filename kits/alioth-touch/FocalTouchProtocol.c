@@ -252,8 +252,18 @@ int fts5652_frame(struct Fts5652 *chip, unsigned *count, struct Fts5652Contact *
          * 7..4, area is the area byte's high nibble. Getting the packing wrong reports
          * coordinates an order of magnitude small and in the wrong place. */
         const unsigned pre = r[4];
-        const unsigned x = ((unsigned)(r[0] & 0x0f) << 11) | ((unsigned)r[1] << 3) | ((pre & 0xe0) >> 5);
-        const unsigned y = ((unsigned)(r[2] & 0x0f) << 11) | ((unsigned)r[3] << 3) | ((pre & 0x1c) >> 2);
+        /* The vendor driver packs each axis into the full 16 bits (focaltech_core.c:712-720):
+         * the high nibble of the pressure byte carries X's bits 7..4 and its low nibble Y's, the
+         * low byte lands at bit 4, and the X_H / Y_H nibbles at bit 12. The firmware counts 16 per
+         * unit and the device tree 10, so the result is scaled by 10/16.
+         * The previous form shifted by 11 and 3 and took the low bits from PRE[7:5], which is
+         * algebraically the vendor value halved: every touch landed in the top-left 80 % of the
+         * panel, and the FromEdgeTip band at 97.6 % of the height could never be reached -- so a
+         * swipe up from the bottom could not produce an edge gesture at all. */
+        unsigned x = ((pre & 0xf0u) >> 4) + ((unsigned)r[1] << 4) + (((unsigned)(r[0] & 0x0fu)) << 12);
+        unsigned y = (pre & 0x0fu) + ((unsigned)r[3] << 4) + (((unsigned)(r[2] & 0x0fu)) << 12);
+        x = x * 10u / 16u;
+        y = y * 10u / 16u;
         const int event = r[0] >> 6;
         const int id = r[2] >> 4;
         if (event == 0 && x == 0 && y == 0) {
