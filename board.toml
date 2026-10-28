@@ -577,19 +577,19 @@ root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 # A list value needs the plural "strings" kind: typed_properties() calls value.encode() on the
 # singular "string" branch and a list has no encode().
 [adt.root.string]
-model = "iPhone10,3"
-target-type = "D22"
+model = "iPad7,1"
+target-type = "J120"
 
 [adt.chosen.u32]
 display-scale = 3
 
 [adt.product.string]
-product-name = "iPhone X"
-product-description = "iPhone X"
-artwork-device-idiom = "phone"
+product-name = "iPad Pro (12.9-inch) (2nd generation)"
+product-description = "iPad Pro (12.9-inch) (2nd generation)"
+artwork-device-idiom = "pad"
 
 [adt.product.u32]
-artwork-device-subtype = 2436
+artwork-device-subtype = 2732
 artwork-scale-factor = 3
 
 # home-button-type 2 is the gesture-only case: the lock screen then offers the swipe-to-unlock
