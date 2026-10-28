@@ -231,6 +231,30 @@ streams do not check it, "int-237: backboardd wrote through a NULL stream
 pointer". Here the plugin's reads are what fault, and the two buffers that were
 allocated but never CPU-mapped are the first place to look.
 
+## No kernel counter sees the frames, but the GPU is doing the work
+
+With the fixed diagnostics (u215) the client rows print every round, and
+GPUSWAP answers the display question:
+
+```
+GPUSWAP validate 0 ok 0 reason 0 | copied 0 status -1 bytes 0 | retired 0 gen 0
+```
+
+Not one swap was ever *asked for* — so the phase-4 swap path is not refused,
+it is never called. The same boot shows the GPU working:
+
+```
+GPUROW25 LIVE irq159 ... | sub 157/157 t3370 | uc 4/3 | pool 131/131/768 | busy 42
+```
+
+157 submissions, 159 interrupts and 42 per mille of GMU busy while the UI is
+up means the desktop is not being drawn by the CPU; it is drawn through the
+GPU path straight into the buffer the display already scans out, which is why
+the legacy swap API never sees a frame. That also means no kernel counter on
+this board measures the panel: presenter counters need phase 3, the legacy
+swap counters need a caller that does not exist, and the direct-scanout flips
+need sheng-dpu-scanout=2.
+
 ## The screenshot channel
 
 The USB console's `SCREENSHOT`/`SHOTNEXT` pair answers with a ready frame
