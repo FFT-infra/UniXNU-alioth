@@ -174,6 +174,9 @@ extern volatile uint32_t native_hid_touch_status __attribute__((weak_import));
 // The A650 probe's rows. Row 0 is its verdict line ("GPU m1 gcc=... cc=... smmu=... gpu=...
 // io=..."); the board does not render these on the page, so the console carries the first one.
 extern char native_gpu_rows[][120] __attribute__((weak_import));
+// The wallpaper overlay's mount: stage says how far it got, status is the refusal code.
+extern volatile int native_gpu_addon3_stage __attribute__((weak_import));
+extern volatile int native_gpu_addon3_status __attribute__((weak_import));
 extern volatile uint32_t native_touch_edge_stats[4] __attribute__((weak_import));
 extern volatile int native_hid_input_results[8] __attribute__((weak_import));
 extern volatile uint32_t native_touch_loop_step __attribute__((weak_import));
@@ -1345,6 +1348,12 @@ static void ufs_time_report(unsigned now) {
       if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
     }
     gpuRowsSentAt = now;
+    if (&native_gpu_addon3_stage) {
+      char wall[96];
+      int w = snprintf(wall, sizeof wall, "WALLPAPER stage=%d status=%d\n",
+                       native_gpu_addon3_stage, &native_gpu_addon3_status ? native_gpu_addon3_status : 0);
+      if (w > 0) qcom_usb_debug_write(wall, (size_t)w < sizeof(wall) ? (size_t)w : sizeof(wall) - 1);
+    }
   }
 }
 /* The touch frame loop, on the USB console. It starts its own thread and publishes through
@@ -1425,6 +1434,12 @@ static void touch_time_report(unsigned now) {
       if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
     }
     gpuRowsSentAt = now;
+    if (&native_gpu_addon3_stage) {
+      char wall[96];
+      int w = snprintf(wall, sizeof wall, "WALLPAPER stage=%d status=%d\n",
+                       native_gpu_addon3_stage, &native_gpu_addon3_status ? native_gpu_addon3_status : 0);
+      if (w > 0) qcom_usb_debug_write(wall, (size_t)w < sizeof(wall) ? (size_t)w : sizeof(wall) - 1);
+    }
   }
 }
 static void monitor(void *arg, wait_result_t result) {

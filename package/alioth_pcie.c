@@ -604,12 +604,9 @@ step_dbi(void)
 {
 	announce("ask the controller's own three windows in the order that tells them apart: the address translator, the "
 	    "configuration space the buses are seen through, the core's own 4 KB, and the link control block");
+	/* One access only: the first one is the one that takes the board down, and knowing
+	 * which of the six it is decides whether the mapping or the access rule is wrong. */
 	get(4, "iatu_viewport", 0x00);
-	get(5, "conf_vendor_device (bus 0, device 0, function 0)", 0x00);
-	get(5, "conf_header_type", 0x0c);
-	get(6, "dbi_vendor_device", 0x00);
-	get(6, "dbi_capability", 0x70);
-	get(3, "elbi_sys_ctrl", 0x04);
 	return true;
 }
 
