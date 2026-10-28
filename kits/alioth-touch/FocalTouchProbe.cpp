@@ -28,9 +28,14 @@ volatile uint32_t native_touch_hid_reports;
 volatile int native_touch_error;
 volatile uint32_t native_touch_loop_step;
 volatile uint32_t native_touch_valid;
-/* Contacts the area rule removed. Cumulative over the boot; printed on the TOUCHREG line so a
- * run says whether a light tap lands in this case at all. */
+/* Contacts that arrived with a zero area. Cumulative over the boot; printed on the TOUCHREG line
+ * so a run says whether a light tap lands in this case at all. */
 volatile uint32_t native_touch_area0;
+/* The raw range the part actually reports, before scaling. The device tree's 0..8639 x 0..19199
+ * is what the scaling assumes, and a HID dump showed x reaching its maximum, which is only
+ * possible if the real raw maximum is at or above 8640. */
+volatile int native_touch_raw_minx = 0x7fffffff, native_touch_raw_maxx = -1;
+volatile int native_touch_raw_miny = 0x7fffffff, native_touch_raw_maxy = -1;
 // Consumer-side accounting that the HID digitizer (NativeHidInput) maintains;
 // defined here so the probe archive alone satisfies the digitizer's link.
 // native_touch_edge_stats and native_touch_hid_multi belong to ShengHidInput: NativeHidInput.cpp
@@ -285,6 +290,14 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
          * NativeHidInput::touchSend transforms what it receives from 0..30480 / 0..20320 into
          * the report's 0..32767, so publish in that space rather than in raw panel units, or
          * every touch lands at a fraction of where the finger was. */
+        /* What the part actually reports, before any scaling. The device tree says 0..8639 x
+         * 0..19199 and the scaling below assumes exactly that; a dump of the HID side showed x
+         * saturating at its maximum, which can only happen if raw x reaches 8640 or more, so the
+         * assumed range has to be checked against what arrives rather than trusted. */
+        if (c[i].x < native_touch_raw_minx) native_touch_raw_minx = c[i].x;
+        if (c[i].x > native_touch_raw_maxx) native_touch_raw_maxx = c[i].x;
+        if (c[i].y < native_touch_raw_miny) native_touch_raw_miny = c[i].y;
+        if (c[i].y > native_touch_raw_maxy) native_touch_raw_maxy = c[i].y;
         long x = (long)c[i].x * FTS5652_HID_AXIS_X / FTS5652_AXIS_X;
         long y = (long)c[i].y * FTS5652_HID_AXIS_Y / FTS5652_AXIS_Y;
         if (x < 0) x = 0; if (x >= FTS5652_HID_AXIS_X) x = FTS5652_HID_AXIS_X - 1;
@@ -304,11 +317,14 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
              * contact disappearing from the count, so a contact whose event is "up" must not be
              * published. */
             if (c[i].event == 1) continue;
-            /* A zero area may be either the part's phantom points on an untouched panel or a
-             * short, light contact -- a tap. The rule below still drops them, unchanged, because
-             * publishing phantoms is what made iOS see a palm; the counter says which of the two
-             * a run is producing before the rule is touched again. */
-            if (c[i].area == 0) {native_touch_area0 = native_touch_area0 + 1; continue;}
+            /* A zero area is not a reason to drop the contact. The vendor driver for this part
+             * substitutes 9 and reports it anyway (focaltech_core.c:508-510), and a HID dump of
+             * this panel showed the shape that dropping it produces: a finger with mask=0
+             * touch=1 (no Range, no Position -- UIKit does not accept it as a begin) immediately
+             * followed by mask=3 touch=0 at the same x/y with no move in between, which is a
+             * press released in the same breath. A tap cannot survive that; a drag survives
+             * because its area stays non-zero. Counted and kept. */
+            if (c[i].area == 0) native_touch_area0 = native_touch_area0 + 1;
             xs[kept] = xs[i]; ys[kept] = ys[i]; ids[kept] = ids[i];
             ++kept;
         }
@@ -379,9 +395,11 @@ static void touchHealthCheck(Session &s) {
     const bool lost = idhRc != 0 || idlRc != 0 || idh == 0x00 || idh == 0xff || idl == 0xff;
     char text[224];
     if (&qcom_usb_debug_write) {
-        int n = snprintf(text, sizeof(text), "TOUCHREG polls=%u power=%02x(rc=%d) id=%02x%02x(rc=%d/%d) int=%02x(rc=%d) work=%02x chg=%02x ges=%02x a0=%u\n",
+        int n = snprintf(text, sizeof(text), "TOUCHREG polls=%u power=%02x(rc=%d) id=%02x%02x(rc=%d/%d) int=%02x(rc=%d) work=%02x chg=%02x ges=%02x a0=%u rx=%d..%d ry=%d..%d\n",
             native_touch_reg_polls, power, powerRc, idh, idl, idhRc, idlRc, intCount, intRc, workCount, charger, gesture,
-            __atomic_load_n(&native_touch_area0, __ATOMIC_RELAXED));
+            __atomic_load_n(&native_touch_area0, __ATOMIC_RELAXED),
+            __atomic_load_n(&native_touch_raw_minx, __ATOMIC_RELAXED), __atomic_load_n(&native_touch_raw_maxx, __ATOMIC_RELAXED),
+            __atomic_load_n(&native_touch_raw_miny, __ATOMIC_RELAXED), __atomic_load_n(&native_touch_raw_maxy, __ATOMIC_RELAXED));
         if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
     }
     if (!asleep && !lost) return;
