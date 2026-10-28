@@ -68,7 +68,21 @@ say "stage 6: read the window and decode it"
 # read returns nothing, so clear it first (measured: two runs stuck at 0 bytes until the
 # reader was rebooted).
 $ADBM shell 'killall -9 dd 2>/dev/null; true' >/dev/null 2>&1
-python3 "$HERE/read-sheng-log.py" --port "$SERIAL" --out "$OUT" || fail "read-sheng-log"
+# Bounded, because a degraded UFS link in the reader turns the 32 MiB read into a many-hour
+# transfer that looks exactly like a hang (measured: 8 KiB in 2.7 s, then nothing at all).
+# The slot is restored either way; only the exit status carries the failure.
+python3 "$HERE/read-sheng-log.py" --port "$SERIAL" --out "$OUT" &
+RPID=$!
+n=0
+while kill -0 $RPID 2>/dev/null && [ "$n" -lt 300 ]; do sleep 5; n=$((n + 5)); done
+if kill -0 $RPID 2>/dev/null; then
+    kill -9 $RPID 2>/dev/null
+    READ_OK=0
+    say "read did not finish in ${n}s (degraded reader link?)"
+else
+    wait $RPID
+    READ_OK=$?
+fi
 
 say "stage 7: back to the test slot and the board's own bootloader"
 # Not "$ADBM reboot bootloader": this reader is TWRP, whose cmdline carries
@@ -84,4 +98,5 @@ while [ "$i" -lt "$TIMEOUT" ]; do
     if $FB devices 2>/dev/null | grep -q fastboot; then break; fi
 done
 $FB devices | grep -q fastboot || fail "final fastboot check"
+[ "$READ_OK" = 0 ] || fail "read stage"
 say "done"
