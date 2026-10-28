@@ -302,8 +302,19 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
         // IDR0 is at 0x20 and sCR0 at 0x00 (ArmSmmu4KStreams.c:16); reading offset 0 and
         // calling it id0 was a mistake that invalidated several rounds of reasoning. 0x48 is
         // sGFSR, the global fault status, which says whether a rejected write faulted.
-        snprintf(native_gpu_rows[kRowLoad], cap, "PRE idr0 %08x scr0 %08x gfsr %08x",
-                 s[0x20 / 4], s[0], s[0x48 / 4]);
+        // Does a write to this window stick at all? Use the highest SMR slot (this part
+        // reports 6), write a valid-looking value, read it back, and put the old value back.
+        // If it reads back unchanged the view cannot write; if it reads back what was written
+        // the view is fine and the kit's own offsets are what to look at.
+        volatile uint32_t *smr5 = &s[0x800 / 4 + 5];
+        const uint32_t was = *smr5, probe_val = 0x8000007fu;
+        *smr5 = probe_val;
+        __asm__ volatile("dsb sy" ::: "memory");
+        const uint32_t got = *smr5;
+        *smr5 = was;
+        __asm__ volatile("dsb sy" ::: "memory");
+        snprintf(native_gpu_rows[kRowLoad], cap, "PRE idr0 %08x scr0 %08x gfsr %08x smr5 %08x->%08x",
+                 s[0x20 / 4], s[0], s[0x48 / 4], probe_val, got);
         // Those two slots hold a live S2CR with no SMR match -- an inconsistent state left by
         // whatever ran before this probe. With SMR zero they route nothing, so releasing them
         // takes nothing away, and it is what makes the kit's write land instead of returning
