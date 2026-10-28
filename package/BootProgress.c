@@ -1332,12 +1332,19 @@ static void ufs_time_report(unsigned now) {
   if (n > 0) qcom_usb_debug_write(log, (size_t)n < sizeof(log) ? (size_t)n : sizeof(log) - 1);
   // Once the A650 probe has filled its summary row, say it on the console. Without this the
   // probe runs and nothing anywhere shows what it found.
-  static int gpuRowSent;
-  if (!gpuRowSent && &native_gpu_rows && native_gpu_rows[0][0]) {
-    char gpu[144];
-    int m = snprintf(gpu, sizeof gpu, "GPUROW %s\n", native_gpu_rows[0]);
-    if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
-    gpuRowSent = 1;
+  static int gpuRowsSent;
+  if (!gpuRowsSent && &native_gpu_rows && native_gpu_rows[0][0]) {
+    // The summary alone hides every step after it: modes 7 and above report in the GMU and
+    // HFI rows. Print the summary and those, one line each.
+    static const int rows[] = {0, 6, 7, 15};
+    for (unsigned r = 0; r < sizeof rows / sizeof rows[0]; ++r) {
+      const char *text = native_gpu_rows[rows[r]];
+      if (!text[0]) continue;
+      char gpu[152];
+      int m = snprintf(gpu, sizeof gpu, "GPUROW%d %s\n", rows[r], text);
+      if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
+    }
+    gpuRowsSent = 1;
   }
 }
 /* The touch frame loop, on the USB console. It starts its own thread and publishes through
@@ -1405,12 +1412,19 @@ static void touch_time_report(unsigned now) {
   if (n > 0) qcom_usb_debug_write(log, (size_t)n < sizeof(log) ? (size_t)n : sizeof(log) - 1);
   // Once the A650 probe has filled its summary row, say it on the console. Without this the
   // probe runs and nothing anywhere shows what it found.
-  static int gpuRowSent;
-  if (!gpuRowSent && &native_gpu_rows && native_gpu_rows[0][0]) {
-    char gpu[144];
-    int m = snprintf(gpu, sizeof gpu, "GPUROW %s\n", native_gpu_rows[0]);
-    if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
-    gpuRowSent = 1;
+  static int gpuRowsSent;
+  if (!gpuRowsSent && &native_gpu_rows && native_gpu_rows[0][0]) {
+    // The summary alone hides every step after it: modes 7 and above report in the GMU and
+    // HFI rows. Print the summary and those, one line each.
+    static const int rows[] = {0, 6, 7, 15};
+    for (unsigned r = 0; r < sizeof rows / sizeof rows[0]; ++r) {
+      const char *text = native_gpu_rows[rows[r]];
+      if (!text[0]) continue;
+      char gpu[152];
+      int m = snprintf(gpu, sizeof gpu, "GPUROW%d %s\n", rows[r], text);
+      if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
+    }
+    gpuRowsSent = 1;
   }
 }
 static void monitor(void *arg, wait_result_t result) {

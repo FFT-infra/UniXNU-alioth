@@ -471,7 +471,7 @@ kernel_args = [
   # cannot wedge the kernel and the route can be checked before anything is written.
   # Mode 6 adds CX power-on, the GPU SMMU clock and the 200 MHz GMU clock. Judgement line:
   # "GPU m1 gcc=ok cc=ok smmu=ok gpu=ok io=0".
-  "pipa-gpu=6",
+  "pipa-gpu=7",
   # Starts the HID publisher itself. The publisher is an IOHIDDevice compiled into this kernel,
   # so IOKit has no personality for it and nothing matches it; the board calls it from
   # native_legacy_display_late_probe, the second of the two start paths the driver adaption
