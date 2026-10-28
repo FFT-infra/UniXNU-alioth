@@ -12,7 +12,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 c_recipe = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/bsd/DEVELOPMENT/bsd_init.o.json').read_text().strip().rstrip(','))
 cxx_recipe = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/iokit/DEVELOPMENT/IOPlatformExpert.cpo.json').read_text().strip().rstrip(','))
-out = ROOT / 'build/adreno650'
+# scripts/build-xnu-4k-baseline.sh links CONFIG_XNU_NATIVE_ADRENO from
+# build/adreno740/libAdreno740.a -- the A740 name is hard-coded there, not taken from
+# CONFIG_XNU_NATIVE_ADRENO_ARCHIVE -- so the A650 archive is produced under that name.
+out = ROOT / 'build/adreno740'
 out.mkdir(parents=True, exist_ok=True)
 # The driver checkout is an input for the same reason as the kits: Adreno650 is not a
 # component in UniXNU's catalogue, so the tree has no drivers/Adreno650 unless this names it.
@@ -62,7 +65,7 @@ for source in sources:
     if result.returncode:
         sys.exit(str(source) + ':\n' + result.stderr[-2500:])
     objects.append(obj)
-archive = out / 'libAdreno650.a'
+archive = out / 'libAdreno740.a'
 archive.unlink(missing_ok=True)
 subprocess.run(['xcrun', 'ar', 'rcs', archive, *objects], check=True)
 # Every NativeAdreno or kit symbol the objects use must be defined by them; the rest is the kernel's.

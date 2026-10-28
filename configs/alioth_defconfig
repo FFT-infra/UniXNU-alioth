@@ -112,7 +112,8 @@ CONFIG_XNU_NATIVE_LEGACY_DISPLAY=y
 # value is absolute and satisfies both checks -- unixnu's in scripts/unixnu/kernel.py:145,
 # which runs from the checkout root, and build-xnu-4k-baseline.sh:637, which runs from the
 # tree. A relative path satisfied neither.
-# CONFIG_XNU_NATIVE_ADRENO is not set
+CONFIG_XNU_NATIVE_ADRENO=y
+CONFIG_XNU_NATIVE_ADRENO_ARCHIVE="{tree}/build/adreno740/libAdreno740.a"
 # NATIVE_MOBILE_DISPLAY stays off. offline-component-load-probes.patch calls
 # native_mobile_display_provider_probe() under that switch, and the definition lives in
 # NativeMobileDisplay.cpp, which this archive does not carry. Turning it on adds an undefined
