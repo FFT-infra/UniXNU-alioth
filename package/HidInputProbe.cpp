@@ -137,3 +137,28 @@ extern "C" int native_hid_input_probe(void) {
   OSSafeReleaseNULL(resource);
   return result;
 }
+
+// Called once a second by the publisher with the event driver it found. backboardd decides
+// whether a digitizer event is accepted from the properties of the service that sent it:
+// Built-In, DisplayIntegrated, and PrimaryUsagePage 0x0D with PrimaryUsage 1, 4 or 0x20. The
+// combined device lists its keyboard collection first, so without this the services publish
+// (1,6) and the event is ignored -- the reference board sets exactly these, on the driver and on
+// its parent interface, once per driver rather than every tick.
+extern "C" void native_hid_live_checkpoint(IOService *driver) {
+  if (!driver) return;
+  static IOService *publishedFor;
+  if (publishedFor == driver) return;
+  if (!driver->getProperty("Built-In")) {
+    driver->setProperty("Built-In", kOSBooleanTrue);
+    driver->setProperty("DisplayIntegrated", kOSBooleanTrue);
+    driver->setProperty("PrimaryUsagePage", (unsigned long long) 0x0d, 32);
+    driver->setProperty("PrimaryUsage", (unsigned long long) 4, 32);
+  }
+  publishedFor = driver;
+  if (IORegistryEntry *interface = driver->getParentEntry(gIOServicePlane)) {
+    interface->setProperty("Built-In", kOSBooleanTrue);
+    interface->setProperty("DisplayIntegrated", kOSBooleanTrue);
+    interface->setProperty("PrimaryUsagePage", (unsigned long long) 0x0d, 32);
+    interface->setProperty("PrimaryUsage", (unsigned long long) 4, 32);
+  }
+}
