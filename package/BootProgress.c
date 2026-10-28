@@ -200,6 +200,18 @@ extern volatile uint32_t native_adreno_unstick[15] __attribute__((weak_import));
 // native_gop_gpu_offers/completions the hand-off the GPU client takes with sheng-fb-gpu=1.
 // This is the only frame-rate evidence the board has while the screenshot channel is broken.
 extern volatile uint32_t native_legacy_surfaces[14] __attribute__((weak_import));
+// The phase-4 swap pipeline, from LegacyDisplayProbe.cpp: how many swaps the compositor asked
+// for, what the validation said, how many copies reached the scanout buffer, and how many frames
+// retired. This is the frame count the board actually has; the GOP presenter only exists on
+// phase 3.
+extern volatile uint32_t native_legacy_swap_validation_calls __attribute__((weak_import));
+extern volatile uint32_t native_legacy_swap_validation_result __attribute__((weak_import));
+extern volatile uint32_t native_legacy_swap_validation_reason __attribute__((weak_import));
+extern volatile uint32_t native_legacy_transfer_calls __attribute__((weak_import));
+extern volatile int native_legacy_transfer_status __attribute__((weak_import));
+extern volatile uint64_t native_legacy_transfer_bytes __attribute__((weak_import));
+extern volatile uint32_t native_legacy_retired_frames __attribute__((weak_import));
+extern volatile uint32_t native_legacy_presented_generation __attribute__((weak_import));
 extern volatile uint32_t native_gop_ready __attribute__((weak_import));
 extern volatile uint32_t native_gop_failures __attribute__((weak_import));
 extern volatile uint64_t native_gop_transfers __attribute__((weak_import));
@@ -258,6 +270,14 @@ static void gpu_client_report(void) {
                  native_adreno_map_fail[5][1], native_adreno_map_fail[6][0], native_adreno_map_fail[6][1]);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
     break;
+  }
+  if (&native_legacy_transfer_calls) {
+    n = snprintf(line, sizeof line, "GPUSWAP validate %u ok %u reason %u | copied %u status %d bytes %llu | retired %u gen %u\n",
+                 native_legacy_swap_validation_calls, native_legacy_swap_validation_result,
+                 native_legacy_swap_validation_reason, native_legacy_transfer_calls,
+                 native_legacy_transfer_status, (unsigned long long)native_legacy_transfer_bytes,
+                 native_legacy_retired_frames, native_legacy_presented_generation);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   if (&native_gop_transfers) {
     n = snprintf(line, sizeof line, "GPUFRAME ready %u fail %u copied %llu gpu offered %llu done %llu fail %llu abandon %llu | legacy surfaces %u swaps %u\n",
