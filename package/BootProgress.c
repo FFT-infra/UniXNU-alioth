@@ -273,7 +273,7 @@ static uint32_t framebufferChecksum(void) {
     samples = samples + 1;
   }
   framebufferNonBlack = samples ? lit * 1000 / samples : 0;
-  framebufferLuma = samples ? uint32_t(luma / samples) : 0;
+  framebufferLuma = samples ? (uint32_t)(luma / samples) : 0;
   return hash;
 }
 extern volatile uint32_t native_gop_ready __attribute__((weak_import));
