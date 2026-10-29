@@ -252,16 +252,28 @@ static void framebufferSample(void) {
   if (!framebufferLast) { framebufferLast = now; return; }
   if (now != framebufferLast) { framebufferLast = now; framebufferChanges = framebufferChanges + 1; }
 }
+// Alongside the hash, how much of the panel is not black and how bright it is: a black desktop
+// and one with a wallpaper differ by orders of magnitude here, without a person at the panel.
+static uint32_t framebufferNonBlack, framebufferLuma;
 static uint32_t framebufferChecksum(void) {
   if (!&native_legacy_gop_virtual || !native_legacy_gop_bytes) return 0;
   const volatile uint32_t *base = (const volatile uint32_t *)(uintptr_t)native_legacy_gop_virtual;
   if (!base) return 0;
   const uint64_t dwords = native_legacy_gop_bytes / 4;
   uint32_t hash = 2166136261u;
+  uint32_t samples = 0, lit = 0;
+  uint64_t luma = 0;
   for (uint64_t i = 0; i < dwords; i += 4096) {
-    hash ^= base[i];
+    const uint32_t pixel = base[i];
+    hash ^= pixel;
     hash *= 16777619u;
+    const uint32_t r = pixel & 0xff, g = (pixel >> 8) & 0xff, b = (pixel >> 16) & 0xff;
+    if (r | g | b) lit = lit + 1;
+    luma += (r * 299 + g * 587 + b * 114) / 1000;
+    samples = samples + 1;
   }
+  framebufferNonBlack = samples ? lit * 1000 / samples : 0;
+  framebufferLuma = samples ? uint32_t(luma / samples) : 0;
   return hash;
 }
 extern volatile uint32_t native_gop_ready __attribute__((weak_import));
@@ -292,8 +304,8 @@ static void gpu_client_report(void) {
     static uint32_t lastChanges;
     const uint32_t delta = framebufferChanges - lastChanges;
     lastChanges = framebufferChanges;
-    n = snprintf(line, sizeof line, "GPUFB checksum %08x changes %u (+%u since the last report) width %u height %u bytes %llu\n",
-                 framebufferChecksum(), framebufferChanges, delta,
+    n = snprintf(line, sizeof line, "GPUFB checksum %08x changes %u (+%u) nonblack %u/1000 luma %u width %u height %u bytes %llu\n",
+                 framebufferChecksum(), framebufferChanges, delta, framebufferNonBlack, framebufferLuma,
                  &native_legacy_gop_width ? native_legacy_gop_width : 0, &native_legacy_gop_height ? native_legacy_gop_height : 0,
                  (unsigned long long)native_legacy_gop_bytes);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
