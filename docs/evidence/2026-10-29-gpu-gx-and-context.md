@@ -1024,3 +1024,25 @@ overlay is still a candidate — the probe stops before it publishes anything �
 but the same stop at `CPSTATE` appeared once in the five u240 boots, which had
 no overlay question at all, so a boot that stops there is not by itself evidence
 about the overlay.
+
+## The panel drew without the console rows (u243, observed on the glass)
+
+The u243 boot showed the desktop — seen on the panel, not inferred — while its
+console capture ends at `GPUROW20 CPSTATE` with no swap or framebuffer row
+after it. Both are true, and the observation outranks the instrument: the
+console is a best-effort write and the rows after the touch probe stop were
+lost or never emitted, not withheld because the display stopped.
+
+Two things follow.
+
+1. **"The rows stop at X" is not "the system stops at X".** The console has now
+   produced a boot that drew with no swap rows at all. Any future reading of the
+   form "no `GPUREASONS` therefore no submissions" has to be checked against
+   what the panel shows before it is stated.
+2. **The overlay question is answered, in the negative.** Both boots drew: u242
+   with a fresh store (`store=3`) and u243 resuming the overlay u242 wrote
+   (`store=2`). So the resumed overlay is not what stopped the desktop on the
+   earlier boot, and `sheng-data-reset` is not a recovery measure that has to
+   stay. What did stop that boot is still unknown; it had `r0 0` and no rows
+   either, which now looks more like the same instrument loss than a different
+   failure.
