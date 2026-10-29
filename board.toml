@@ -236,7 +236,7 @@ kernel_args = [
   # The persistent log header carries this string, so a log read back through TWRP can say which
   # image wrote it. It was empty on every round up to usb171, which made the recovered log unable
   # to identify itself. Bump it with the image name on each build.
-  "sheng-build-tag=u241",
+  "sheng-build-tag=u242",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
@@ -446,7 +446,14 @@ kernel_args = [
   # pages out into a disk that never accepts the write, and the kernel's own log shows it:
   # "apfs_vnop_pageout ... returned 16", then "disk1: device is not ready" for the rest of the
   # boot. Mode 2 is the store-backed direct path; mode 1 only proves the window.
-  "sheng-data-persist=2",
+  # Reverted to 0 with sheng-data-reset=1 for one round. u241 (mode 2) removed the not-ready
+  # storm, but the very next boot stopped about 5 s in, before launchd, and the one thing that
+  # changed is that u241 was the first boot to write the Data overlay: this boot is the first
+  # that has to mount an overlay that was written. reset=1 discards it, so if the mount was the
+  # blocker this boot gets past it; if it stops in the same place, the overlay is not the cause
+  # and mode 2 goes back.
+  "sheng-data-persist=0",
+  "sheng-data-reset=1",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the

@@ -1700,6 +1700,27 @@ static void touch_time_report(unsigned now) {
     }
   }
 }
+/* The Data volume's mount is the one early step nothing reports. The owner-data patch records
+ * native_owner_data_stage (1 seed identity, 2 mount called, 3 mount returned, 4 validated) and
+ * the error in native_owner_data_status, but no code has ever printed them, so a boot that stops
+ * a few seconds in says only that it stopped. Printed on every change of either value, and to the
+ * console only: a boot that never mounts cannot be asked anything else. */
+extern volatile int native_owner_data_stage __attribute__((weak_import));
+extern volatile int native_owner_data_status __attribute__((weak_import));
+extern volatile int native_owner_data_readonly __attribute__((weak_import));
+static void data_mount_report(void) {
+  if (!&qcom_usb_debug_write || !&native_owner_data_stage) return;
+  static int last_stage = -1, last_status = -2;
+  const int stage = (int)native_owner_data_stage;
+  const int status = &native_owner_data_status ? (int)native_owner_data_status : -2;
+  if (stage == last_stage && status == last_status) return;
+  char line[96];
+  int n = snprintf(line, sizeof line, "DATAMOUNT stage=%d status=%d ro=%d\n", stage, status,
+                   &native_owner_data_readonly ? (int)native_owner_data_readonly : -1);
+  if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  last_stage = stage;
+  last_status = status;
+}
 static void monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
   unsigned capture_at=0,capture_attempt=~0U,named=0;
@@ -1712,6 +1733,7 @@ static void monitor(void *arg, wait_result_t result) {
     if(boot_process_snapshot)boot_process_snapshot();
     if(boot_log_tick)boot_log_tick(now);
     ufs_time_report(now);
+    data_mount_report();
     touch_time_report(now);
     if(sheng_cpufreq_poll)sheng_cpufreq_poll();
     if(boot_ui_trace_snapshot)boot_ui_trace_snapshot(now);
