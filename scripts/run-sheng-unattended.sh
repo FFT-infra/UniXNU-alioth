@@ -131,12 +131,21 @@ else
 fi
 
 say "stage 7: back to the test slot and the board's own bootloader"
-# Not "$ADBM reboot bootloader": this reader is TWRP, whose cmdline carries
-# twrpfastboot=1, and that lands in TWRP's own fastboot (serial 9c6a8eb6, empty
-# version-bootloader, is-userspace=no) rather than the board's ABL. Reach the ABL the way
-# the board does it on its own: boot the test slot and let its timed reset return.
+# fastboot reaches nothing while the reader's UI is up: measured 2026-10-29, "$FB --set-active=b"
+# there hung until it was killed four minutes later, and the same call in the same state hung by
+# hand at 15:20. The reader's fastboot is a separate endpoint and "adb reboot bootloader" opens it;
+# the slot write lands there in 0.05 s. From that endpoint the board goes back the way it returns on
+# its own: boot the test slot and let its timed reset bring back the ABL.
+$ADBM reboot bootloader >/dev/null 2>&1 || fail "reader reboot bootloader"
+i=0
+while [ "$i" -lt 60 ]; do
+    sleep 3
+    i=$((i + 3))
+    if $FB devices 2>/dev/null | grep -q fastboot; then break; fi
+done
+$FB devices | grep -q fastboot || fail "reader fastboot after read"
 $FB --set-active=b >/dev/null 2>&1 || fail "set-active=b after read"
-$ADBM reboot >/dev/null 2>&1 || fail "reader reboot"
+$FB reboot >/dev/null 2>&1 || fail "reboot after set-active"
 i=0
 while [ "$i" -lt "$TIMEOUT" ]; do
     sleep 3
