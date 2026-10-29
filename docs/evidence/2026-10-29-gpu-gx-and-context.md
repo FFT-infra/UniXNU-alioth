@@ -519,7 +519,20 @@ What the two missing structures need, from the parity source:
   getting it wrong would fail silently rather than loudly.
 
 `kLegacyVsyncClients` is 5592; the audit JSON does not carry it, but the recipe
-already asserts the same 5592 when it validates the vsync sender. The stride wrapper is not part
+already asserts the same 5592 when it validates the vsync sender.
+
+With those supplied the parity source compiles down to one error:
+`OriginalLegacyStateRequest` is undefined at line 333. That is the last input,
+and it is the one that cannot be a blob: the object is built by value and handed
+to the original class's state setter, so its field layout has to be the original
+one.
+
+One more thing was fixed on the way: the recipe wrote the generated header with
+a plain `write_text` and compiled immediately, and on this shared mount clang
+sometimes read the file while that write was still in flight, which surfaces as
+clang's `MemoryBuffer` assertion rather than as a compile error. The header is
+now written through a flushed, `fsync`ed, closed stream, and the crash stopped
+reproducing. The stride wrapper is not part
 of that question: the parity `NativeLegacyRequest.h` is unchanged and still
 compares the stride as bytes, so the board-side normalisation stays either way.
 
