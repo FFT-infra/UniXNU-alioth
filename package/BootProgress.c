@@ -312,9 +312,11 @@ static void gpu_client_report(void) {
   }
   for (unsigned i = 0; &native_adreno_client_log && i < 8; ++i) {
     const struct gpu_client_record *r = &native_adreno_client_log[i];
-    if (!r->name[0]) continue;
+    // A record with an empty name is still printed: a process whose name could not be read is
+    // exactly the one whose refusal would otherwise be invisible.
+    if (!r->name[0] && !r->opens && !r->refused && !r->closes) continue;
     n = snprintf(line, sizeof line, "GPUCCLI %s opens %u refused %u closes %u slot %u peak %u last %x\n",
-                 r->name, r->opens, r->refused, r->closes, r->slot, r->peak_mib, r->last_refusal);
+                 r->name[0] ? r->name : "?", r->opens, r->refused, r->closes, r->slot, r->peak_mib, r->last_refusal);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   for (unsigned i = 0; &native_adreno_client_text && i < 4; ++i) {
