@@ -466,10 +466,6 @@ kernel_args = [
   # touch; without it the home-swipe and the switcher gestures are type 0 and never recognise.
   # Only the bottom edge is marked and an unfilled begin position is skipped (NativeHidInput.cpp).
   "sheng-touch-edge=1",
-  # dcls=1 publishes the display service under AppleCLCD2 as well as its own class: the two
-  # wallpaper processes are refused iokit-get-properties on a name the shipped sandbox profile
-  # does not list. Trial switch, one boot argument byte budget of 13 to spare.
-  "dcls=1",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
