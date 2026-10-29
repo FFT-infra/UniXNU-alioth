@@ -220,6 +220,16 @@ extern volatile uint32_t native_legacy_presented_generation __attribute__((weak_
 // The surface the swap validation refused: width, height, format, planes, stride, allocation and
 // the descriptor length. Every rejected frame lands here; which field is wrong says which rule.
 extern volatile uint64_t native_legacy_rej_surface[7] __attribute__((weak_import));
+// The last frames the display accepted: kind, when, the updated rectangle, and the four most
+// common pixel colours with their counts. That says whether the compositor is drawing content or
+// writing black, without a person at the panel.
+extern volatile uint32_t native_legacy_frame_count __attribute__((weak_import));
+extern volatile uint32_t native_legacy_frame_kind[32] __attribute__((weak_import));
+extern volatile uint32_t native_legacy_frame_time[32] __attribute__((weak_import));
+extern volatile uint64_t native_legacy_frame_stats[32][5] __attribute__((weak_import));
+extern volatile uint32_t native_legacy_frame_colors[8][4] __attribute__((weak_import));
+extern volatile uint64_t native_legacy_frame_color_counts[8][4] __attribute__((weak_import));
+extern volatile uint64_t native_legacy_frame_color_other[8] __attribute__((weak_import));
 extern volatile uint32_t native_gop_ready __attribute__((weak_import));
 extern volatile uint32_t native_gop_failures __attribute__((weak_import));
 extern volatile uint64_t native_gop_transfers __attribute__((weak_import));
@@ -294,6 +304,20 @@ static void gpu_client_report(void) {
                  native_legacy_swap_validation_reason, native_legacy_transfer_calls,
                  native_legacy_transfer_status, (unsigned long long)native_legacy_transfer_bytes,
                  native_legacy_retired_frames, native_legacy_presented_generation);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+  if (&native_legacy_frame_count && native_legacy_frame_count) {
+    unsigned k = native_legacy_frame_count - 1;
+    if (k >= 8) k = 7;
+    n = snprintf(line, sizeof line, "GPUF k %u t %u rect %llu,%llu-%llu,%llu | %08x:%llu %08x:%llu %08x:%llu %08x:%llu other %llu\n",
+                 native_legacy_frame_kind[k], native_legacy_frame_time[k],
+                 (unsigned long long)native_legacy_frame_stats[k][1], (unsigned long long)native_legacy_frame_stats[k][2],
+                 (unsigned long long)native_legacy_frame_stats[k][3], (unsigned long long)native_legacy_frame_stats[k][4],
+                 native_legacy_frame_colors[k][0], (unsigned long long)native_legacy_frame_color_counts[k][0],
+                 native_legacy_frame_colors[k][1], (unsigned long long)native_legacy_frame_color_counts[k][1],
+                 native_legacy_frame_colors[k][2], (unsigned long long)native_legacy_frame_color_counts[k][2],
+                 native_legacy_frame_colors[k][3], (unsigned long long)native_legacy_frame_color_counts[k][3],
+                 (unsigned long long)native_legacy_frame_color_other[k]);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   if (&native_legacy_rej_surface && native_legacy_rej_surface[0]) {
