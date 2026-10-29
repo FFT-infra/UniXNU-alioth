@@ -352,6 +352,21 @@ being accepted (`r0` grows) but almost nothing is drawn on them, and a photo
 wallpaper would put this near ninety percent. So "the wallpaper is not shown"
 is now a number, not an impression.
 
+## The wallpaper overlay has no effect on what is drawn
+
+Same board, same clients list, one difference: the GPU addon carries the
+wallpaper overlay or it does not.
+
+| Image | `WALLPAPER` | settled frame | lit |
+| --- | --- | --- | --- |
+| with the overlay | `stage=5 status=0` | `df10c016` / `0b2ad67c` | 88 / 148 per mille |
+| without it | `stage=1 status=2` | `df10c016` / `0b2ad67c` | 88 / 148 per mille |
+
+The framebuffer checksums are **identical** in both rounds, so the mounted
+overlay changes nothing about what reaches the panel. The wallpaper question is
+therefore not about the assets, the collection or the mount; nothing renders a
+wallpaper at all on this image.
+
 ## The screen update rate depends on what the desktop is doing
 
 The framebuffer is sampled once a second and the report says how many of the
