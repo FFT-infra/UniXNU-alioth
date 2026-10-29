@@ -248,7 +248,7 @@ GPUROW25 LIVE irq159 ... | sub 157/157 t3370 | uc 4/3 | pool 131/131/768 | busy 
 ```
 
 157 submissions, 159 interrupts and 42 per mille of GMU busy while the UI is
-up means the desktop is not being drawn by the CPU; it is drawn through the
+up A later sample of the same boot shows the rate rather than a total: sub 266, 339, 412 on consecutive reports with GMU busy between 18 and 60 per mille, about 2 to 4 submissions a second with the desktop idle. That means the desktop is not being drawn by the CPU; it is drawn through the
 GPU path straight into the buffer the display already scans out, which is why
 the legacy swap API never sees a frame. That also means no kernel counter on
 this board measures the panel: presenter counters need phase 3, the legacy
