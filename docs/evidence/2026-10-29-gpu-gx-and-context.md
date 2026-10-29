@@ -278,6 +278,33 @@ guessed. Hypothesis, not yet measured: the surface the compositor produces
 once it has a GPU device is not one of the two formats the legacy driver
 accepts.
 
+## The frames reach the panel
+
+The refusal was a unit mismatch. GPUREJ named it:
+
+```
+GPUREJ surface 1080x2400 fmt 26424741 planes 1 stride 1088 alloc 10649600 bytes 10649600
+       | stride4 4352 need4 4320 alloc/height 4437
+```
+
+The IOSurface field the display reads holds 1088 for a 1080-wide window whose
+allocation is four bytes a pixel a row, so `native_legacy_surface_bounds`
+compared 1088 with `width*4 = 4320` and refused every swap. The board now
+binds the original getter as `native_legacy_surface_stride_raw` and wraps it:
+the field is taken as pixels when the allocation and the row count prove it,
+and a getter that returns bytes is left alone.
+
+With that, the same boot reads
+
+```
+GPUSWAP validate 22 ok 1 reason 5 | copied 22 status 0 bytes 10368000 | retired 22 gen 22
+```
+
+22 copies of 1080x2400x4 bytes, all retired: the GPU renders into the
+compositor's surface and the display copies it to the panel. A minute later
+the counters are unchanged because the screen is static and nothing asks for a
+new frame, which is what an idle desktop does.
+
 ## The screenshot channel
 
 The USB console's `SCREENSHOT`/`SHOTNEXT` pair answers with a ready frame
