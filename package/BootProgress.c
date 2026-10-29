@@ -279,6 +279,16 @@ static void gpu_client_report(void) {
   const uint32_t opens = &native_adreno_open_log_count ? native_adreno_open_log_count : 0;
   static int first = 1;
   if (first && !opens && !closes && !fail) return;   /* nothing has happened yet: stay quiet */
+  if (&native_legacy_gop_virtual) {
+    static uint32_t lastChanges;
+    const uint32_t delta = framebufferChanges - lastChanges;
+    lastChanges = framebufferChanges;
+    n = snprintf(line, sizeof line, "GPUFB checksum %08x changes %u (+%u since the last report) width %u height %u bytes %llu\n",
+                 framebufferChecksum(), framebufferChanges, delta,
+                 &native_legacy_gop_width ? native_legacy_gop_width : 0, &native_legacy_gop_height ? native_legacy_gop_height : 0,
+                 (unsigned long long)native_legacy_gop_bytes);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
   const uint32_t frames = &native_legacy_frame_count ? native_legacy_frame_count : 0;
   static uint32_t lastFrames;
   if (!first && opens == lastOpens && closes == lastCloses && fail == lastFail && frames == lastFrames) return;
@@ -343,13 +353,7 @@ static void gpu_client_report(void) {
                  native_legacy_retired_frames, native_legacy_presented_generation);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
-  if (&native_legacy_gop_virtual) {
-    n = snprintf(line, sizeof line, "GPUFB checksum %08x changes %u/s width %u height %u bytes %llu\n", framebufferChecksum(),
-                 framebufferChanges, 
-                 &native_legacy_gop_width ? native_legacy_gop_width : 0, &native_legacy_gop_height ? native_legacy_gop_height : 0,
-                 (unsigned long long)native_legacy_gop_bytes);
-    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
-  }
+
   if (&native_legacy_swap_reason_counts) {
     n = snprintf(line, sizeof line, "GPUREASONS accepted %u rejected %u | r0 %u r1 %u r2 %u r3 %u r4 %u r5 %u r6 %u r7 %u\n",
                  &native_legacy_swap_accepted_count ? native_legacy_swap_accepted_count : 0,
