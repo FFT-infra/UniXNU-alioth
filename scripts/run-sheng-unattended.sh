@@ -16,7 +16,10 @@
 set -u
 
 IMG=${1:?usage: run-sheng-unattended.sh <test.img> [timeout]}
-TIMEOUT=${2:-180}
+# 240, not 180: sheng-autoreset is 180 s, and the record requires the wait to exceed the checkpoint
+# plus the log sync (porting/log-capture) -- a default equal to the deadline can declare a stage
+# failed while the reset it is waiting for is still inside its log-sync grace.
+TIMEOUT=${2:-240}
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=${SHENG_LOG_OUT:-$HERE/../build/sheng-logs}
 SERIAL=${SERIAL:-}
