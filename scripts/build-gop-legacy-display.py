@@ -159,17 +159,22 @@ header += ('enum : unsigned {kRequestSurfaces = 2624, kRequestMasks = 792, kRequ
            '                  kRequestRect1 = 81, kRequestOptions = 804, kRequestDims = 816};\n')
 header += ('#define NATIVE_LEGACY_LEAVES(LEAF) ' + ' '.join('LEAF(%d)' % i for i in pure if i not in (213, 337)) + '\n')
 header += ('enum : unsigned {kLegacyStateRequested = 5836, kLegacyStatePowered = 5840};\n'
-           '// Slot 354, the original display state setter. Its request is four words and one byte:\n'
-           '// a skip flag and a value for each of the two words the setter owns, then the byte that\n'
-           '// says the change has to be reported to the clients. Read out of the original body at\n'
-           '// 0xfffffff0057970cc, which gates each store on the matching skip word, compares the old\n'
-           '// value before writing, and tests the byte with eor #1.\n'
+           '// Slot 354, the original display state setter. What the original body at 0xfffffff0057970cc\n'
+           '// reads is fixed: a word at 0 and one at 4 for display +5836, a word at 8 and one at 12 for\n'
+           '// +5840 (each store gated on the first word of its pair and skipped when the old value is\n'
+           '// equal), and the byte at 16, tested with eor #1. That is the first 17 bytes, and getting\n'
+           '// them right is what makes the call work.\n'
+           '// The size below is NOT read out of the original: it is the 28 bytes the component's\n'
+           '// {1,0,0,1,1,{}} initialises, i.e. 17 rounded to the compiler's alignment for the struct.\n'
+           '// The original never indexes past 16, so the padding is only there to give the object a\n'
+           '// defined size. The assert below locks that decision against a later edit; it does not\n'
+           '// prove the original ABI is 28 bytes, and it must not be quoted as if it did.\n'
            'struct OriginalLegacyStateRequest {\n'
            '  uint32_t skipRequested, requested, skipPowered, powered;\n'
            '  uint8_t changed, pad[11];\n'
            '};\n'
            'static_assert(sizeof(OriginalLegacyStateRequest) == 28,\n'
-           '              "four words and the changed byte, as the original setter indexes them");\n')
+           '              "the size this port chose: the original indexes the first 17 bytes only");\n')
 header += ('enum : unsigned {kLegacyVsyncClients = 5592,\n'
            '                 kRequestBytes = kRequestSurfaces + 4 * sizeof(void *)};\n'
            '// The request is read as bytes at the offsets above, so its size is derived from the\n'
