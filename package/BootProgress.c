@@ -297,11 +297,13 @@ static void gpu_client_report(void) {
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   if (&native_legacy_rej_surface && native_legacy_rej_surface[0]) {
-    n = snprintf(line, sizeof line, "GPUREJ surface %llux%llu fmt %llx planes %llu stride %llu alloc %llu bytes %llu\n",
+    n = snprintf(line, sizeof line, "GPUREJ surface %llux%llu fmt %llx planes %llu stride %llu alloc %llu bytes %llu | stride4 %llu need4 %llu alloc/height %llu\n",
                  (unsigned long long)native_legacy_rej_surface[0], (unsigned long long)native_legacy_rej_surface[1],
                  (unsigned long long)native_legacy_rej_surface[2], (unsigned long long)native_legacy_rej_surface[3],
                  (unsigned long long)native_legacy_rej_surface[4], (unsigned long long)native_legacy_rej_surface[5],
-                 (unsigned long long)native_legacy_rej_surface[6]);
+                 (unsigned long long)native_legacy_rej_surface[6], (unsigned long long)(native_legacy_rej_surface[4] * 4),
+                 (unsigned long long)(native_legacy_rej_surface[0] * 4),
+                 (unsigned long long)(native_legacy_rej_surface[1] ? native_legacy_rej_surface[5] / native_legacy_rej_surface[1] : 0));
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   if (&native_gop_transfers) {
