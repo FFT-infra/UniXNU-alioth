@@ -240,6 +240,8 @@ extern volatile uint32_t native_legacy_swap_reason_counts[8] __attribute__((weak
 // whether or not a swap carried a surface. A static screen keeps one value, a drawing one does not.
 extern volatile uint64_t native_legacy_gop_virtual __attribute__((weak_import));
 extern volatile uint64_t native_legacy_gop_bytes __attribute__((weak_import));
+extern volatile uint32_t native_legacy_gop_width __attribute__((weak_import));
+extern volatile uint32_t native_legacy_gop_height __attribute__((weak_import));
 static uint32_t framebufferChecksum(void) {
   if (!&native_legacy_gop_virtual || !native_legacy_gop_bytes) return 0;
   const volatile uint32_t *base = (const volatile uint32_t *)(uintptr_t)native_legacy_gop_virtual;
