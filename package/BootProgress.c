@@ -1655,7 +1655,7 @@ static void touch_time_report(unsigned now) {
   sent = 1;
   char log[224];
   int n = snprintf(log, sizeof(log),
-    "TOUCHSTAT t=%us frames=%u valid=%u contacts=%u irq=%u low=%u hid=%u xy=%d,%d raw=%02x%02x%02x%02x%02x%02x hstage=%u hload=%d hml=%d hmeta=%d hcls=%u hevdrv=%u hres=%d edge=%u,%u loop=%u fail=%u tsplit=%u\n",
+    "TOUCHSTAT t=%us frames=%u valid=%u contacts=%u irq=%u low=%u hid=%u xy=%d,%d raw=%02x%02x%02x%02x%02x%02x hstage=%u hload=%d hml=%d hmeta=%d hcls=%u hevdrv=%u hres=%d edge=%u,%u,%u loop=%u fail=%u tsplit=%u\n",
     now, frames, valid, count,
     &native_touch_irq_level ? __atomic_load_n(&native_touch_irq_level, __ATOMIC_RELAXED) : 9,
     &native_touch_irq_low ? __atomic_load_n(&native_touch_irq_low, __ATOMIC_RELAXED) : 0,
@@ -1672,6 +1672,7 @@ static void touch_time_report(unsigned now) {
     &native_hid_input_results ? native_hid_input_results[6] : 99,
     &native_touch_edge_stats ? native_touch_edge_stats[0] : 0,
     &native_touch_edge_stats ? native_touch_edge_stats[1] : 0,
+    &native_touch_edge_stats ? native_touch_edge_stats[2] : 0,
     loop, fail,
     /* The split digitizer: 0 not asked for, 1 started, 2 the device refused to start. */
     &native_hid_touch_status ? native_hid_touch_status : 0);
