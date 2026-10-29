@@ -236,7 +236,7 @@ kernel_args = [
   # The persistent log header carries this string, so a log read back through TWRP can say which
   # image wrote it. It was empty on every round up to usb171, which made the recovered log unable
   # to identify itself. Bump it with the image name on each build.
-  "sheng-build-tag=u239",
+  "sheng-build-tag=u240",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
@@ -438,7 +438,7 @@ kernel_args = [
   # 3600 was set for a watched round, and it is longer than any unattended round's budget:
   # the board then never returns by itself, the round times out at its budget and skips the
   # reader stage, so the persistent log is never read. The reset must fire inside the budget.
-  "sheng-autoreset=600",
+  "sheng-autoreset=180",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
