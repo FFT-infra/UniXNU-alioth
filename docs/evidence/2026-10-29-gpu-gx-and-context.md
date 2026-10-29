@@ -129,7 +129,10 @@ GPUMOUNT fail 1/e00002db slot 4 count 2
 `0xe00002db` is `kIOReturnNoSpace`, both read from this tree's IOReturn.h. So
 backboardd does reach the accelerator (type 1) and the plugin types (0x4147,
 0x4148), the grant admits it anyway, it takes slot 0 and maps up to 650 MiB of
-GPU address. The mount that fails with NoSpace is a later client: four windows
+GPU address. A later correction: every user process shows `refused 0`, so the two
+NoSpace entries come from the probe's own kernel-client rounds colliding (the
+kernel mounts to slot 0 or, holding one already, to the sentinel 4), not from
+four processes competing. Original reading follows: four windows
 and four processes that each want one (the render server, PosterBoard,
 iconservicesagent, WidgetRenderer).
 
