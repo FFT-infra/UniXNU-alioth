@@ -124,6 +124,7 @@ findings = [
 completion = ["A known frame appears with correct geometry and colors, then userland presentation and backlight controls work."]
 limits = [
   "No wallpaper: the lock screen draws its date and time over a black field, so composition reaches the text layer only. gpu offered=0 confirms the GPU stack takes no part.",
+  "dcls=1 republishes the display service as IOClass AppleCLCD2 in addition to its own class, because the sandbox refuses iokit-get-properties on NativeLegacyDisplay to PosterBoard and CollectionsPoster while backboardd and SpringBoard are allowed. Status: a trial. It produced no readable difference in the first round (no refusal lines in the captured window, and the previous round had none either), so it is neither confirmed nor refuted; retire it if the refusal turns out not to gate the wallpaper. It lives in the FFT-infra/GopFramebuffer fork rather than upstream, and it should move off that fork's main branch before the fork is next synced.",
 ]
 next_action = [
   "Get backboardd to start before investigating frame submission: with no render server there is no client that could call Swap.",
@@ -155,6 +156,8 @@ inputs = [
   "Adreno 650 on SM8250-AC; chip id 0x06050002; blocks GPU 0x3d00000, GMU 0x3d6a000, GPUCC 0x3d90000, SMMU 0x3da0000.",
   "Firmware already embedded in package/GpuFirmwareA650.c: gmu 41548 B, sqe 31632 B, and the zap image 13964 B (ELF header 148 B at 0, the 6712 B hash at 0x1000, the 1676 B segment at 0x3000). The vendor's a650_zap.mdt is packed as [header 148][hash 6712] and would not satisfy its own program headers; the embedded image is laid out by those headers, which is what zapLoad and qcom_mdt_load read.",
   "The pipa fork's A650 driver (reference/repo/Adreno650) is the same generation as this board; the upstream Adreno740 is not.",
+  "The Metal plugin (drivers/AdrenoMetal) is pinned to a local branch `parity-selftest` on the FFT-infra fork, from upstream feat/ipados27-gpu-parity, not to upstream main. That branch needs metal2vulkan development 624bab39 in .cache/gpu-reference/metal2vulkan; an older cached checkout fails the bridge build at patch 0003, so the translator revision is a build input of this pin, not an implementation detail.",
+  "The on-device known-image check (plugin: NativeAdrenoMetal.selftest beside the bundle, then make-gpu-addon.py --selftest) reports wrong-pixel counts on the [gpu client text] row. Measured 2026-10-29 (u253): SpringBoard and iconservicesagent each reported ok cb=0 rb=0 ib=0, so compute, render-to-texture and import are correct on the GPU side and a black panel is not a rendering-correctness fault.",
 ]
 configuration = [
   "board.toml passes pipa-gpu=<mode>; CONFIG_XNU_NATIVE_ADRENO=y links the archive, which must be produced at build/adreno740/libAdreno740.a because build-xnu-4k-baseline.sh hard-codes that name and ignores CONFIG_XNU_NATIVE_ADRENO_ARCHIVE.",
