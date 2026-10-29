@@ -23,7 +23,16 @@ driver = Path(os.environ.get('ADRENO650_DRIVER', str(ROOT / 'drivers/Adreno650')
 # The three upstream kits this recipe compiles are not copied into the generated tree unless a
 # selected component asks for them, so the directory is an input rather than an assumption:
 # ADRENO650_KITS names it, and a build passes this repository's kits directory.
-import os
+def write_synced(path, text):
+    """Write, flush and fsync a generated build input before anything reads it.
+
+    On this shared mount a plain write is still in flight when the compiler opens the file,
+    which shows up as clang's MemoryBuffer assertion rather than as a compile error."""
+    with path.open('w') as stream:
+        stream.write(text)
+        stream.flush()
+        os.fsync(stream.fileno())
+
 KITS = Path(os.environ.get('ADRENO650_KITS', str(ROOT / 'kits')))
 sources = sorted(KITS.joinpath('ArmSmmu4K').glob('ArmSmmu4K*.c')) + [KITS / 'AdrenoPM4' / 'AdrenoPM4.c']
 # The HFI kit and the A650 cold start that uses it.
@@ -119,7 +128,7 @@ result = subprocess.run(command, cwd=cxx_recipe['directory'], capture_output=Tru
 if result.returncode:
     sys.exit('NativeAdrenoAccelerator.cpp:\n' + result.stderr[-2500:])
 asm = out / 'original-bindings.S'
-asm.write_text(''.join('.globl %s\n.set %s, %#x\n' % (name, name, address) for name, address in sorted(bindings.items())))
+write_synced(asm, ''.join('.globl %s\n.set %s, %#x\n' % (name, name, address) for name, address in sorted(bindings.items())))
 bind_obj = out / 'original-bindings.o'
 subprocess.run([compiler, '-c', '--target=arm64-apple-ios17.0', '-o', str(bind_obj), str(asm)], check=True)
 late = out / 'NativeAdrenoAccelerator.late.o'

@@ -26,6 +26,16 @@ import struct
 import subprocess
 import sys
 
+def write_synced(path, text):
+    """Write, flush and fsync a generated build input before anything reads it.
+
+    On this shared mount a plain write is still in flight when the compiler opens the file,
+    which shows up as clang's MemoryBuffer assertion rather than as a compile error."""
+    with path.open('w') as stream:
+        stream.write(text)
+        stream.flush()
+        os.fsync(stream.fileno())
+
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'build/native-legacy-display'
 OUT.mkdir(parents=True, exist_ok=True)
@@ -145,18 +155,15 @@ header += '};\nstatic_assert(sizeof(IOMobileFramebufferLegacy)==0x18a0,"Actual o
 header += ('enum : unsigned {kRequestSurfaces = 2624, kRequestMasks = 792, kRequestRect0 = 17,\n'
            '                  kRequestRect1 = 81, kRequestOptions = 804, kRequestDims = 816};\n')
 header += ('#define NATIVE_LEGACY_LEAVES(LEAF) ' + ' '.join('LEAF(%d)' % i for i in pure if i not in (213, 337)) + '\n')
-header += ('enum : unsigned {kLegacyVsyncClients = 5592};\n'
-           '// The swap request is read as bytes at the offsets above; the highest is 816/820.\n'
-           'struct OriginalLegacySwapRequest { unsigned char bytes[832]; };\n')
-# Write the header through a synced, closed stream before the compiler opens it: on this shared
-# mount a plain write_text is still in flight when clang reads the file, which shows up as
-# clang's MemoryBuffer assertion ("Buffer is not null terminated") rather than as a compile error.
-abi = OUT / 'OriginalLegacyFramebufferABI.h'
-with abi.open('w') as stream:
-    stream.write(header)
-    stream.flush()
-    os.fsync(stream.fileno())
-time.sleep(0.5)
+header += ('enum : unsigned {kLegacyVsyncClients = 5592,\n'
+           '                 kRequestBytes = kRequestSurfaces + 4 * sizeof(void *)};\n'
+           '// The request is read as bytes at the offsets above, so its size is derived from the\n'
+           '// highest of them rather than written down.\n'
+           'struct OriginalLegacySwapRequest { unsigned char bytes[kRequestBytes]; };\n'
+           'static_assert(sizeof(OriginalLegacySwapRequest) >= kRequestSurfaces + 32,\n'
+           '              "the declared blob must cover the highest offset the component reads");\n')
+# The header is a build input the compiler opens immediately after this line.
+write_synced(OUT / 'OriginalLegacyFramebufferABI.h', header)
 
 # The owned backend, compiled with the kernel's own flags through the generic driver recipe.
 print(run(['python3', ROOT / 'scripts/build-arm-driver.py', 'NativeLegacyDisplay'], text=True), end='')
@@ -287,7 +294,7 @@ require(read(0xfffffff005777e9c, 16) == bytes.fromhex('080040f908e142f900013fd6c
         'Original isMainDisplay dispatch uses only self and tests boolean bit zero')
 
 assembly = OUT / 'original-bindings.S'
-assembly.write_text(''.join(f'.globl {name}\n.set {name}, {va:#x}\n' for name, va in sorted(bindings.items())))
+write_synced(assembly, ''.join(f'.globl {name}\n.set {name}, {va:#x}\n' for name, va in sorted(bindings.items())))
 sdk = run(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
 run(['xcrun', 'clang', '-target', 'arm64-apple-ios17.0', '-isysroot', sdk, '-c', assembly,
      '-o', OUT / 'original-bindings.o'])
