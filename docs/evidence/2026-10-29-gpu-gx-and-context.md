@@ -733,11 +733,26 @@ That is step 1 of the two-step migration check: the board-side stride wrapper
 is harmless under the parity component, so removing it is now a separate,
 attributable experiment rather than a change mixed into the pin move.
 
-The picture did not change with it. The panel settles at `nonblack 86/1000,
-luma 21` with `changes` almost static, against 148/29 for u235 — the same
-mostly-black desktop the earlier sections describe, not a new effect of the
-pin. Bright samples (429/57) occur during boot and fall away as the UI
-starts submitting.
+The picture is not comparable yet, and an earlier version of this section said
+it was. Laid out by sample order, both components do the same thing:
+
+| Round | Component | `nonblack` / `luma` per sample |
+| --- | --- | --- |
+| u235 | 33e941a | 494/67 → 436/58 |
+| u237 | 90b64ef | 492/67 → 429/57 → 428/57 → 434/58 |
+| u235b | 33e941a | 88/21 → 148/29 (the log ends here) |
+| u237, later sample | 90b64ef | 436/59 → 90/22 → 86/21 → 86/21 |
+
+Both brighten to 430-490 permille during boot and then fall to the 90-148
+band, so "bright then dark" is common to both and is not something the pin
+introduced. The 86 against 148 comparison is not a difference between the
+components either: u235b's 148 is its *last* sample, with no evidence that it
+would not have fallen further, while u237 has two consecutive 86/21 rows.
+
+What the drop does line up with is the Data volume. On u237 it happens around
+300 s of uptime, and the u238 read-back puts the first `disk1` checksum
+failures at about 334 s. A volume that stops answering is a candidate
+explanation for both, and it is still unresolved.
 
 One round-keeping detail: the round ended `rc=1` at its 200 s budget because
 `sheng-autoreset=3600` returns the board to the bootloader long after that.
