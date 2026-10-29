@@ -236,7 +236,7 @@ kernel_args = [
   # The persistent log header carries this string, so a log read back through TWRP can say which
   # image wrote it. It was empty on every round up to usb171, which made the recovered log unable
   # to identify itself. Bump it with the image name on each build.
-  "sheng-build-tag=u228",
+  "sheng-build-tag=u229",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
@@ -391,6 +391,12 @@ kernel_args = [
   # Phase 3 (presenter only) was tried on 2026-10-29 to get a frame counter: the boot stops
   # after the touch probe with no fastboot, no adb and no console output, and needs a power
   # cycle. The frame-rate instrument has to come from the phase-4 path instead.
+  # offline-legacy-validate=1 is the master gate of the swap validation
+  # (NativeLegacyDisplay.cpp:555: `enabled==1 && logicalPM && primary && bootMapping && request`
+  # only then does the reason leave its initial 1). It was removed once as "unused" for command
+  # line room and every swap was then refused at the first gate: grep the driver, not just the
+  # board package, before calling an argument unused.
+  "offline-legacy-validate=1",
   "offline-legacy-phase=4",
   "offline-legacy-transfer=1",
   "offline-legacy-cpu-present=1",
