@@ -144,6 +144,9 @@ header += '};\nstatic_assert(sizeof(IOMobileFramebufferLegacy)==0x18a0,"Actual o
 header += ('enum : unsigned {kRequestSurfaces = 2624, kRequestMasks = 792, kRequestRect0 = 17,\n'
            '                  kRequestRect1 = 81, kRequestOptions = 804, kRequestDims = 816};\n')
 header += ('#define NATIVE_LEGACY_LEAVES(LEAF) ' + ' '.join('LEAF(%d)' % i for i in pure if i not in (213, 337)) + '\n')
+header += ('enum : unsigned {kLegacyVsyncClients = 5592};\n'
+           '// The swap request is read as bytes at the offsets above; the highest is 816/820.\n'
+           'struct OriginalLegacySwapRequest { unsigned char bytes[832]; };\n')
 (OUT / 'OriginalLegacyFramebufferABI.h').write_text(header)
 
 # The owned backend, compiled with the kernel's own flags through the generic driver recipe.
