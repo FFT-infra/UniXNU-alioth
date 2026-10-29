@@ -943,13 +943,6 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
                (unsigned long long)native_adreno_wait_outer[2], (unsigned long long)native_adreno_wait_outer[3]);
       at = put(out, at, cap, row, sizeof row);
     }
-    if (&armcpu_timer_short) {
-      char row[220];
-      int n = snprintf(row, sizeof row, "[timer] lead/short");
-      for (unsigned c = 0; c < 8 && n > 0 && (size_t)n < sizeof row - 16; ++c)
-        n += snprintf(row + n, sizeof row - n, " c%u:%d/%u", c, (int)armcpu_timer_ahead[c], armcpu_timer_short[c]);
-      at = put(out, at, cap, row, sizeof row);
-    }
   }
   // The CP's registers once a fence stopped advancing: RBBM status 0-3, interrupt, CP fault, status 1, protect, ring rptr/wptr,
   // IB1 base/rem, IB2 base/rem, BV rptr, BV IB1 base/rem, BV IB2 rem, BV IB2 base.
