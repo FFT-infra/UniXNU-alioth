@@ -25,3 +25,10 @@ name = "QcomXnuUsbDebug"
 kind = "driver"
 git = "https://github.com/FFT-infra/QcomXnuUsbDebug"
 commit = "18bcc385bc0c97ff38343a83040f19711392867b"
+
+# The GPU driver compiled in this image. Its fork fft branch carries the pool argument and client text fixes.
+[[source]]
+name = "Adreno650"
+kind = "driver"
+git = "https://github.com/FFT-infra/Adreno650"
+commit = "bdee54c393c938455c9c8626946fa5c376ea3d45"
