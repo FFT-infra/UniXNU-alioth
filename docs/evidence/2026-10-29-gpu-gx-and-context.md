@@ -477,9 +477,14 @@ The recipe now supplies the six swap-request offsets the parity component reads
 ABI header, which is what the pin switch was missing. With them the build
 reaches the component and then **clang-24 crashes in the preprocessor**
 (`Preprocessor::EnterMainSourceFile`, no diagnostic), so the pin stays where it
-is. Reproducing it by hand needs the recipe's exact argv, which the crash log
-does not print; the next attempt should capture that command line, for example
-by wrapping the compiler, before guessing at the cause. The stride wrapper is not part
+is. The recipe writes its argv to `build/native-legacy-display/compile-command.json`,
+so the crash reproduces from that file. `-fsyntax-only` crashes the same way,
+which puts it in parsing and semantics rather than in the preprocessor, and
+removing the enum this board adds does not change it, so the six offsets are
+not the cause. The next suspect is `NativeHalfCodes.h`, which this branch
+introduces with two `inline constexpr uint16_t[255]` tables in a header; moving
+those tables into a single translation unit is the workaround to try if the
+crash follows them. The stride wrapper is not part
 of that question: the parity `NativeLegacyRequest.h` is unchanged and still
 compares the stride as bytes, so the board-side normalisation stays either way.
 
