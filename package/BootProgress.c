@@ -217,6 +217,9 @@ extern volatile int native_legacy_transfer_status __attribute__((weak_import));
 extern volatile uint64_t native_legacy_transfer_bytes __attribute__((weak_import));
 extern volatile uint32_t native_legacy_retired_frames __attribute__((weak_import));
 extern volatile uint32_t native_legacy_presented_generation __attribute__((weak_import));
+// The surface the swap validation refused: width, height, format, planes, stride, allocation and
+// the descriptor length. Every rejected frame lands here; which field is wrong says which rule.
+extern volatile uint64_t native_legacy_rej_surface[7] __attribute__((weak_import));
 extern volatile uint32_t native_gop_ready __attribute__((weak_import));
 extern volatile uint32_t native_gop_failures __attribute__((weak_import));
 extern volatile uint64_t native_gop_transfers __attribute__((weak_import));
@@ -291,6 +294,14 @@ static void gpu_client_report(void) {
                  native_legacy_swap_validation_reason, native_legacy_transfer_calls,
                  native_legacy_transfer_status, (unsigned long long)native_legacy_transfer_bytes,
                  native_legacy_retired_frames, native_legacy_presented_generation);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+  if (&native_legacy_rej_surface && native_legacy_rej_surface[0]) {
+    n = snprintf(line, sizeof line, "GPUREJ surface %llux%llu fmt %llx planes %llu stride %llu alloc %llu bytes %llu\n",
+                 (unsigned long long)native_legacy_rej_surface[0], (unsigned long long)native_legacy_rej_surface[1],
+                 (unsigned long long)native_legacy_rej_surface[2], (unsigned long long)native_legacy_rej_surface[3],
+                 (unsigned long long)native_legacy_rej_surface[4], (unsigned long long)native_legacy_rej_surface[5],
+                 (unsigned long long)native_legacy_rej_surface[6]);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   if (&native_gop_transfers) {
