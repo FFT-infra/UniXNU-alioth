@@ -320,7 +320,19 @@ not what decides it: the two outcomes alternate between boots of the same
 image. The desktop appearing is therefore a race, and the first thing to
 establish is what the two outcomes correlate with, not which argument was set.
 
-## The screen updates about twice a second when idle
+## offline-legacy-validate is the swap gate, and removing it cost a round
+
+`NativeLegacyDisplay.cpp:555` guards every swap validation with
+`enabled==1 && logicalPM && primary && bootMapping && request`, and `enabled`
+comes only from `offline-legacy-validate=1`; without it the reason never leaves
+its initial 1, so every swap is refused before the surface is even looked at.
+That argument was removed once as "unused" for command-line room, which is why
+one round went from 74 real surfaces to 1270 requests that carried none. The
+grep then covered only the board package; the parse lives in the driver
+component. Restoring it brings `r0` back, so the "boot-to-boot race" of the
+previous rounds was this argument, not timing.
+
+## The screen update rate depends on what the desktop is doing
 
 The framebuffer is sampled once a second and the report says how many of the
 last interval's seconds moved:
@@ -331,10 +343,10 @@ GPUFB checksum 2245e244 changes 47 (+35 since the last report)
 GPUFB checksum a70b9bc8 changes 80 (+33 since the last report)
 ```
 
-35 and 33 changes per fifteen-second report is a little over two a second, on
-an idle desktop with nothing animating but the clock and whatever redraws. That
-is the plan's frame-rate criterion measured on the panel itself, and it does
-not depend on which presentation path the compositor chose.
+35 and 33 changes per fifteen-second report is a little over two a second while
+the UI is starting up; on a settled desktop the same row reads +3, a fifth of a
+secondly change. The number is a screen-activity measure, not a frame rate, and
+it must be quoted with the interval it was taken over.
 
 ## The framebuffer changes whether or not a swap carries a surface
 
