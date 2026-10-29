@@ -591,6 +591,12 @@ step_parf_init(void)
 	put(1, "parf_mhi_clock_reset_ctrl (bit 4 in)", 0x174, value | (1u << 4));
 	value = get(1, "parf_axi_mstr_wr_addr_halt_v2", 0x1a8);
 	put(1, "parf_axi_mstr_wr_addr_halt_v2 (bit 31 in)", 0x1a8, value | (1u << 31));
+	/* Read the clock vote register once more now that the PHY reference generator is running. Step 3
+	 * votes CLOCK_VOTES and reads it back; bit 4 (pipe) is deliberately left out there because the pipe
+	 * clock comes from the PHY. If it is still clear at the end of step 9, then the controller's AXI
+	 * branches are not clocked when step 10 touches the IATU window, and a bus that never returns is
+	 * what that predicts. Read only: nothing here changes a vote. */
+	get(0, "pcie_0_axi_misc after the PHY reference generator", GCC_PCIE_0_AXI_MISC);
 	return true;
 }
 
