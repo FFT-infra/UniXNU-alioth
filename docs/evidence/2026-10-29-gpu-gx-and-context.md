@@ -744,3 +744,56 @@ One round-keeping detail: the round ended `rc=1` at its 200 s budget because
 The console capture is complete and the rows above come from a later
 45-second sample on the same boot, so nothing was lost — but an unattended
 round needs the autoreset at or below its own budget.
+
+## What the TWRP read-back has that the console does not, and vice versa
+
+The two channels carry different rows and neither replaces the other:
+
+- The console (`/dev/tty.usbmodem14101`) carries every instrument row —
+  `GPUROW*`, `GPUFB`, `GPUSWAP`, `GPUREASONS`. The persistent log carries none
+  of them.
+- The persistent log carries timestamps and the kernel's own messages, which
+  the console shows only while it is attached, and it survives the run. Its
+  `latest.txt` also carries the recorder's own health line:
+  `UFS requests=328563 verified4K=1154616 failures=0 integrity=0` and, on this
+  boot, `LIVE: DEADLINE EXCEEDED ... lost=66719`.
+
+u238's read-back (`build/sheng-logs/u238-00000000d34ec5ed`) was the first one
+in many rounds, and it was first because round stage 4 waits for the bootloader
+inside a fixed budget: with `sheng-autoreset=3600` the board never came back
+inside that budget, the round failed there, and stages 5 and 6 — which is where
+the reader is booted and the log is read — never ran. The autoreset has to fire
+inside the round's budget (u238 sets 150 s); otherwise the most complete
+evidence channel is silently skipped.
+
+## The Data volume reports checksum corruption, and the resets are a candidate
+
+The u238 window holds 314 `nx_corruption_detected_int` lines on `disk1`
+(the Data volume), all at uptime ~334 s, followed by
+`IOBlockStorageDriver ... request failed to start!`, `disk1: device is not
+ready` and APFS pageouts failing with error 16:
+
+```
+[  334.822618]: nx_corruption_detected_int:37: disk1 Container corruption detected by obj_checksum_verify:6629!
+[  334.822621]: obj_read:6207: disk1s1 oid 0x446 ... paddr 0x56df error verifying checksum
+[  334.823423]: disk1: device is not ready.
+```
+
+The older usb191 log has zero such lines. Two readings are open, and the
+evidence does not yet choose between them:
+
+1. The corruption is caused by the reset. Every round ends by resetting the
+   board on a timer while APFS may have writes in flight, and the next boot
+   finds the container inconsistent. The usb191 rounds that show no corruption
+   also ran without that timer.
+2. The corruption is independent and older than the window, and the 334 s
+   lines are simply the first ones this boot kept.
+
+The test that separates them is a boot with the reset disabled: if a long run
+shows no `corruption detected`, the timer is the cause.
+
+This matters beyond storage. On the u237 boot the panel fell from
+`nonblack 436/1000` to `86/1000` at about the same uptime, and the Data volume
+is where the desktop's assets live. A volume that stops answering is a
+sufficient explanation for a desktop that loses its content, and it would mean
+the mostly-black screen is not a GPU question at all.
