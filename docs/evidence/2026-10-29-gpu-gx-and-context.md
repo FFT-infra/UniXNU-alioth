@@ -399,6 +399,28 @@ background, not a frame that failed to arrive. Metal, the driver and the
 display path are each demonstrably working now; what is left is why
 SpringBoard traps.
 
+## The upstream parity branches already answer three of these
+
+`feat/ipados27-gpu-parity` exists in all three components and is ahead of the
+pins this port carries:
+
+- **Adreno740**: the fixed four-client design is gone. There is no
+  `kClientWindows` table and no "no free slot" any more; a client that cannot
+  be given address space is refused instead, clients survive a GPU restart, and
+  a stalled SMMU fault is ended before restart. That is the slot and stall
+  picture this port spent rounds on.
+- **GopFramebuffer**: the render server on iPadOS 27 picks a **64-bit RGBA half
+  float** surface (`0x52476841`, 'RGhA', one plane) once a Metal device renders,
+  and the component converts its rows to the scanout's BGRA, either on the CPU
+  or by offering it to the GPU client (`sheng-fb-half`). It also keeps each
+  swapped surface's client mapping.
+- **AdrenoMetal**: Metal semantics for waits, imports and heaps, Core Image
+  pipelines and naming the cause at the tail of a refusal.
+
+None of this is in the pinned commits, so the next step is to move the three
+submodules to those tips and drop the board-side stride wrapper if the new
+component handles the format itself.
+
 ## The screenshot channel
 
 The USB console's `SCREENSHOT`/`SHOTNEXT` pair answers with a ready frame
