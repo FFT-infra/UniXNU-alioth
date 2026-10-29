@@ -437,8 +437,17 @@ None of this is in the pinned commits. Moving the pin is not a one-line change
 though: the parity GopFramebuffer builds through `build-arm-driver.py
 NativeLegacyDisplay`, while this board's `build-gop-legacy-display.py` compiles
 the component directly from a recorded compile line, so the pin was put back and
-the migration of that recipe is the real next task. The board-side stride
-wrapper can only be dropped once that migration lands.
+the migration of that recipe is the real next task.
+
+Dropping the board-side stride wrapper is a step of its own, not a side effect
+of the migration, because two changes at once cannot be attributed:
+
+1. migrate the recipe and keep the wrapper: `GPUREJ` must not appear and `r0`
+   must keep growing, which says the wrapper is harmless on the new component;
+2. then remove the wrapper alone: `r0` must still grow, which says the new
+   component handles the format itself.
+
+If `r0` falls at either step, that step is reverted.
 
 ## The screenshot channel
 
