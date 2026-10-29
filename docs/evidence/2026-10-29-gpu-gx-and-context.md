@@ -927,3 +927,46 @@ An earlier section named the timed reset as a candidate cause of the checksum
 corruption. That is now the less likely reading: the corruption was a
 consequence of writing into a disk that never accepted the write, not of the
 reset.
+
+## The mount now says where it got to, and u242 got all the way (u242)
+
+`native_owner_data_stage` and `native_owner_data_status` have existed since the
+owner-data patch and nothing ever printed them, so a boot that stopped five
+seconds in said only that it stopped. They are on the console now, with the
+ram-block store's own state beside them:
+
+```
+DATAMOUNT stage=0 status=-1 ro=-1 store=0
+DATAMOUNT stage=4 status=-1 ro=0  store=3
+DATAMOUNT stage=4 status=0  ro=0  store=3
+```
+
+Stage 4 with status 0 is the patch's last stage: the mount returned, the vnode
+lookup succeeded and the mounted filesystem is apfs on the expected device and
+not read-only. `store=3` is the ram-block's *fresh* store, i.e. an empty window
+opened read-write, which is what `sheng-data-persist=2` plus
+`sheng-data-reset=1` asks for.
+
+That boot then drew the desktop:
+
+| Row | Value |
+| --- | --- |
+| `GPUSWAP` | `validate 355 ok 1 reason 0 | copied 355 status 0 | retired 355 gen 355` |
+| `GPUREASONS` | `accepted 355 rejected 0 | r0 356 … r5 0` |
+| `GPUFB` | `nonblack 982/1000 luma 231` |
+| `GPUCCLI` | `SpringBoard opens 2 refused 0 closes 1 slot 1 peak 1674` |
+
+355 frames validated, copied at a full 1080x2400 and retired, none refused, and
+98% of the panel non-black. This is the state the earlier sections could only
+glimpse as a single bright sample.
+
+The five-second stall from the previous boot did not reproduce here. What
+differs between the two is that this boot discarded the overlay the earlier one
+had written (`sheng-data-reset=1`), so "a written overlay could not be mounted"
+is still a live explanation for that boot — one sample each, and neither settles
+it.
+
+One correction to a plan of mine: `sheng-data-reset` alone does nothing. Its
+value is read at NativeRamBlock.cpp:79 but only consumed inside the
+`if (mode && ...)` block at :86, so with `sheng-data-persist=0` the old overlay
+stays and the round would have tested nothing.
