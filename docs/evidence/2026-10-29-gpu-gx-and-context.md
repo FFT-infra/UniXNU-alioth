@@ -641,3 +641,54 @@ The unattended script's last stage sets slot b active and reboots the reader.
 On this board the reader comes back into TWRP instead of the bootloader, so
 that stage reports a failure. `adb reboot bootloader` from TWRP reaches a
 fastboot that accepts `fastboot boot`, which is all the next round needs.
+
+## The original state request, read out of the original body
+
+The parity component builds `OriginalLegacyStateRequest` by value and hands it
+to the original class's display state setter, so the layout had to come from the
+original code rather than be declared. The setter is vtable slot 354, and the
+slot's entry in the prelinked candidate equals `methods[354]` in the audit:
+`0xfffffff0057970cc`. Its body reads, in order:
+
+| Instruction | Meaning |
+| --- | --- |
+| `ldr w8,[request]` then `cset ne` | a word at 0 that suppresses the first store |
+| `str w8,[self,#0x16cc]` | the word at 4, written to display +5836 |
+| `ldr w8,[request,#8]` then `cset ne` | a word at 8 that suppresses the second store |
+| `ldr w9,[self,#0x16d0]`, `cmp`, `cset eq` | the old value is compared before writing |
+| `str w8,[self,#0x16d0]` | the word at 12, written to display +5840 |
+| `ldrb w8,[request,#0x10]`, `eor w8,w8,#1` | the byte at 16, read as a boolean |
+
+Four words, that byte and eleven bytes of padding: 28 bytes, which is what the
+component's `{1,0,0,1,1,{}}` initialises. (`ldr`/`str` with an unsigned offset
+scale by four, so `0x6cc` in the encoding is +5836 and `0x6d0` is +5840.)
+
+The recipe now emits that struct and names slot 354 `applyStateRequest`, which
+binds it to the original address through the same mechanism as `validateSwap`
+and the other qualified slots; the component defines nothing.
+
+## Two ways a changed recipe silently fails to reach the build
+
+Both cost a round here, and both read as a compiler problem rather than as a
+stale input.
+
+1. **The generated header is read while it is being written.** The recipe wrote
+   `OriginalLegacyFramebufferABI.h` with `write_text` and compiled in the next
+   statement. clang caches a length and then aborts in `MemoryBuffer::init`
+   ("Buffer is not null terminated"). `flush` is not enough on a shared mount;
+   the write now goes through one `write_synced` helper that flushes, `fsync`s
+   and closes before the compiler opens the file. Three consecutive builds
+   passed on the first attempt afterwards.
+
+2. **`unixnu` copies the tree's scripts by size and mtime, and the VM's
+   virtiofs answers stat from before the edit.** Two builds compiled the old
+   recipe while the new one sat in the device repository: the Mac reported
+   30065 bytes and mtime 1793245792, the VM reported 29203 and 1793245546, and
+   `md5sum` on the VM read the *new* content. Content was right, metadata was
+   stale, so `_copy_scripts` skipped the copy. The build wrapper now runs
+   `tmp/sync-tree-scripts.py` first, which compares content and deletes a stale
+   copy so the next step must recopy it.
+
+A third symptom belongs to the same family: a component source that `git
+checkout` has just replaced can crash clang the same way once, because the
+length the VM cached belongs to the previous revision. A second run clears it.
