@@ -335,6 +335,23 @@ grep then covered only the board package; the parse lives in the driver
 component. Restoring it brings `r0` back, so the "boot-to-boot race" of the
 previous rounds was this argument, not timing.
 
+## How much of the panel is lit
+
+GPUFB also reports the share of sampled pixels that are not black and their
+mean luminance, which is the only way to judge the picture on this board
+without a person at the panel:
+
+```
+boot, 4170cc9c  nonblack 492/1000  luma 67     (setup or lock screen)
+settled, 0b2ad67c nonblack 148/1000 luma 29    (home screen)
+settled, df10c016 nonblack 88/1000  luma 21
+```
+
+The settled desktop is between nine and fifteen percent lit: real surfaces are
+being accepted (`r0` grows) but almost nothing is drawn on them, and a photo
+wallpaper would put this near ninety percent. So "the wallpaper is not shown"
+is now a number, not an impression.
+
 ## The screen update rate depends on what the desktop is doing
 
 The framebuffer is sampled once a second and the report says how many of the
