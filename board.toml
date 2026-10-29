@@ -236,7 +236,7 @@ kernel_args = [
   # The persistent log header carries this string, so a log read back through TWRP can say which
   # image wrote it. It was empty on every round up to usb171, which made the recovered log unable
   # to identify itself. Bump it with the image name on each build.
-  "sheng-build-tag=u240",
+  "sheng-build-tag=u241",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
@@ -439,6 +439,14 @@ kernel_args = [
   # the board then never returns by itself, the round times out at its budget and skips the
   # reader stage, so the persistent log is never read. The reset must fire inside the budget.
   "sheng-autoreset=180",
+  # sheng-data-persist=2 opens the Data store read-write. Without it the seed is what the kernel
+  # calls a big volume (3 GiB) and the ram-block driver has no volatile mode for one: it serves
+  # reads from the seed and does not complete writes until a store is attached, and the store
+  # only attaches when this argument is non-zero (NativeRamBlock.cpp:86,111,261). APFS then
+  # pages out into a disk that never accepts the write, and the kernel's own log shows it:
+  # "apfs_vnop_pageout ... returned 16", then "disk1: device is not ready" for the rest of the
+  # boot. Mode 2 is the store-backed direct path; mode 1 only proves the window.
+  "sheng-data-persist=2",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
