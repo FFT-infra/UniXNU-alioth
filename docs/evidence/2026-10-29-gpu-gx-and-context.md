@@ -320,6 +320,22 @@ not what decides it: the two outcomes alternate between boots of the same
 image. The desktop appearing is therefore a race, and the first thing to
 establish is what the two outcomes correlate with, not which argument was set.
 
+## The screen updates about twice a second when idle
+
+The framebuffer is sampled once a second and the report says how many of the
+last interval's seconds moved:
+
+```
+GPUFB checksum e9d71100 changes 12 (+12 since the last report)
+GPUFB checksum 2245e244 changes 47 (+35 since the last report)
+GPUFB checksum a70b9bc8 changes 80 (+33 since the last report)
+```
+
+35 and 33 changes per fifteen-second report is a little over two a second, on
+an idle desktop with nothing animating but the clock and whatever redraws. That
+is the plan's frame-rate criterion measured on the panel itself, and it does
+not depend on which presentation path the compositor chose.
+
 ## The framebuffer changes whether or not a swap carries a surface
 
 A checksum over every 4096th dword of the mapped framebuffer (GPUFB) settles
