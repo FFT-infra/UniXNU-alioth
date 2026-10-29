@@ -185,7 +185,7 @@ procedure = [
   "Boot with pipa-gpu=<n> and read the GPUROW lines on the console; native_gpu_rows is not rendered by this board's page.",
 ]
 findings = [
-  "Raising the BO pool does not relieve SpringBoard's OutOfMemory; it makes the boot worse. pipa-gpu-pool=1024 (u261) left the pool at 182 of 1024 MiB but the compositor submitted nine swaps against 830 with the driver default of 768, the panel read nonblack 150/1000 luma 29 against 990/1000 luma 246, and OutOfMemory still appeared. The default is restored; whatever refuses SpringBoard's buffer and texture allocations is not the pool's headroom.",
+  "Raising the BO pool does not relieve SpringBoard's OutOfMemory; it makes the boot worse. pipa-gpu-pool=1024 (u261) measured worse than the default, and that comparison does not hold: the board package parses pipa-gpu-pool (GpuProbe.cpp:635) while the driver that is actually compiled parses sheng-gpu-pool (reference/repo/Adreno650/NativeAdrenoService.cpp:310) with its own 1536 MiB default. Two names, so the setting probably never reached the allocator and the round measured system memory pressure instead. Before any further pool experiment the two names have to agree.",
   "Mode 1 (read only) runs: GPU m1 gcc=ok cc=ok smmu=skip gpu=skip io=0.",
   "Mode 6 powers the GPU: GPU m6 gcc=ok cc=ok smmu=ok io=0 cx1 clocks1 — the CX domain comes out of collapse and the SMMU/GMU clocks run.",
   "Mode 7 stops at the GMU context's Attach step: status e00002ca, routes 0, programme phase 5 with 13 writes issued and no global fault.",
