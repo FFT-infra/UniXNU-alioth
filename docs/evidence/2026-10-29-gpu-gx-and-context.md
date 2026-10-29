@@ -314,11 +314,11 @@ Two runs, one argument apart.
 | `apple-families` (default) | traps, SIGTRAP at the same PC, up to nine a minute | 74 real surfaces, desktop on the panel |
 | `none` | **no crash in 200 s** | 952 requests, **all reason 1** (no surface in the request), none accepted |
 
-So the assertion is about the withheld families, and the compositor that no
-longer asserts presents nothing through the swap API: with families reported
-it expects the frame to arrive by another route. The two halves have to be
-solved together; the default stays at `apple-families` because that is the
-configuration where the desktop actually draws.
+A third boot with the same `apple-families` default as the first produced
+1270 requests that all carry no surface and no crash at all, so the argument is
+not what decides it: the two outcomes alternate between boots of the same
+image. The desktop appearing is therefore a race, and the first thing to
+establish is what the two outcomes correlate with, not which argument was set.
 
 ## The desktop draws
 
