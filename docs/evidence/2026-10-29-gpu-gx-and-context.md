@@ -417,9 +417,12 @@ pins this port carries:
 - **AdrenoMetal**: Metal semantics for waits, imports and heaps, Core Image
   pipelines and naming the cause at the tail of a refusal.
 
-None of this is in the pinned commits, so the next step is to move the three
-submodules to those tips and drop the board-side stride wrapper if the new
-component handles the format itself.
+None of this is in the pinned commits. Moving the pin is not a one-line change
+though: the parity GopFramebuffer builds through `build-arm-driver.py
+NativeLegacyDisplay`, while this board's `build-gop-legacy-display.py` compiles
+the component directly from a recorded compile line, so the pin was put back and
+the migration of that recipe is the real next task. The board-side stride
+wrapper can only be dropped once that migration lands.
 
 ## The screenshot channel
 
