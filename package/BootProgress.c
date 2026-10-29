@@ -1708,18 +1708,24 @@ static void touch_time_report(unsigned now) {
 extern volatile int native_owner_data_stage __attribute__((weak_import));
 extern volatile int native_owner_data_status __attribute__((weak_import));
 extern volatile int native_owner_data_readonly __attribute__((weak_import));
+/* The ram-block side of the same question: 1 blank store, 2 restored/resumed, 3 fresh, 4 refused or
+ * failed, 6 read-only restore (NativeRamBlock.cpp:96-140). Without it a boot that never opens the
+ * store and one that opened it and refused both look like nothing happened. */
+extern volatile unsigned native_data_persist_state __attribute__((weak_import));
 static void data_mount_report(void) {
   if (!&qcom_usb_debug_write || !&native_owner_data_stage) return;
-  static int last_stage = -1, last_status = -2;
+  static int last_stage = -1, last_status = -2, last_store = -1;
   const int stage = (int)native_owner_data_stage;
   const int status = &native_owner_data_status ? (int)native_owner_data_status : -2;
-  if (stage == last_stage && status == last_status) return;
-  char line[96];
-  int n = snprintf(line, sizeof line, "DATAMOUNT stage=%d status=%d ro=%d\n", stage, status,
-                   &native_owner_data_readonly ? (int)native_owner_data_readonly : -1);
+  const int store = &native_data_persist_state ? (int)native_data_persist_state : -1;
+  if (stage == last_stage && status == last_status && store == last_store) return;
+  char line[112];
+  int n = snprintf(line, sizeof line, "DATAMOUNT stage=%d status=%d ro=%d store=%d\n", stage, status,
+                   &native_owner_data_readonly ? (int)native_owner_data_readonly : -1, store);
   if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   last_stage = stage;
   last_status = status;
+  last_store = store;
 }
 static void monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
