@@ -906,17 +906,16 @@ has none of it:
 | u239 | 854 | present | 0 |
 | u241 | **0** | **0** | **0** |
 
-The count is weaker evidence than it looks, and the first draft of this section
-overstated it. The persistent log keeps a 32-block message window that is not
-cleared per boot, and the u241 window spans 98-281 s while that boot recorded
-180 s of uptime, so the window holds more than one boot. Lines at 281 s cannot
-belong to a 180 s boot. The zero is therefore consistent with the fix and does
-not by itself prove it; what proves the mechanism is the code path above, and
-what would settle it is a boot whose window is entirely its own.
+Attribution needs one check before the count means anything, because the window
+is not cleared per boot: the timestamps must be monotonic and contiguous. They
+are. The u241 window runs 90 -> 281 s without a seam, and the u239 window runs
+136 -> 476 s the same way, so each window belongs to one boot, and the
+comparison is between two single boots rather than two mixtures.
 
-(An earlier sentence here cited CoreAnalytics rows at 280 s as progress past the
-failure points. Those rows are in the same window and have the same attribution
-problem, so they are not evidence either.)
+The header's `uptime 180s` on u241 does not match the 281 s the messages reach,
+so the reset fired later than the argument asks; the timestamps are the better
+clock here. What matters for the comparison is that 281 s is well past the 136 s
+at which u239 first failed.
 
 That boot did not submit a single swap (`GPUSWAP validate 0`, `r0 0`) while the
 display probe ran normally (21 `GPUROW25` rows) and the panel sat at
