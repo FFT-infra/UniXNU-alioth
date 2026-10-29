@@ -849,3 +849,34 @@ block device goes not-ready because the UFS link drops, or because the driver
 stops being asked. `UFS requests=328563 ... failures=0 integrity=0` on u238
 says the driver's own counters saw no failure, which points away from the link
 and towards the stack above it.
+
+## The same image does not boot the same way twice
+
+Five boots of one image (u240, nothing changed between them) capture the
+variation that made single rounds unreadable:
+
+| Boot | Console | Highest `GPUROW` | `GPUFB` samples | Swaps |
+| --- | --- | --- | --- | --- |
+| 1 | none | — | — | — |
+| 2 | 45 KB | 20 (`CPSTATE`) | 0 | none |
+| 3 | none | — | — | — |
+| 4 | 79 KB | 28 (`FAULTS`) | 4 | 52 accepted, 0 rejected, `r0 5` |
+| 5 | none | — | — | — |
+
+Two things matter here.
+
+1. **One boot in five reached the desktop, and one more reached the GPU
+   ladder and stopped at `CPSTATE`.** `GPUROW20` is the last row before the
+   zap: the CP start completed and the probe never got to `GPUROW21` (zap),
+   `GPUROW22` (interrupt) or `GPUROW23` (publish). That is a second stall
+   point, earlier than the display, and it is new in this table.
+2. **Three boots produced no console at all**, which is not yet a measurement:
+   the capture waits a fixed 120 s for the CDC ACM node and gives up silently,
+   so a boot whose USB binds late is recorded as an empty log. The three are
+   being re-run with the wait raised to 300 s and with the capture's own stderr
+   kept.
+
+Until the empty-log case is separated from the dead-boot case, no rate can be
+quoted. What can be said is that a single round proves nothing about the
+component: u237 and u239 differ by one argument that cannot act inside either
+window, and they landed on different outcomes.
