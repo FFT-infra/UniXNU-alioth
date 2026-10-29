@@ -198,6 +198,16 @@ struct boot_log_header {
 volatile uint32_t boot_log_state, boot_log_rounds, boot_log_errors;
 volatile uint64_t boot_log_first_lba;
 static int boot_log_started;
+// The timed return is the board's, not the writer's. The writer can block in a UFS write --
+// measured on boot 43ba9162: rounds 3, uptime 4 s, write_errors 0, state 2 -- and while the
+// deadline lived in its loop nothing restarted that board, so an unattended round never came
+// back. This runs from the board monitor's once-a-second tick instead, which does not share a
+// thread with the writer.
+static unsigned tick_first, tick_seen_seq, tick_seen_at;
+static int tick_reset_tried;
+static uint32_t tick_autoreset;
+static volatile unsigned log_sync_seq;
+enum {ResetSyncGrace = 10};
 static uint8_t *boot_log_buffer;   // LogMsgBlocks blocks: the message buffer, then reused for a slot and the header
 
 // The export: boot_log_export_put takes the blob's pieces in order (any thread) and writes them through a staging buffer straight into
@@ -1123,20 +1133,10 @@ static void writer(void *arg, wait_result_t result) {
   if (&boot_progress_tag) strlcpy(h.tag, boot_progress_tag(), sizeof h.tag);
   uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
   const uint64_t start = log_ticks();
-  // The reboot-into-fastboot path: PSCI features and the PMIC cell, then sheng-autoreset=<seconds
-  // of log time>, which writes the cells and restarts once, after that round's log is on the medium.
-  // The probe only reports. It used to be the gate, and it refused every run: it returns 0 only
-  // when the cell already holds a reason br_known() accepts, this handset leaves 0x4ab2b0e2 in it,
-  // so the mark, the PON write and the reset were skipped on every boot and the log said
-  // "autoreset skipped: the probe found no writable cell" (boot-usb101, 273 rounds, known=0).
-  // Whether the cell held an old reason says nothing about whether it can be overwritten.
-  uint32_t autoreset = 0;
-  int reset_ok = 0, reset_tried = 0;
-  if (&boot_reset_probe) {
-    (void)boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text);
-    PE_parse_boot_argn("sheng-autoreset", &autoreset, sizeof autoreset);
-    reset_ok = &boot_reset_bootloader != NULL;
-  }
+  // The reboot-into-fastboot path is not here any more: boot_log_tick owns it, because this loop
+  // can stop (state 3 on three failed rounds, state 4 on a GPT change, or blocked in a UFS write,
+  // measured on boot 43ba9162) and the board still has to come back. This loop only reports that a
+  // round landed, through log_sync_seq.
   // sheng-diag-export=<seconds of log time>: export the diagnostic files once then (set it shortly before sheng-autoreset).
   uint32_t diag_at = 0;
   if (&boot_diag_scan && &boot_diag_stream) PE_parse_boot_argn("sheng-diag-export", &diag_at, sizeof diag_at);
@@ -1171,47 +1171,67 @@ static void writer(void *arg, wait_result_t result) {
     memcpy(boot_log_buffer, &h, sizeof h);
     ok &= native_ufs_log_write(0, 1, boot_log_buffer);
     ok &= native_ufs_log_sync();
+    if (ok) __atomic_fetch_add(&log_sync_seq, 1, __ATOMIC_RELAXED);
     if (!ok) {boot_log_errors = ++errors;} else errors = 0;
     if (errors >= LogMaxErrors) {boot_log_state = 3; return;}
     if (h.gpt_last != h.gpt_open) {boot_log_state = 4; return;}
-    if (autoreset && now >= autoreset && !reset_tried && ok) {
-      reset_tried = 1;
-      if (!reset_ok) strlcpy(boot_log_reset_result, "autoreset skipped: the probe found no writable cell", sizeof boot_log_reset_result);
-      else {
-        // The text is only readable if the reset is refused; on success the tablet restarts into fastboot.
-        int rc = boot_reset_bootloader(boot_log_reset_result, sizeof boot_log_reset_result);
-        char tail[24]; snprintf(tail, sizeof tail, " (returned %d)", rc);
-        strlcat(boot_log_reset_result, tail, sizeof boot_log_reset_result);
-      }
-    }
     IOSleep(LogPeriodMs);
   }
 }
 
 // Called by the board page's monitor once a second; starts the writer the first time when sheng-log=1.
 void boot_log_tick(unsigned now) {
-  (void)now;
-  if (boot_log_started) return;
-  boot_log_started = 1;
-  // An unattended run must come back however it ends: on the desktop past its deadline (int-229 first suspected) or in a panic seconds
-  // after the start, before UFS and this log exist (int-229: a duplicate class at PE_lockdown_iokit). So the first tick, independent of
-  // sheng-log, marks the cell (any restart is fastboot) and arms the hypervisor's watchdog, which bites a minute after the pings stop:
-  // after the autoreset deadline, or when a panic parks the cores.
-  uint32_t autoreset = 0;
-  // The probe is called for its text, not for a verdict: what the cell held at boot is worth
-  // recording, but it must not decide whether the cell may be rewritten. See the same note in
-  // the writer.
-  if (PE_parse_boot_argn("sheng-autoreset", &autoreset, sizeof autoreset) && autoreset) {
-    if (&boot_reset_probe) (void)boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text);
-    if (&boot_reset_mark_bootloader) boot_reset_mark_bootloader(boot_log_reset_mark, sizeof boot_log_reset_mark);
-    if (&boot_reset_watchdog) boot_reset_watchdog(autoreset + 60, boot_log_reset_watchdog, sizeof boot_log_reset_watchdog);
+  if (!boot_log_started) {
+    boot_log_started = 1;
+    tick_first = now; tick_seen_at = now;
+    // An unattended run must come back however it ends: on the desktop past its deadline (int-229 first suspected) or in a panic seconds
+    // after the start, before UFS and this log exist (int-229: a duplicate class at PE_lockdown_iokit). So the first tick, independent of
+    // sheng-log, marks the cell (any restart is fastboot) and arms the hypervisor's watchdog, which bites a minute after the pings stop:
+    // after the autoreset deadline, or when a panic parks the cores.
+    uint32_t autoreset = 0;
+    // The probe is called for its text, not for a verdict: what the cell held at boot is worth
+    // recording, but it must not decide whether the cell may be rewritten. It used to be the gate
+    // and refused every run: it returns 0 only when the cell already holds a reason br_known()
+    // accepts, this handset leaves 0x4ab2b0e2 in it, so the mark, the PON write and the reset were
+    // skipped on every boot (boot-usb101, 273 rounds, known=0). Whether the cell held an old reason
+    // says nothing about whether it can be overwritten.
+    if (PE_parse_boot_argn("sheng-autoreset", &autoreset, sizeof autoreset) && autoreset) {
+      tick_autoreset = autoreset;
+      if (&boot_reset_probe) (void)boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text);
+      if (&boot_reset_mark_bootloader) boot_reset_mark_bootloader(boot_log_reset_mark, sizeof boot_log_reset_mark);
+      if (&boot_reset_watchdog) boot_reset_watchdog(autoreset + 60, boot_log_reset_watchdog, sizeof boot_log_reset_watchdog);
+    }
+    uint32_t mode = 0;
+    if (PE_parse_boot_argn("sheng-log", &mode, sizeof mode) && mode == 1 &&
+        &native_ufs_log_open && &native_ufs_log_write && &native_ufs_log_sync) {
+      boot_log_buffer = (uint8_t *)IOMallocAligned(LogMsgBlocks * LogBlock, LogBlock);
+      if (boot_log_buffer) {
+        export_lock = IOLockAlloc();
+        thread_t thread;
+        if (kernel_thread_start_priority(writer, 0, BASEPRI_KERNEL, &thread) == KERN_SUCCESS) thread_deallocate(thread);
+      }
+    }
   }
-  uint32_t mode = 0;
-  if (!PE_parse_boot_argn("sheng-log", &mode, sizeof mode) || mode != 1) return;
-  if (!&native_ufs_log_open || !&native_ufs_log_write || !&native_ufs_log_sync) return;
-  boot_log_buffer = (uint8_t *)IOMallocAligned(LogMsgBlocks * LogBlock, LogBlock);
-  if (!boot_log_buffer) return;
-  export_lock = IOLockAlloc();
-  thread_t thread;
-  if (kernel_thread_start_priority(writer, 0, BASEPRI_KERNEL, &thread) == KERN_SUCCESS) thread_deallocate(thread);
+  if (!tick_autoreset || tick_reset_tried) return;
+  // A round that landed recently means the medium is keeping up; one that did not means the writer
+  // stopped, and it will not start again (boot_log_started is never cleared, and the loop has
+  // returned on every exit path). Either way the board still has to come back.
+  const unsigned seq = __atomic_load_n(&log_sync_seq, __ATOMIC_RELAXED);
+  if (seq != tick_seen_seq) {tick_seen_seq = seq; tick_seen_at = now;}
+  const unsigned elapsed = now - tick_first;
+  if (elapsed < tick_autoreset) return;
+  // log-capture section 6: the timeout covers the measured checkpoint and the log sync. Restart at
+  // the deadline when a round has landed within the grace, and at the deadline plus the grace when
+  // none has, so an in-flight round gets its moment and a stopped writer costs only the grace. The
+  // header still names the last complete round either way.
+  if (now - tick_seen_at > ResetSyncGrace && elapsed < tick_autoreset + ResetSyncGrace) return;
+  tick_reset_tried = 1;
+  if (!&boot_reset_bootloader) {
+    strlcpy(boot_log_reset_result, "autoreset skipped: no reset entry point", sizeof boot_log_reset_result);
+    return;
+  }
+  // The text is only readable if the reset is refused; on success the tablet restarts into fastboot.
+  const int rc = boot_reset_bootloader(boot_log_reset_result, sizeof boot_log_reset_result);
+  char tail[24]; snprintf(tail, sizeof tail, " (returned %d)", rc);
+  strlcat(boot_log_reset_result, tail, sizeof boot_log_reset_result);
 }
