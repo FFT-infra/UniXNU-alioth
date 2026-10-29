@@ -124,7 +124,7 @@ procedure = [
 ]
 findings = [
   "The GPU raster hand-off was a stub until u260: native_legacy_gpu_offer returned false with five parameters while the display driver calls it with six, so the format was dropped and every frame took the CPU copy path (GPUFRAME offered 0 across boots). u260 implements it and creates the presenter at phase 4, attached to the resource service rather than under the display node. Measured on the same turn: gpu offered 830, done 830, fail 0, copied 0.",
-  "The GPU client allow-list named PosterBoard, but the processes that run the wallpaper are its extensions: AegirPoster and KaleidoscopePoster abort-looped fifteen and twelve times a boot while PosterBoard itself never appeared. The addon is packed with --clients AegirPoster,KaleidoscopePoster,SpringBoard,iconservicesagent since u260, and all three poster names then leave zero exit records.",
+  "The GPU client allow-list named PosterBoard, but the processes that run the wallpaper are its extensions: AegirPoster and KaleidoscopePoster abort-looped fifteen and twelve times a boot while PosterBoard itself never appeared. The addon is packed with --clients AegirPoster,KaleidoscopePoster,SpringBoard,iconservicesagent since u260 through scripts/make-gpu-addon-alioth.sh, and all three poster names then leave zero exit records. The four slots are all taken by that list, so a fifth process still meets kIOReturnNoSpace.",
   "Measured 2026-10-27 on boot-usb34: the lock screen is stable, SWAP calls=7 ok=7 rej=0, and backboardd creates its resources with kret=0. Earlier builds never submitted a frame at all.",
   "The panel is driven directly by the kernel's own renderer, which is why the boot-progress page and the colour bands are visible before any userspace renderer runs.",
 ]
