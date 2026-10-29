@@ -184,6 +184,11 @@ extern struct gpu_open_record native_adreno_open_log[8] __attribute__((weak_impo
 extern struct gpu_client_record native_adreno_client_log[8] __attribute__((weak_import));
 extern struct gpu_client_text native_adreno_client_text[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_open_log_count __attribute__((weak_import));
+// Processes that read MetalPluginName, i.e. that ran the original Metal discovery, with a count
+// each. That says which of the render server, PosterBoard, iconservicesagent and
+// WidgetRenderer actually asked for a device.
+struct gpu_asker_record {char name[20]; uint32_t reads;};
+extern struct gpu_asker_record native_adreno_metal_askers[12] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_mount_fail[4] __attribute__((weak_import));
 // Which ABI methods a client actually calls and which of them fail, the per-slot refusals, and why
 // maps failed. NativeAdrenoUserClient.cpp notes that Turnip turns any refusal into
@@ -237,6 +242,12 @@ static void gpu_client_report(void) {
     if (!r->name[0]) continue;
     n = snprintf(line, sizeof line, "GPUOPEN %s type %x macf %x res %x attach %x foreign %x\n",
                  r->name, r->type, r->macf, r->res, r->attach, r->foreign);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+  for (unsigned i = 0; &native_adreno_metal_askers && i < 12; ++i) {
+    const struct gpu_asker_record *r = &native_adreno_metal_askers[i];
+    if (!r->name[0] || !r->reads) continue;
+    n = snprintf(line, sizeof line, "GPUMETAL %s reads %u\n", r->name, r->reads);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   for (unsigned i = 0; &native_adreno_client_log && i < 8; ++i) {
