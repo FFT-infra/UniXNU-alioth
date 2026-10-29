@@ -471,17 +471,17 @@ trailer, and its first `NXSB` sits at **offset 32**, not 0; `apfs-fuse` on the
 build host mounts it as it is (`apfs-fuse -o ro <dmg> <mount>`) without
 `hdiutil`, which DiskArbitration wedges on this machine. Quote the offset if
 this is ever scripted: a check of `head -c 4` for `NXSB` fails on this file.
-With the cache mounted, the crash addresses resolve by image:
+With the cache mounted, `scripts/find-cache-image.py <cache-dir> <pc>…` names them (offsets are image-relative):
 
 | Address | Image |
 | --- | --- |
-| `0x1ae4406b4` (SpringBoard PC) | `PrivateFrameworks/IMDPersistence` +0xfc06b4 |
-| `0x1ae442310` (its first frame) | `IMDPersistence` +0xfc2310 |
+| `0x1ae4406b4` (SpringBoard PC) | `PrivateFrameworks/IMDPersistence` +0x586b4 |
+| `0x1ae442310` (its first frame) | `IMDPersistence` +0x586b4 (its first frame, image-relative) |
 | `0x1d9483e20` | `DataDeliveryServices` |
 | `0x1997e2cc0`, `0x1997b40e4` | `WebCore` |
 | `0x1d9445fec` | `TextInputCore` |
-| `0x1967a92f0` (healthappd) | `Espresso` |
-| `0x1e1adf2a0` (ReportCrash) | `DocumentManager` |
+| `0x1967a92f0` (healthappd) | `Espresso` +0x6212f0 |
+| `0x1e1adf2a0` (ReportCrash) | `DocumentManager` +0x3e2a0 |
 
 SpringBoard's trap is in the Messages persistence layer, and its backtrace runs
 through WebCore and TextInputCore — the frameworks a home screen loads for
