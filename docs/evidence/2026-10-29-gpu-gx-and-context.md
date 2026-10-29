@@ -1046,3 +1046,32 @@ Two things follow.
    stay. What did stop that boot is still unknown; it had `r0 0` and no rows
    either, which now looks more like the same instrument loss than a different
    failure.
+
+## The wallpaper processes are denied the display's properties
+
+The first concrete difference between the processes that draw and the ones that
+do not, from the u243 read-back (26 sandbox lines in the window):
+
+| Process | Denial | Class | Count |
+| --- | --- | --- | --- |
+| PosterBoard(228) | `iokit-get-properties` | `NativeLegacyDisplay` | 3 |
+| PosterBoard(228) | `iokit-get-properties` | `IOPlatformDevice` | 4 |
+| CollectionsPoster(238, 245) | `iokit-get-properties` | `NativeLegacyDisplay` | 3 each |
+| CollectionsPoster(238, 245) | `iokit-get-properties` | `IOPlatformDevice` | 4 each |
+
+`backboardd` and `SpringBoard` — the two that do get the display and draw — are
+not in that list. The two that own the wallpaper are refused every query.
+
+The denial is on the client side, before the driver is asked anything: the
+sandbox profile allows `iokit-get-properties` for the class names Apple ships,
+and `NativeLegacyDisplay` is ours, not one of them. So the question the wallpaper
+code asks (`IOMFBIntDcpUsedForExtWhenLidClosed` among others) is refused and the
+process has to fall back.
+
+This is a candidate, not a proven cause: a denial explains why PosterBoard cannot
+*ask*, and the wallpaper failing needs that to be load-bearing. The cheap test is
+to publish the service under the class name the profile already allows, and see
+whether PosterBoard's wallpaper appears; the expensive one is a sandbox grant.
+
+The window's attribution is the same as the other read-backs — 469-599 s against
+a 180 s boot — so this says the denials happen, not which boot they happened in.
