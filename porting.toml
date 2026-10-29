@@ -245,6 +245,7 @@ procedure = [
   "Build with the archive entry and call alioth_pcie_init() from the late display probe; a run is pcie=<n> on the kernel command line.",
 ]
 findings = [
+  "Step 10 was run on the board on 2026-10-30 and produced exactly what step_dbi's own comment predicts: with pcie=10 the board never returned, no console device enumerated and no fastboot or adb endpoint appeared, so the first access to the controller's DBI window (the iatu_viewport read) takes the machine down. The step table in alioth_pcie.c already carries all ten steps including step_dbi, so the record's earlier statement that step 10 had never run is out of date; what is now known is that it runs and kills the board rather than that it is missing. Deciding between the mapping and the access rule needs a probe that writes its line before the access and survives it, which this board has no channel for.",
   "Step 1 reads gcc pcie_0_gdscr = 0x22f001: PWR_ON clear, SW_COLLAPSE set, the controller fully off — the same value the ios-sweet series recorded.",
   "Step 2 powers it: writing 0x22f000 reads back 0xf822f000 within a millisecond.",
   "Step 3 finds the halt registers already zero; step 2's power-up cleared them.",
