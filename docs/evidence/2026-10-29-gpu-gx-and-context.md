@@ -880,3 +880,42 @@ Until the empty-log case is separated from the dead-boot case, no rate can be
 quoted. What can be said is that a single round proves nothing about the
 component: u237 and u239 differ by one argument that cannot act inside either
 window, and they landed on different outcomes.
+
+## The Data volume was never able to take a write (u241)
+
+The `disk1: device is not ready` cascade is not the hardware failing. The 3 GiB
+seed is a *big* volume for the ram-block driver, and that driver has no volatile
+mode for one:
+
+```
+NativeRamBlock.cpp:86   if (mode && (sparse.pages || isBig) && &native_ufs_store_open && ...)
+NativeRamBlock.cpp:111  direct = mode == 2;
+NativeRamBlock.cpp:261  if(isBig && !direct) { ... reads from the seed, writes wait ... }
+```
+
+`mode` is `sheng-data-persist`, and the board never set it, so the store never
+opened: APFS could read through the seed and could not complete a write. The
+kernel said so itself — `apfs_vnop_pageout ... returned 16`, then
+`disk1: device is not ready` for the rest of the boot, on some boots from 136 s.
+
+With `sheng-data-persist=2` (mode 2, the store-backed direct path) the u241 boot
+has none of it:
+
+| Round | `device is not ready` | APFS `returned 16` | `corruption detected` |
+| --- | --- | --- | --- |
+| u239 | 854 | present | 0 |
+| u241 | **0** | **0** | **0** |
+
+and the boot carried on to CoreAnalytics/CoreParsec at 280 s, well past both
+earlier failure points.
+
+That boot did not submit a single swap (`GPUSWAP validate 0`, `r0 0`) while the
+display probe ran normally (21 `GPUROW25` rows) and the panel sat at
+`nonblack 428-432 / luma 57-58`. So the storage fault and the "compositor does
+not submit" state are separate: fixing the first did not fix the second, and
+neither did it make the picture worse.
+
+An earlier section named the timed reset as a candidate cause of the checksum
+corruption. That is now the less likely reading: the corruption was a
+consequence of writing into a disk that never accepted the write, not of the
+reset.
