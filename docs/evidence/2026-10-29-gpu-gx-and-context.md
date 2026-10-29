@@ -456,6 +456,28 @@ clean CP. The FSR was read after the write completed, so either a benign
 earlier access left it set or a speculative access was reported. Recorded, not
 explained; it does not block the next mode.
 
+## The traps resolve into the frameworks, and none of them is graphics
+
+The SystemOS volume in `out/ipsw/21H461/044-76034-038.dmg` is a raw APFS
+image, so `apfs-fuse` on the build host mounts it without `hdiutil` (which is
+wedged by DiskArbitration on this machine). With the cache mounted, the crash
+addresses resolve by image:
+
+| Address | Image |
+| --- | --- |
+| `0x1ae4406b4` (SpringBoard PC) | `PrivateFrameworks/IMDPersistence` +0xfc06b4 |
+| `0x1ae442310` (its first frame) | `IMDPersistence` +0xfc2310 |
+| `0x1d9483e20` | `DataDeliveryServices` |
+| `0x1997e2cc0`, `0x1997b40e4` | `WebCore` |
+| `0x1d9445fec` | `TextInputCore` |
+| `0x1967a92f0` (healthappd) | `Espresso` |
+| `0x1e1adf2a0` (ReportCrash) | `DocumentManager` |
+
+SpringBoard's trap is in the Messages persistence layer, and its backtrace runs
+through WebCore and TextInputCore — the frameworks a home screen loads for
+widgets, keyboard and notification previews. Nothing in the graphics stack
+appears in any of them.
+
 ## The traps are a pattern, not one process
 
 A minute of u232 with the desktop drawing (`r0 10`, no refusals) shows eight
