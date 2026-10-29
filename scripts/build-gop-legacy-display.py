@@ -79,6 +79,7 @@ header = '''// SPDX-License-Identifier: BSD-2-Clause-Patent
 #include <IOKit/IOService.h>
 #include <libkern/libkern.h>
 struct OriginalLegacySwapRequest;
+struct OriginalLegacyStateRequest;
 class IOMobileFramebufferLegacy : public IOService {
  OSDeclareAbstractStructors(IOMobileFramebufferLegacy)
  unsigned char originalPrivate[0x18a0-sizeof(IOService)];
@@ -145,6 +146,8 @@ for i in range(168, 358):
 		header += ' virtual bool startHardware();\n'
 	elif i == 301:
 		header += ' virtual bool getRefreshAttributes(uint64_t *,bool);\n'
+	elif i == 354:
+		header += ' virtual int applyStateRequest(OriginalLegacyStateRequest *,bool);\n'
 	elif i in pure:
 		header += f' virtual __attribute__((noreturn)) void opaque{i}()=0;\n'
 	else:
@@ -155,6 +158,18 @@ header += '};\nstatic_assert(sizeof(IOMobileFramebufferLegacy)==0x18a0,"Actual o
 header += ('enum : unsigned {kRequestSurfaces = 2624, kRequestMasks = 792, kRequestRect0 = 17,\n'
            '                  kRequestRect1 = 81, kRequestOptions = 804, kRequestDims = 816};\n')
 header += ('#define NATIVE_LEGACY_LEAVES(LEAF) ' + ' '.join('LEAF(%d)' % i for i in pure if i not in (213, 337)) + '\n')
+header += ('enum : unsigned {kLegacyStateRequested = 5836, kLegacyStatePowered = 5840};\n'
+           '// Slot 354, the original display state setter. Its request is four words and one byte:\n'
+           '// a skip flag and a value for each of the two words the setter owns, then the byte that\n'
+           '// says the change has to be reported to the clients. Read out of the original body at\n'
+           '// 0xfffffff0057970cc, which gates each store on the matching skip word, compares the old\n'
+           '// value before writing, and tests the byte with eor #1.\n'
+           'struct OriginalLegacyStateRequest {\n'
+           '  uint32_t skipRequested, requested, skipPowered, powered;\n'
+           '  uint8_t changed, pad[11];\n'
+           '};\n'
+           'static_assert(sizeof(OriginalLegacyStateRequest) == 28,\n'
+           '              "four words and the changed byte, as the original setter indexes them");\n')
 header += ('enum : unsigned {kLegacyVsyncClients = 5592,\n'
            '                 kRequestBytes = kRequestSurfaces + 4 * sizeof(void *)};\n'
            '// The request is read as bytes at the offsets above, so its size is derived from the\n'
