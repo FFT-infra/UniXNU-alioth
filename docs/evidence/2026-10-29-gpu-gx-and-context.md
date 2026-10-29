@@ -975,3 +975,27 @@ The read-back from that boot does not help: its message window spans 836-930 s
 while the boot recorded 180 s of uptime, so the window holds an older boot and
 its zero counts for `device is not ready` say nothing about u242. The console is
 the channel that carries this boot's evidence, and `DATAMOUNT` is on it.
+
+## A failed Data mount is a panic, so reaching init already proves it worked
+
+The owner-data mount is not best-effort:
+
+```c
+int data_error = native_owner_data_prepare(p, (user_addr_t)scratch_addr);
+if (data_error) panic("offline scratch Data mount failed: %d", data_error);
+```
+
+(offline-owner-systemos-mount.patch:289-290, before exec of init.) So any boot
+whose console shows `EXITLOG pid=1 name=init`, or any later process at all, has
+already mounted Data successfully. No capture in this tree carries
+`offline scratch Data mount failed:`, and none would get that far if it did.
+
+That rules out the reading this section's previous draft used — "the desktop was
+black because Data did not mount". The boot that drew nothing had reached
+`xpcproxy`, so its mount had returned success.
+
+What still separates that boot from u242 is the store, not the mount: u242 ran
+with `sheng-data-reset=1` and reports `store=3` (a fresh window), while the
+earlier one resumed the overlay u240/u241 had written (`store=2`). Whether a
+resumed overlay is what stopped the desktop is a one-variable question — remove
+`sheng-data-reset` and boot again — and it is the next round.
