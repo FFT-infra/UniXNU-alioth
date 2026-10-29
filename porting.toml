@@ -254,7 +254,7 @@ findings = [
 ]
 completion = ["Scanning, association, address configuration and sustained receive/transmit traffic pass with the selected firmware."]
 limits = [
-  "Step 10 (DBI, configuration space, link training) has never run here or in the reference: it needs the pipe clock the skipped PHY step would produce, and accessing DBI without it is expected to hang the bus.",
+  "Step 10 stops at its first access, and the window addresses are not the reason. Every one of parf, phy, dm_core, elbi and iatu matches the vendor DTS byte for byte (kona-pcie.dtsi:7-13); only the conf window differs, 0x100000 there against 0x1000 here, and that is not the access that hangs. What differs is the clock vote set: step_clocks votes slv_axi, mstr_axi, cfg_ahb, aux and slv_q2a, while the vendor clock-names also carries pcie_0_ldo, pcie_phy_refgen_clk, pcie_0_ref_clk_src, pcie_tbu_clk and pcie_ddrss_sf_tbu_clk. The LDO and the PHY reference generator decide whether the core and the PHY are powered and clocked at all, so a bus that never returns is what their absence predicts. Next: vote those two only and run to step 9 without touching DBI, then retry step 10.",
   "No link has ever trained (parf_ltssm 0) and no endpoint has been enumerated; MHI, QMI and ath11k do not exist in this tree, and the local reference Ath12kWifi is ath12k, a different driver for a different part.",
 ]
 next_action = ["Establish the pipe clock without the PHY sequence that hangs this phone, then run step 10 and read the configuration space for 17cb:1101."]

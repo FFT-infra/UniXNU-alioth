@@ -112,3 +112,39 @@ get(3, "elbi_sys_ctrl", 0x04);
 **下一步的判据**：在确认手指按住屏幕的窗口里读同一行。
 `low` 上升 → 芯片在报事件，问题在 HID 语义（`max` 是否仍 >1、area 过滤是否把它们全滤掉）；
 `low` 恒为 0 → 芯片没有扫描，问题在触控 IC 侧，与 HID 无关。
+
+## 2026-10-30：step 10 复现，并把范围缩到时钟投票
+
+`pcie=10`（十步全开、不跳过任何一步）上板后**板子再没回来**：无 fastboot、无 adb、
+`/dev/tty.usbmodem14101` 不枚举。上一次同样的尝试记录是「日志停在 `step 9: done`，设备回到
+bootloader」，这次连 bootloader 都没到。同一动作两种结果，说明这条路径现在每次尝试都可能要断电，
+且不一定换得到信息。参数已撤回。注意 `pcie=10` 是记录里早就写好的下一步（`step_dbi` 只做一次
+`get(4, "iatu_viewport", 0x00)`），不是新试验。
+
+**窗口地址与 vendor 完全一致，不是映射错。** 对照 `reference/k40-kernel/arch/arm64/boot/dts/vendor/qcom/kona-pcie.dtsi:7-13`：
+
+| reg-name | vendor | 我们 |
+| --- | --- | --- |
+| parf | `0x01c00000 0x3000` | 同 |
+| phy | `0x01c06000 0x1000` | 同 |
+| dm_core | `0x60000000 0xf1d` | 同 |
+| elbi | `0x60000f20 0xa8` | 同 |
+| iatu | `0x60001000 0x1000` | 同 |
+| conf | `0x60100000 **0x100000**` | `0x1000` ← 唯一差异，且不是挂死的那次访问 |
+
+**真正可疑的是时钟投票集合。** vendor 的 `clock-names`（同文件 `:76-81`）列了十一项：
+
+```
+pcie_0_pipe_clk, pcie_0_ref_clk_src, pcie_0_aux_clk, pcie_0_cfg_ahb_clk,
+pcie_0_mstr_axi_clk, pcie_0_slv_axi_clk, pcie_0_ldo, pcie_0_slv_q2a_axi_clk,
+pcie_tbu_clk, pcie_phy_refgen_clk, pcie_ddrss_sf_tbu_clk
+```
+
+而 `step_clocks`（`alioth_pcie.c:318`）只投了五项：slv_axi、mstr_axi、cfg_ahb、aux、slv_q2a。
+**缺的是 `pcie_0_ldo`、`pcie_phy_refgen_clk`、`pcie_0_ref_clk_src`、`pcie_tbu_clk`、
+`pcie_ddrss_sf_tbu_clk`。** 其中 LDO 与 refgen 直接决定 core 与 PHY 的供电和参考时钟——
+在它们没投票的情况下访问 IATU，最可能的后果就是总线不返回，与实测吻合。
+
+下一步（不需要再猜）：把 `pcie_0_ldo` 与 `pcie_phy_refgen_clk` 的投票补上，其余不动，
+只跑到 `step 9`（不碰 DBI）确认这两项不挂；确认后再开 `pcie=10`。这样断电次数从「每次未知」
+变成「每一步可预期」。
