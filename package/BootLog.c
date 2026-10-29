@@ -127,7 +127,7 @@ extern volatile uint64_t native_adreno_cache_stats[5] __attribute__((weak_import
 // NativeAdrenoPublish.cpp: per process name that opened the GPU, and the processes that asked the Metal discovery for its plugin.
 struct native_adreno_client_record {char name[20]; uint32_t opens, refused, closes, slot, peak_mib, last_refusal;};
 extern struct native_adreno_client_record native_adreno_client_log[8] __attribute__((weak_import));
-struct native_adreno_client_text {char name[20]; char text[64];};
+struct native_adreno_client_text {char name[20]; char text[2][64]; unsigned lines;};
 extern struct native_adreno_client_text native_adreno_client_text[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_mount_fail[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_window_overflow[4][3] __attribute__((weak_import));
@@ -586,8 +586,11 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     at = put(out, at, cap, row, sizeof row);
     if (&native_adreno_client_text)
       for (unsigned i = 0; i < 4 && native_adreno_client_text[i].name[0]; ++i) {
-        snprintf(row, sizeof row, "[gpu client text] %.19s: %.63s", native_adreno_client_text[i].name, native_adreno_client_text[i].text);
-        at = put(out, at, cap, row, sizeof row);
+        for (unsigned k = 0; k < 2; ++k) {
+          if (!native_adreno_client_text[i].text[k][0]) continue;
+          snprintf(row, sizeof row, "[gpu client text] %.19s: %.63s", native_adreno_client_text[i].name, native_adreno_client_text[i].text[k]);
+          at = put(out, at, cap, row, sizeof row);
+        }
       }
   }
   if (&native_adreno_metal_askers) {

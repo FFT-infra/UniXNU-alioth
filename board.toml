@@ -153,10 +153,10 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # StaticTrustCache entries and is absent from the 76-entry SystemTrustCache.
 # Since the Metal staging it is the three-module owner bundle that
 # scripts/make-owner-trust-bundle.py builds: one owner module carrying the Adreno Metal
-# plugin's CDHash (0d246bc7) plus the same two original modules byte for byte, which the
+# plugin's CDHash (3d4fc8e2) plus the same two original modules byte for byte, which the
 # script verifies against build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "b5bae85925a8e78b1dda46d6cf0fb937299e38ee4059377e91c472a2ba322e0f",
+  "9503c09811eacfa38cf3a2b0ddca7fdc3034c9164b3227f7358543e119cc351d",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -236,7 +236,7 @@ kernel_args = [
   # The persistent log header carries this string, so a log read back through TWRP can say which
   # image wrote it. It was empty on every round up to usb171, which made the recovered log unable
   # to identify itself. Bump it with the image name on each build.
-  "sheng-build-tag=u247",
+  "sheng-build-tag=u253",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
