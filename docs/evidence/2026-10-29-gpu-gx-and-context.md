@@ -481,10 +481,21 @@ is. The recipe writes its argv to `build/native-legacy-display/compile-command.j
 so the crash reproduces from that file. `-fsyntax-only` crashes the same way,
 which puts it in parsing and semantics rather than in the preprocessor, and
 removing the enum this board adds does not change it, so the six offsets are
-not the cause. The next suspect is `NativeHalfCodes.h`, which this branch
-introduces with two `inline constexpr uint16_t[255]` tables in a header; moving
-those tables into a single translation unit is the workaround to try if the
-crash follows them. The stride wrapper is not part
+not the cause. That assertion (`Cannot get layout of invalid decl`) hides a real compile error:
+a declaration was already invalid when its layout was asked for. The errors
+behind it name the whole contract the parity component expects from the
+generated ABI header, and only the first two are supplied so far:
+
+| Input | State |
+| --- | --- |
+| `kRequestSurfaces`, `kRequestMasks`, `kRequestRect0/1`, `kRequestOptions`, `kRequestDims` | supplied |
+| `NATIVE_LEGACY_LEAVES(LEAF)`, over the guarded leaves (not 213 and 337) | supplied |
+| `OriginalLegacySwapRequest` | **missing** |
+| `OriginalLegacyStateRequest` | **missing** |
+| `kLegacyVsyncClients` (the +5592 the recipe already audits) | **missing** |
+
+So the migration is a matter of growing the generated header to the component's
+whole request ABI, not of switching a pin. The stride wrapper is not part
 of that question: the parity `NativeLegacyRequest.h` is unchanged and still
 compares the stride as bytes, so the board-side normalisation stays either way.
 
