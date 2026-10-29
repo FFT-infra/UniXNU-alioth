@@ -970,3 +970,8 @@ One correction to a plan of mine: `sheng-data-reset` alone does nothing. Its
 value is read at NativeRamBlock.cpp:79 but only consumed inside the
 `if (mode && ...)` block at :86, so with `sheng-data-persist=0` the old overlay
 stays and the round would have tested nothing.
+
+The read-back from that boot does not help: its message window spans 836-930 s
+while the boot recorded 180 s of uptime, so the window holds an older boot and
+its zero counts for `device is not ready` say nothing about u242. The console is
+the channel that carries this boot's evidence, and `DATAMOUNT` is on it.
