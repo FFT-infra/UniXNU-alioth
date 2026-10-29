@@ -504,7 +504,22 @@ request offsets (literals from the previous component's source) and
 `NATIVE_LEGACY_LEAVES`, which must list the abstract slots and nothing else
 (213 and 337 are declared differently, and including them turns every leaf into
 an `override` of a non-virtual slot). Expect the same shape of gap when
-Adreno740 and AdrenoMetal are moved. The stride wrapper is not part
+Adreno740 and AdrenoMetal are moved.
+
+What the two missing structures need, from the parity source:
+
+- `OriginalLegacySwapRequest` is only ever used through a pointer, and its
+  contents are read as bytes at the offsets listed above (the highest is 816/820,
+  so at least 824 bytes). An opaque byte array of that size satisfies the
+  component; a field-based definition would be decoration.
+- `OriginalLegacyStateRequest` is built by value as `{1,0,0,1,1,{}}` and handed
+  to the original class's state setter, so its layout is the *original* one and
+  cannot be invented: five scalars and one aggregate, with the meaning the
+  original virtual expects. That one needs the original request layout, and
+  getting it wrong would fail silently rather than loudly.
+
+`kLegacyVsyncClients` is 5592; the audit JSON does not carry it, but the recipe
+already asserts the same 5592 when it validates the vsync sender. The stride wrapper is not part
 of that question: the parity `NativeLegacyRequest.h` is unchanged and still
 compares the stride as bytes, so the board-side normalisation stays either way.
 
