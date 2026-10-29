@@ -143,6 +143,7 @@ header += '};\nstatic_assert(sizeof(IOMobileFramebufferLegacy)==0x18a0,"Actual o
 # them with the class shape: the component reads them and never defines them.
 header += ('enum : unsigned {kRequestSurfaces = 2624, kRequestMasks = 792, kRequestRect0 = 17,\n'
            '                  kRequestRect1 = 81, kRequestOptions = 804, kRequestDims = 816};\n')
+header += ('#define NATIVE_LEGACY_LEAVES(LEAF) ' + ' '.join('LEAF(%d)' % i for i in pure) + '\n')
 (OUT / 'OriginalLegacyFramebufferABI.h').write_text(header)
 
 # The owned backend, compiled with the kernel's own flags through the generic driver recipe.
