@@ -20,6 +20,7 @@ wrong archive.
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 import struct
 import subprocess
@@ -147,7 +148,15 @@ header += ('#define NATIVE_LEGACY_LEAVES(LEAF) ' + ' '.join('LEAF(%d)' % i for i
 header += ('enum : unsigned {kLegacyVsyncClients = 5592};\n'
            '// The swap request is read as bytes at the offsets above; the highest is 816/820.\n'
            'struct OriginalLegacySwapRequest { unsigned char bytes[832]; };\n')
-(OUT / 'OriginalLegacyFramebufferABI.h').write_text(header)
+# Write the header through a synced, closed stream before the compiler opens it: on this shared
+# mount a plain write_text is still in flight when clang reads the file, which shows up as
+# clang's MemoryBuffer assertion ("Buffer is not null terminated") rather than as a compile error.
+abi = OUT / 'OriginalLegacyFramebufferABI.h'
+with abi.open('w') as stream:
+    stream.write(header)
+    stream.flush()
+    os.fsync(stream.fileno())
+time.sleep(0.5)
 
 # The owned backend, compiled with the kernel's own flags through the generic driver recipe.
 print(run(['python3', ROOT / 'scripts/build-arm-driver.py', 'NativeLegacyDisplay'], text=True), end='')
