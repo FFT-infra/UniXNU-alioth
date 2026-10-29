@@ -399,6 +399,22 @@ background, not a frame that failed to arrive. Metal, the driver and the
 display path are each demonstrably working now; what is left is why
 SpringBoard traps.
 
+## Baseline before any component moves
+
+u232, one minute of a settled desktop. This is the reference every component
+move is judged against:
+
+```
+GPUROW0    GPU m12 gcc=ok cc=ok smmu=ok gpu=skip io=0 cx1 clocks1 ahb0
+GPUREASONS accepted 8 rejected 0 | r0 8 r1 0 r2 0 r3 0 r4 0 r5 0 r6 0 r7 0
+GPUFB      checksum 7095d6c3 changes 77 (+34) / f1c876e4 changes 87 (+3)
+GPUMETAL   backboardd, SpringBoard, WidgetRenderer_Defa, mediaserverd each read 1
+GPUMOUNT   fail 1/e00002db slot 4 count 2   (the kernel client's second mount)
+```
+
+Eight real surfaces, no blank fills, no refusals: the compositor is sending
+content and none of it is being turned away.
+
 ## The upstream parity branches already answer three of these
 
 `feat/ipados27-gpu-parity` exists in all three components and is ahead of the
