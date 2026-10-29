@@ -305,6 +305,21 @@ compositor's surface and the display copies it to the panel. A minute later
 the counters are unchanged because the screen is static and nothing asks for a
 new frame, which is what an idle desktop does.
 
+## Reporting the GPU families stops the trap and stops the surfaces
+
+Two runs, one argument apart.
+
+| `pipa-metal-withhold` | SpringBoard | swaps |
+| --- | --- | --- |
+| `apple-families` (default) | traps, SIGTRAP at the same PC, up to nine a minute | 74 real surfaces, desktop on the panel |
+| `none` | **no crash in 200 s** | 952 requests, **all reason 1** (no surface in the request), none accepted |
+
+So the assertion is about the withheld families, and the compositor that no
+longer asserts presents nothing through the swap API: with families reported
+it expects the frame to arrive by another route. The two halves have to be
+solved together; the default stays at `apple-families` because that is the
+configuration where the desktop actually draws.
+
 ## The desktop draws
 
 Splitting the accepted swaps by validation reason shows what the frames
