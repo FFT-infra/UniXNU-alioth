@@ -471,6 +471,15 @@ NativeLegacyDisplay`, while this board's `build-gop-legacy-display.py` compiles
 the component directly from a recorded compile line, so the pin was put back and
 the migration of that recipe is the real next task.
 
+The recipe now supplies the six swap-request offsets the parity component reads
+(`kRequestSurfaces` 2624, `kRequestMasks` 792, `kRequestRect0` 17,
+`kRequestRect1` 81, `kRequestOptions` 804, `kRequestDims` 816) in the generated
+ABI header, which is what the pin switch was missing. With them the build
+reaches the component and then **clang-24 crashes in the preprocessor**, so the
+pin stays where it is until that is understood. The stride wrapper is not part
+of that question: the parity `NativeLegacyRequest.h` is unchanged and still
+compares the stride as bytes, so the board-side normalisation stays either way.
+
 Dropping the board-side stride wrapper is a step of its own, not a side effect
 of the migration, because two changes at once cannot be attributed:
 
