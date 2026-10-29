@@ -305,6 +305,23 @@ compositor's surface and the display copies it to the panel. A minute later
 the counters are unchanged because the screen is static and nothing asks for a
 new frame, which is what an idle desktop does.
 
+## The frames present, and the UI behind them traps
+
+With the stride fixed, frames keep reaching the panel: `copied`/`retired` read
+38, 46 and 50 on consecutive reports, about eight frames in thirty seconds,
+which is what an almost static screen asks for. The picture is black with one
+grey and one white bar, and the same window shows SpringBoard dying six times:
+
+```
+EXITCRASH SpringBoard sig5 (SIGTRAP) at the same PC each time
+```
+
+That trap is not the GPU's: it happens on the image without a Metal device as
+well, so the black screen is the UI being torn down and rebuilt over a black
+background, not a frame that failed to arrive. Metal, the driver and the
+display path are each demonstrably working now; what is left is why
+SpringBoard traps.
+
 ## The screenshot channel
 
 The USB console's `SCREENSHOT`/`SHOTNEXT` pair answers with a ready frame
