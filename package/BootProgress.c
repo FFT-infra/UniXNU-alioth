@@ -450,6 +450,12 @@ extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_requested,armcp
 extern volatile uint32_t __attribute__((weak_import)) armcpu_smp_step[8],armcpu_smp_seen_mpidr[8],armcpu_smp_fail[8],armcpu_smp_sys[8][5],armcpu_boot_sys[5],armcpu_gic_stride,armcpu_gic_typer_probe[2];
 extern volatile int32_t __attribute__((weak_import)) armcpu_smp_psci_rc[8];
 extern volatile uint32_t __attribute__((weak_import)) armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls;
+/* How far ahead of the counter each core's virtual timer deadline sits after rtclock_intr, and how often
+ * that lead was under 1000 ticks (about 52 us at 19.2 MHz). A deadline already in the past makes XNU
+ * program its 10-tick minimum, and a timer that keeps firing early wakes threads far more often than
+ * their own periods ask -- which is what the wakeups monitor reports on this board. */
+extern volatile int32_t armcpu_timer_ahead[8] __attribute__((weak_import));
+extern volatile uint32_t armcpu_timer_short[8] __attribute__((weak_import));
 extern int nprocs;
 extern volatile int native_owner_root_accepted;
 
@@ -672,6 +678,12 @@ static void draw(unsigned now) {
      * nothing here samples. It is gone rather than guessed at. */
     snprintf(b,sizeof(b),"CPU IRQ phase=%u id=%u quiesce=%u halt=%u; phase 0=exit 2=clock 4=IPI 6=EOI",
       armcpu_irq_phase,armcpu_irq_id,armcpu_quiesce_calls,armcpu_halt_calls);line(37,b,0xffffff00);
+    if(&armcpu_timer_short){
+      unsigned n=(unsigned)snprintf(b,sizeof(b),"TIMERD lead/short |");
+      for(unsigned c=0;c<8&&n<sizeof(b)-24;++c)
+        n+=(unsigned)snprintf(b+n,sizeof(b)-n," c%u:%d/%u",c,(int)armcpu_timer_ahead[c],armcpu_timer_short[c]);
+      line(43,b,0xff88ff88);
+    }
     if(&armcpu_smp_requested){
       unsigned n=(unsigned)snprintf(b,sizeof(b),"SMP req=%u run=%u cond=%u boot=%x |",
         armcpu_smp_requested,armcpu_smp_running,armcpu_smp_conduit,armcpu_boot_mpidr&0xffffff);

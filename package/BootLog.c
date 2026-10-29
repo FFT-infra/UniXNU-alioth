@@ -80,6 +80,12 @@ extern volatile uint32_t native_adreno_stall[24] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall_mem[59] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_unstick[15] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_wait_outer[4] __attribute__((weak_import));
+/* Timer deadlines from ArmCpu: how far ahead of the counter each core's virtual timer sits after
+ * rtclock_intr, and how often that lead was under 1000 ticks. A deadline in the past makes XNU
+ * program its 10-tick minimum, so the timer fires far more often than any thread asked, which is
+ * what the wakeups monitor reports on this board. */
+extern volatile int32_t armcpu_timer_ahead[8] __attribute__((weak_import));
+extern volatile uint32_t armcpu_timer_short[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_export_stats[4] __attribute__((weak_import));
 extern volatile int32_t native_touch_strokes[16][7] __attribute__((weak_import));
 extern volatile uint32_t native_touch_stroke_count __attribute__((weak_import));
@@ -935,6 +941,13 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       snprintf(row, sizeof row, "[fence wait] outer waits=%llu us=%llu pauses outside the lock=%llu longest=%lluus",
                (unsigned long long)native_adreno_wait_outer[0], (unsigned long long)native_adreno_wait_outer[1],
                (unsigned long long)native_adreno_wait_outer[2], (unsigned long long)native_adreno_wait_outer[3]);
+      at = put(out, at, cap, row, sizeof row);
+    }
+    if (&armcpu_timer_short) {
+      char row[220];
+      int n = snprintf(row, sizeof row, "[timer] lead/short");
+      for (unsigned c = 0; c < 8 && n > 0 && (size_t)n < sizeof row - 16; ++c)
+        n += snprintf(row + n, sizeof row - n, " c%u:%d/%u", c, (int)armcpu_timer_ahead[c], armcpu_timer_short[c]);
       at = put(out, at, cap, row, sizeof row);
     }
   }
