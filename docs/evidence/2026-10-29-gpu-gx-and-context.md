@@ -305,7 +305,22 @@ compositor's surface and the display copies it to the panel. A minute later
 the counters are unchanged because the screen is static and nothing asks for a
 new frame, which is what an idle desktop does.
 
-## The frames present, and the UI behind them traps
+## The desktop draws
+
+Splitting the accepted swaps by validation reason shows what the frames
+really are (u223):
+
+```
+GPUREASONS accepted 92 rejected 0 | r0 74 r1 0 r2 0 r3 0 r4 0 r5 18 r6 0 r7 0
+GPUSWAP validate 92 ok 1 reason 0 | copied 92 status 0 bytes 10368000 | retired 92 gen 92
+```
+
+Reason 0 is a real surface and reason 5 is the blank-screen fill, so 74 of the
+92 frames carry the compositor's own content, none were refused, and the
+picture on the panel is the desktop. Two things had to be right for that: the
+stride unit, and the clients list that gives the UI processes a Metal device.
+
+## Earlier in the same day: the UI behind the frames trapped
 
 With the stride fixed, frames keep reaching the panel: `copied`/`retired` read
 38, 46 and 50 on consecutive reports, about eight frames in thirty seconds,
