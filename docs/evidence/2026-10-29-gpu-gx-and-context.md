@@ -495,7 +495,16 @@ generated ABI header, and only the first two are supplied so far:
 | `kLegacyVsyncClients` (the +5592 the recipe already audits) | **missing** |
 
 So the migration is a matter of growing the generated header to the component's
-whole request ABI, not of switching a pin. The stride wrapper is not part
+whole request ABI, not of switching a pin.
+
+The method that produced that list generalises: grep the target component for
+identifiers it uses and never defines, and each one is an input the device
+recipe has to generate. For this component the two supplied so far are the
+request offsets (literals from the previous component's source) and
+`NATIVE_LEGACY_LEAVES`, which must list the abstract slots and nothing else
+(213 and 337 are declared differently, and including them turns every leaf into
+an `override` of a non-virtual slot). Expect the same shape of gap when
+Adreno740 and AdrenoMetal are moved. The stride wrapper is not part
 of that question: the parity `NativeLegacyRequest.h` is unchanged and still
 compares the stride as bytes, so the board-side normalisation stays either way.
 
