@@ -139,6 +139,10 @@ for i in range(168, 358):
 	else:
 		header += f' virtual __attribute__((deprecated("Unclassified ABI: never call from source"))) void opaque{i}();\n'
 header += '};\nstatic_assert(sizeof(IOMobileFramebufferLegacy)==0x18a0,"Actual original instance extent");\n'
+// The swap request's field offsets belong to the original request ABI, so the board supplies them
+// with the class shape: the component reads them and never defines them.
+header += ('enum : unsigned {kRequestSurfaces = 2624, kRequestMasks = 792, kRequestRect0 = 17,\n'
+           '                  kRequestRect1 = 81, kRequestOptions = 804, kRequestDims = 816};\n')
 (OUT / 'OriginalLegacyFramebufferABI.h').write_text(header)
 
 # The owned backend, compiled with the kernel's own flags through the generic driver recipe.
