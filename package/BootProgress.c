@@ -230,6 +230,12 @@ extern volatile uint64_t native_legacy_frame_stats[32][5] __attribute__((weak_im
 extern volatile uint32_t native_legacy_frame_colors[8][4] __attribute__((weak_import));
 extern volatile uint64_t native_legacy_frame_color_counts[8][4] __attribute__((weak_import));
 extern volatile uint64_t native_legacy_frame_color_other[8] __attribute__((weak_import));
+// Swaps split by validation reason: 0 is a real surface, 5 the blank-screen path
+// (NativeLegacyDisplay.cpp:587), everything else a refusal. Counting them together made a black
+// fill look like a presented frame.
+extern volatile uint32_t native_legacy_swap_accepted_count __attribute__((weak_import));
+extern volatile uint32_t native_legacy_swap_rejected_count __attribute__((weak_import));
+extern volatile uint32_t native_legacy_swap_reason_counts[8] __attribute__((weak_import));
 extern volatile uint32_t native_gop_ready __attribute__((weak_import));
 extern volatile uint32_t native_gop_failures __attribute__((weak_import));
 extern volatile uint64_t native_gop_transfers __attribute__((weak_import));
@@ -245,7 +251,10 @@ static void gpu_client_report(void) {
   const uint32_t opens = &native_adreno_open_log_count ? native_adreno_open_log_count : 0;
   static int first = 1;
   if (first && !opens && !closes && !fail) return;   /* nothing has happened yet: stay quiet */
-  if (!first && opens == lastOpens && closes == lastCloses && fail == lastFail) return;
+  const uint32_t frames = &native_legacy_frame_count ? native_legacy_frame_count : 0;
+  static uint32_t lastFrames;
+  if (!first && opens == lastOpens && closes == lastCloses && fail == lastFail && frames == lastFrames) return;
+  lastFrames = frames;
   first = 0;
   lastOpens = opens; lastCloses = closes; lastFail = fail;
   char line[144];
@@ -304,6 +313,16 @@ static void gpu_client_report(void) {
                  native_legacy_swap_validation_reason, native_legacy_transfer_calls,
                  native_legacy_transfer_status, (unsigned long long)native_legacy_transfer_bytes,
                  native_legacy_retired_frames, native_legacy_presented_generation);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+  if (&native_legacy_swap_reason_counts) {
+    n = snprintf(line, sizeof line, "GPUREASONS accepted %u rejected %u | r0 %u r1 %u r2 %u r3 %u r4 %u r5 %u r6 %u r7 %u\n",
+                 &native_legacy_swap_accepted_count ? native_legacy_swap_accepted_count : 0,
+                 &native_legacy_swap_rejected_count ? native_legacy_swap_rejected_count : 0,
+                 native_legacy_swap_reason_counts[0], native_legacy_swap_reason_counts[1],
+                 native_legacy_swap_reason_counts[2], native_legacy_swap_reason_counts[3],
+                 native_legacy_swap_reason_counts[4], native_legacy_swap_reason_counts[5],
+                 native_legacy_swap_reason_counts[6], native_legacy_swap_reason_counts[7]);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   if (&native_legacy_frame_count && native_legacy_frame_count) {

@@ -327,7 +327,9 @@ extern "C" void native_legacy_swap_stage(unsigned stage) {
 	}
 }
 
+volatile uint32_t native_legacy_swap_reason_counts[8];
 void native_legacy_swap_validation_observed(bool accepted, unsigned reason, const void *request, const void *surface) {
+	if (reason < 8) native_legacy_swap_reason_counts[reason] = native_legacy_swap_reason_counts[reason] + 1;
 	// Band 8: a client reached the backend and submitted a swap. Painted before the verdict, so
 	// the band reports the submission, not whether it was accepted.
 	native_legacy_paint_userspace_band(8);
