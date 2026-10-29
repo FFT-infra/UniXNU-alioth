@@ -999,3 +999,28 @@ with `sheng-data-reset=1` and reports `store=3` (a fresh window), while the
 earlier one resumed the overlay u240/u241 had written (`store=2`). Whether a
 resumed overlay is what stopped the desktop is a one-variable question — remove
 `sheng-data-reset` and boot again — and it is the next round.
+
+## Persistence across a reboot, measured (u243)
+
+u243 is u242 with `sheng-data-reset` removed and nothing else changed. Its first
+`DATAMOUNT` line after the mount is:
+
+```
+DATAMOUNT stage=4 status=0 ro=0 store=2
+```
+
+`store=2` is the ram-block's *resumed* state: the store opened read-write on the
+window u242 had written, rather than starting fresh. That is the cross-reboot
+persistence check the porting guide asks for and that this port had never
+demonstrated — a write in one boot is still there in the next.
+
+The same boot did not draw. Its GPU probe stopped at `GPUROW20 CPSTATE` and
+never reached the zap (`GPUROW21`), the interrupt (`GPUROW22`) or the publish
+(`GPUROW23`), so no swap or framebuffer rows exist for it; the system itself was
+alive (274 processes exited, touch delivering events at 105 s).
+
+That leaves the one-variable question open rather than answered. The resumed
+overlay is still a candidate — the probe stops before it publishes anything —
+but the same stop at `CPSTATE` appeared once in the five u240 boots, which had
+no overlay question at all, so a boot that stops there is not by itself evidence
+about the overlay.
