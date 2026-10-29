@@ -1066,16 +1066,25 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   return at;
 }
 
-// The message buffer, oldest byte first, NUL-padded to LogMsgBlocks blocks; returns the bytes copied.
+/* The message buffer, NUL-padded to LogMsgBlocks blocks; returns the bytes copied.
+ *
+ * The newest bytes, not the oldest. The region holds 128 KiB while the kernel's msgbuf is larger, so
+ * every read-back stored exactly 131072 bytes and it was always the start of the ring: the copy ran
+ * from msg_bufx, the oldest byte, and stopped at the limit. A crash in the last seconds of a boot
+ * therefore left nothing behind, which is precisely the window an abort needs (u250 to u255 all
+ * reported msg_bytes 131072). Starting at msg_bufx + size - cap keeps the tail instead. */
 static uint32_t copy_msgbuf(uint8_t *out) {
   memset(out, 0, LogMsgBlocks * LogBlock);
   struct boot_log_msgbuf *m = msgbufp;
   if (!m || !m->msg_bufc || m->msg_size <= 0) return 0;
   int size = m->msg_size, x = m->msg_bufx;
   if (x < 0 || x >= size) x = 0;
+  const uint32_t cap = LogMsgBlocks * LogBlock;
+  const uint32_t keep = (uint32_t)size < cap ? (uint32_t)size : cap;
+  const int start = (int)(((uint32_t)x + (uint32_t)size - keep) % (uint32_t)size);
   uint32_t n = 0;
-  for (int i = 0; i < size && n < LogMsgBlocks * LogBlock; ++i) {
-    char c = m->msg_bufc[(x + i) % size];
+  for (uint32_t i = 0; i < keep; ++i) {
+    char c = m->msg_bufc[(start + (int)i) % size];
     if (c) out[n++] = (uint8_t)c;
   }
   return n;
