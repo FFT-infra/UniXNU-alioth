@@ -255,6 +255,29 @@ this board measures the panel: presenter counters need phase 3, the legacy
 swap counters need a caller that does not exist, and the direct-scanout flips
 need sheng-dpu-scanout=2.
 
+## Every swap is refused once the apps have a device
+
+Giving SpringBoard, PosterBoard and the rest a native device (the addon's
+`NativeAdrenoMetal.clients` list) changed one thing immediately: the compositor
+started asking to swap.
+
+```
+GPUSWAP validate 311 ok 0 reason 4 | copied 0 status -1 bytes 0 | retired 0 gen 0
+```
+
+311 requests, none accepted, reason 4. In NativeLegacyDisplay.cpp reason 4 is
+the surface rule set: the surface's format and plane count must pass
+`nativeBgra()` — `0x42475241` with no planes or `0x26424741` with at most one —
+and its geometry must pass `native_legacy_surface_bounds()` against the
+display. Without a device no swap is even asked for; with one, every swap is
+refused, which is exactly the black screen that stays after the boot logo.
+
+GPUREJ now prints the refused surface's width, height, format, planes, stride,
+allocation and descriptor length, so the failing field is named rather than
+guessed. Hypothesis, not yet measured: the surface the compositor produces
+once it has a GPU device is not one of the two formats the legacy driver
+accepts.
+
 ## The screenshot channel
 
 The USB console's `SCREENSHOT`/`SHOTNEXT` pair answers with a ready frame
