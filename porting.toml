@@ -198,6 +198,7 @@ findings = [
 ]
 completion = ["GPU submissions complete, mapping/fence handling is correct, a known image renders, and the selected Metal client presents it."]
 limits = [
+  "Frame pacing, measured on u260 with the desktop in use: [fence wait] outer waits=169, 65142 us total, mean 385 us, longest 7787 us -- 47 percent of a 60 Hz frame budget for one wait. The polls behind it run 50 per submission (GPUROW25 t97388 over 1897 submissions), each a zero-timeout wait under the connection lock with a pause outside it. That is the quantified form of the report that the desktop is usable but still slow, and it is where the next work belongs rather than in the resource limits.",
   "Modes 8 through 12 complete: GX power, the GPU's own context with a CP_MEM_WRITE, the zap shader and secure-mode exit with the GPU interrupt, the published device with 36 of 36 user-client steps, and the registered accelerator with two user-space clients connected.",
   "Drawing is not confirmed. The wallpaper overlay mounts (WALLPAPER stage=5 status=0) and processes now reach the GPU, but nothing reads the panel back: the USB console's SCREENSHOT/SHOTNEXT path fails with ENXIO on every attempt, on images with and without the plugin.",
   "The live row carries fence timeouts (t2 at mode 11, t9 once clients come and go) and the GPU context bank keeps reading FSR 0x400 with a changing FAR; submissions complete after the driver's stall recovery, so neither stops the path.",
