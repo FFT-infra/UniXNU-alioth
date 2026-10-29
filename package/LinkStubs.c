@@ -56,3 +56,18 @@ __attribute__((weak)) uint32_t native_ufs_dpu_map(unsigned slot, const uint64_t 
 	(void)count;
 	return 0;
 }
+/* The compositor's surface reports 1088 as its stride for a 1080-wide window whose allocation is
+ * four bytes a pixel a row, so the IOSurface field the display reads holds pixels here while
+ * native_legacy_surface_bounds compares it with width*4. Every swap was refused for that reason
+ * (GPUREJ: stride 1088, stride*4 4352, need 4320). Take the field as pixels when the allocation
+ * and the row count prove it, and leave a getter that returns bytes alone. */
+extern unsigned long long native_legacy_surface_stride_raw(void *);
+extern unsigned long long native_legacy_surface_allocation(void *);
+extern unsigned long long native_legacy_surface_height(void *);
+unsigned long long native_legacy_surface_stride(void *surface) {
+    unsigned long long stride = native_legacy_surface_stride_raw(surface);
+    unsigned long long allocation = native_legacy_surface_allocation(surface);
+    unsigned long long height = native_legacy_surface_height(surface);
+    if (stride && allocation && height && stride <= allocation / height / 4) return stride * 4;
+    return stride;
+}

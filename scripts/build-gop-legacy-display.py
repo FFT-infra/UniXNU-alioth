@@ -220,7 +220,10 @@ for name, address, field, wide in [
     ('planes', 0xfffffff004b9ebf4, 152, False)]:
 	expected = (0xf9400000 if wide else 0xb9400000) | ((field // (8 if wide else 4)) << 10)
 	require(read(address, 8) == struct.pack('<2I', expected, 0xd65f03c0), 'Exact original surface getter ' + name)
-	bindings['_native_legacy_surface_' + name] = address
+	# The display compares the stride with width*4, and this platform's field holds pixels, so the
+	# board wraps the raw getter (see LinkStubs.c) instead of binding the name the driver calls.
+	symbol = '_native_legacy_surface_stride_raw' if name == 'stride' else '_native_legacy_surface_' + name
+	bindings[symbol] = address
 
 # The original display-refresh notification sender (self, timestamp, continuous host time, frame
 # interval): it sends the six-word vsync message (type 5) to every client entry queued at +5592.
