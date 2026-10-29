@@ -392,7 +392,6 @@ kernel_args = [
   # after the touch probe with no fastboot, no adb and no console output, and needs a power
   # cycle. The frame-rate instrument has to come from the phase-4 path instead.
   "offline-legacy-phase=4",
-  "offline-legacy-validate=1",
   "offline-legacy-transfer=1",
   "offline-legacy-cpu-present=1",
   "offline-legacy-verdict=1",
