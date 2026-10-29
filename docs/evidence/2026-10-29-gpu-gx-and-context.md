@@ -456,6 +456,19 @@ clean CP. The FSR was read after the write completed, so either a benign
 earlier access left it set or a speculative access was reported. Recorded, not
 explained; it does not block the next mode.
 
+## The traps are a pattern, not one process
+
+A minute of u232 with the desktop drawing (`r0 10`, no refusals) shows eight
+`EXITCRASH` lines for **healthappd**, all at the same PC with `sig5` and
+`ESR 0xf2000001`, and **no SpringBoard crash in that window**. Earlier windows
+trapped SpringBoard and even ReportCrash the same way. Different binaries,
+different fixed PCs, one signal: a BRK in a shared framework, which reads as an
+assertion about something the environment lacks rather than a GPU fault.
+
+That matters for the plan: SpringBoard's trap is not a separate disease from
+the daemons', and the desktop does draw while daemons trap around it. What is
+still unproven is whether SpringBoard's own trap is on the same assertion.
+
 ## Two counters are not one path
 
 Six numbers in this port were read as something other than what they measure.
