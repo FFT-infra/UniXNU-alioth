@@ -372,14 +372,29 @@ __attribute__((noinline)) void native_legacy_transfer_observed(IOReturn status, 
 	native_legacy_transfer_bytes = bytes;
 }
 
-// The raster hand-off lives in sheng's Adreno port. This board has no GPU client yet, so the
-// owned display keeps its CPU copy path: the offer is declined and the component falls back.
-bool native_legacy_gpu_offer(void *, IOMemoryDescriptor *, uint64_t, uint32_t, uint32_t) {
-	return false;
+// The raster hand-off: offer each swapped frame to the GOP presenter, which hands it to the GPU
+// client for the copy. This was a stub that declined every offer, so the display kept its CPU copy
+// path and GPUFRAME read "gpu offered 0" no matter what sheng-fb-gpu said. Note the arity: the
+// display driver calls this with six arguments, so a five-argument stub still linked under C
+// linkage and silently dropped the format.
+extern "C" IOService *native_gop_presenter_create(void);
+extern "C" bool native_gop_gpu_offer(IOService *, void *display, IOMemoryDescriptor *, uint64_t stride, uint32_t width,
+                                     uint32_t height, uint32_t format);
+extern "C" void native_gop_presenter_set_source(IOService *presenter, IOService *nub);
+
+static IOService *gpuHandoffPresenter;
+static volatile uint32_t native_legacy_gpu_fallbacks;
+static volatile int native_legacy_gpu_last_status;
+
+bool native_legacy_gpu_offer(void *display, IOMemoryDescriptor *memory, uint64_t stride, uint32_t width, uint32_t height,
+                             uint32_t format) {
+	if (!gpuHandoffPresenter || !&native_gop_gpu_offer) return false;
+	return native_gop_gpu_offer(gpuHandoffPresenter, display, memory, stride, width, height, format);
 }
 
 void native_legacy_gpu_fallback_observed(int status) {
-	(void)status;
+	native_legacy_gpu_last_status = status;
+	native_legacy_gpu_fallbacks = native_legacy_gpu_fallbacks + 1;
 }
 
 __attribute__((noinline)) void native_legacy_retirement_observed(IOService *display) {
@@ -1128,6 +1143,22 @@ void native_legacy_display_late_probe(void) {
 				}
 				if (started && phase == 4) {
 					activeGOPNub = nub;
+					/* The GPU hand-off presenter. It hangs off the resource service, not off this
+					 * display's node: a presenter attached under the display made SpringBoard find no
+					 * display and crash (sheng recorded that), so the placement is deliberate. */
+					unsigned gpu = 0;
+					if (PE_parse_boot_argn("sheng-fb-gpu", &gpu, sizeof gpu) && gpu == 1 && &native_gop_presenter_create) {
+						IOService *handoff = native_gop_presenter_create();
+						IOService *home = IOService::getResourceService();
+						bool attached = false;
+						if (handoff && home) native_gop_presenter_set_source(handoff, nub);
+						if (handoff && home && handoff->init() && (attached = handoff->attach(home)) && handoff->start(home))
+							gpuHandoffPresenter = handoff;
+						else {
+							if (attached) handoff->detach(home);
+							OSSafeReleaseNULL(handoff);
+						}
+					}
 					native_legacy_stage = 10;
 					native_legacy_display_checkpoint();
 					return;
