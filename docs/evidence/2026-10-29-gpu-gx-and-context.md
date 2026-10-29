@@ -713,3 +713,34 @@ One size in that set is not from the original. `OriginalLegacyStateRequest` is
 the original body never indexes past 16. The assert pins that choice against a
 later edit. It is not evidence about the original ABI and should not be cited
 as such.
+
+## The parity component on the board (u237)
+
+GopFramebuffer at `90b64ef` with the board supplying the state request boots to
+the same GPU ladder as before — `GPUROW21` ZAP ok, `GPUROW23` PUBLISH ok,
+`GPUROW24` METAL ok, `GPUROW25` busy 0 — and the swap path is healthy:
+
+```
+GPUSWAP validate 7 ok 1 reason 0 | copied 7 status 0 bytes 10368000 | retired 7 gen 7
+GPUREASONS accepted 7 rejected 0 | r0 7 r1 0 r2 0 r3 0 r4 0 r5 0 r6 0 r7 0
+```
+
+`ok` is the last validation result, not a count; `bytes` is one full
+1080x2400 frame per swap, so every accepted swap was copied and retired.
+No `GPUREJ`, no reason-1 refusals, `r5` (the blank fill) 0.
+
+That is step 1 of the two-step migration check: the board-side stride wrapper
+is harmless under the parity component, so removing it is now a separate,
+attributable experiment rather than a change mixed into the pin move.
+
+The picture did not change with it. The panel settles at `nonblack 86/1000,
+luma 21` with `changes` almost static, against 148/29 for u235 — the same
+mostly-black desktop the earlier sections describe, not a new effect of the
+pin. Bright samples (429/57) occur during boot and fall away as the UI
+starts submitting.
+
+One round-keeping detail: the round ended `rc=1` at its 200 s budget because
+`sheng-autoreset=3600` returns the board to the bootloader long after that.
+The console capture is complete and the rows above come from a later
+45-second sample on the same boot, so nothing was lost — but an unattended
+round needs the autoreset at or below its own budget.
