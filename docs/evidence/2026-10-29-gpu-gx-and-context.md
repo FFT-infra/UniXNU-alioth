@@ -475,8 +475,11 @@ The recipe now supplies the six swap-request offsets the parity component reads
 (`kRequestSurfaces` 2624, `kRequestMasks` 792, `kRequestRect0` 17,
 `kRequestRect1` 81, `kRequestOptions` 804, `kRequestDims` 816) in the generated
 ABI header, which is what the pin switch was missing. With them the build
-reaches the component and then **clang-24 crashes in the preprocessor**, so the
-pin stays where it is until that is understood. The stride wrapper is not part
+reaches the component and then **clang-24 crashes in the preprocessor**
+(`Preprocessor::EnterMainSourceFile`, no diagnostic), so the pin stays where it
+is. Reproducing it by hand needs the recipe's exact argv, which the crash log
+does not print; the next attempt should capture that command line, for example
+by wrapping the compiler, before guessing at the cause. The stride wrapper is not part
 of that question: the parity `NativeLegacyRequest.h` is unchanged and still
 compares the stride as bytes, so the board-side normalisation stays either way.
 
