@@ -236,7 +236,7 @@ kernel_args = [
   # The persistent log header carries this string, so a log read back through TWRP can say which
   # image wrote it. It was empty on every round up to usb171, which made the recovered log unable
   # to identify itself. Bump it with the image name on each build.
-  "sheng-build-tag=u223",
+  "sheng-build-tag=u224",
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
@@ -503,8 +503,11 @@ kernel_args = [
   # (sc) has not moved without it, so the desktop may be compositing and never presenting.
   # The tag is shortened to u208 because the command line is at 983 of its 1000 bytes.
   "sheng-fb-gpu=1",
-  "pcie=9",
-  "pcie_skip=32",
+  # SpringBoard traps with SIGTRAP at the same address on every boot, and that assertion is the
+  # first candidate for a missing capability: the plugin withholds every Apple GPU family by
+  # default, so Metal answers "none" to a question an app may assert on. none reports them.
+  # The pcie probe arguments are off for these rounds to keep the command line under 1000 bytes.
+  "pipa-metal-withhold=none",
   # Starts the HID publisher itself. The publisher is an IOHIDDevice compiled into this kernel,
   # so IOKit has no personality for it and nothing matches it; the board calls it from
   # native_legacy_display_late_probe, the second of the two start paths the driver adaption
