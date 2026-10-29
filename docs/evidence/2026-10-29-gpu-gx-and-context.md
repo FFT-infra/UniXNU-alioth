@@ -906,8 +906,17 @@ has none of it:
 | u239 | 854 | present | 0 |
 | u241 | **0** | **0** | **0** |
 
-and the boot carried on to CoreAnalytics/CoreParsec at 280 s, well past both
-earlier failure points.
+The count is weaker evidence than it looks, and the first draft of this section
+overstated it. The persistent log keeps a 32-block message window that is not
+cleared per boot, and the u241 window spans 98-281 s while that boot recorded
+180 s of uptime, so the window holds more than one boot. Lines at 281 s cannot
+belong to a 180 s boot. The zero is therefore consistent with the fix and does
+not by itself prove it; what proves the mechanism is the code path above, and
+what would settle it is a boot whose window is entirely its own.
+
+(An earlier sentence here cited CoreAnalytics rows at 280 s as progress past the
+failure points. Those rows are in the same window and have the same attribution
+problem, so they are not evidence either.)
 
 That boot did not submit a single swap (`GPUSWAP validate 0`, `r0 0`) while the
 display probe ran normally (21 `GPUROW25` rows) and the panel sat at
