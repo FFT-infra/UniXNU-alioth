@@ -148,3 +148,20 @@ pcie_tbu_clk, pcie_phy_refgen_clk, pcie_ddrss_sf_tbu_clk
 下一步（不需要再猜）：把 `pcie_0_ldo` 与 `pcie_phy_refgen_clk` 的投票补上，其余不动，
 只跑到 `step 9`（不碰 DBI）确认这两项不挂；确认后再开 `pcie=10`。这样断电次数从「每次未知」
 变成「每一步可预期」。
+
+## 追加：`elbi` 与 `dbi` 的映射重叠不解释挂死
+
+窗口表（`alioth_pcie.c:88-98`）里 `elbi`（`0x60000f20` + `0xa8`）整个落在 `dbi`
+（`0x60000000` + `0x1000`）之内，而 `map_all()` 是逐块各调一次 `ml_io_map`，不去重也不检查包含。
+这看起来像「同一段物理地址被映射两次、可能拿到坏 VA」。
+
+**但 `step_look`（第 1 步）就成功读了 `get(3, "elbi_sys_ctrl", 0x04)`**——同一个物理 4 KiB 页，
+而且 `pcie=1` 到 `pcie=9` 全部通过。所以：
+
+- 那段物理地址的映射与总线应答是好的；
+- 重叠本身不会让读挂死，否则第 1 步就该挂；
+- 挂死是 **`iatu`（`0x60001000`）这一页特有**的，而它与 `elbi` 不在同一页。
+
+这把方向从「映射错」移到「IATU 这一侧的时钟或复位」。下一步仍是纯代码：读
+`pcie_0_cfg_ahb_clk` / `pcie_0_slv_axi_clk` 的 branch 使能与 halt 状态（`step_clocks`
+已读过一部分，属安全区），确认 IATU 所在的 AXI slave 分支有没有真的跑起来。
