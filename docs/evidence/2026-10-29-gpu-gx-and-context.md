@@ -466,10 +466,12 @@ explained; it does not block the next mode.
 
 ## The traps resolve into the frameworks, and none of them is graphics
 
-The SystemOS volume in `out/ipsw/21H461/044-76034-038.dmg` is a raw APFS
-image, so `apfs-fuse` on the build host mounts it without `hdiutil` (which is
-wedged by DiskArbitration on this machine). With the cache mounted, the crash
-addresses resolve by image:
+The SystemOS volume in `out/ipsw/21H461/044-76034-038.dmg` carries no UDIF
+trailer, and its first `NXSB` sits at **offset 32**, not 0; `apfs-fuse` on the
+build host mounts it as it is (`apfs-fuse -o ro <dmg> <mount>`) without
+`hdiutil`, which DiskArbitration wedges on this machine. Quote the offset if
+this is ever scripted: a check of `head -c 4` for `NXSB` fails on this file.
+With the cache mounted, the crash addresses resolve by image:
 
 | Address | Image |
 | --- | --- |
