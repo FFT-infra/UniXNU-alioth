@@ -1760,6 +1760,9 @@ static void log_only_monitor(void *arg, wait_result_t result) {
   for (;;) {
     const unsigned now=seconds();
     if(boot_log_tick)boot_log_tick(now);
+    // The page-off loop has to sample the framebuffer too, or GPUFB freezes and a frozen
+    // instrument reads exactly like a screen that stopped changing.
+    framebufferSample();
     gpu_rows_report(now);
     assert_wait_timeout((event_t)&thread_count,THREAD_UNINT,1000,NSEC_PER_MSEC);
     thread_block(THREAD_CONTINUE_NULL);

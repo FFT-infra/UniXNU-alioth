@@ -437,6 +437,26 @@ clean CP. The FSR was read after the write completed, so either a benign
 earlier access left it set or a speculative access was reported. Recorded, not
 explained; it does not block the next mode.
 
+## Two counters are not one path
+
+Six numbers in this port were read as something other than what they measure.
+The rule that came out of it: when two counters describe the same phenomenon,
+prove they count the same path before using one to confirm the other.
+
+| Read as | Actually |
+| --- | --- |
+| `fence 0/1` = fences completed | wait status 0, one poll |
+| `write 0` = the value written | the fence wait's status |
+| `t` = failed submissions | timed-out polls; every submission completed |
+| `copied` rising = the desktop is presented | includes the blank-screen fill (reason 5) |
+| `mount_fail` = a process refused | the kernel client's own second mount |
+| `GPUFB` changing = frames presented | the diagnostic page paints the framebuffer too |
+
+The last one has a corollary for instruments: the page-off boot loop did not
+sample the framebuffer, so with the page off GPUFB would freeze, and a frozen
+instrument reads exactly like a screen that stopped changing. The sample call
+now sits in both loops.
+
 ## Where the GPU rows appear
 
 The GPU rows go to the serial console only. The persistent log read back
