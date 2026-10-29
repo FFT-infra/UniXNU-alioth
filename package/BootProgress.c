@@ -850,7 +850,7 @@ static void refresh(unsigned now) {
 
 int boot_progress_active(void) { return enabled != 0; }
 int boot_progress_pulse_anchor(uintptr_t base,uint64_t bytes,unsigned w,unsigned h,unsigned rb) {
-  int accepted=enabled && bp_pulse_register(&pulse,base,bytes,w,h,rb);
+  int accepted=enabled && enabled!=3 && bp_pulse_register(&pulse,base,bytes,w,h,rb);
   if(accepted)bp_panic_bind(&boot_progress_panic_vinfo,base,w,h,rb);
   return accepted;
 }
@@ -882,17 +882,21 @@ void boot_progress_cancel_scanout(void) {
 }
 void boot_progress_init(void) {
   unsigned opt=0;
-  if (!PE_parse_boot_argn("boot-progress",&opt,sizeof(opt)) || (opt != 1 && opt != 2)) return;
+  /* 3 records and reports but never binds the frame buffer: the rows still go to the console and
+   * the persistent log, which TWRP can now read back, while the panel is left to the system. The
+   * page is a third writer of the scanout buffer, and it stays visible at the edge of the desktop;
+   * 0 cannot be used for this because it disables the layer that also feeds the log. */
+  if (!PE_parse_boot_argn("boot-progress",&opt,sizeof(opt)) || (opt != 1 && opt != 2 && opt != 3)) return;
   __asm__ volatile("mrs %0,cntfrq_el0" : "=r"(boot_progress_frequency));
   if (!boot_progress_frequency) return;
   boot_progress_epoch=ticks(); state.limit=120; state.stall=30;
-  state.continuous=opt==2; enabled=opt;
+  state.continuous=opt!=1; enabled=opt;
   PE_parse_boot_argn("sheng-build-tag",build_tag,sizeof(build_tag));build_tag[sizeof(build_tag)-1]=0;
   if (PE_parse_boot_argn("boot-diag-resume",&resume_after,sizeof(resume_after)) && (resume_after<5 || resume_after>3600)) resume_after=0;
   boot_progress_stage("PE initialized; early native mappings");
 }
 void boot_progress_bind(uintptr_t base,unsigned w,unsigned h,unsigned rb,unsigned depth) {
-  if (!enabled || !take()) return;
+  if (!enabled || enabled==3 || !take()) return;
   ++bind_count;bind_base=base;bind_depth=depth;bind_result=1;
   if (boot_progress_display_owned) { bind_result=2;release(); return; }
   display.bound=0;

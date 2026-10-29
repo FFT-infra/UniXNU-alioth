@@ -207,6 +207,12 @@ static unsigned tick_first, tick_seen_seq, tick_seen_at;
 static int tick_reset_tried;
 static uint32_t tick_autoreset;
 static volatile unsigned log_sync_seq;
+/* Which step of a round the writer is in, for a round that never finishes. Every wait on that path
+ * is supposed to be bounded (the SCSI commands carry deadlines and poison the controller on
+ * timeout, which shows up as write_errors), so a writer that stops with write_errors still 0 is
+ * stuck somewhere that is not a command. This says which call it entered and never left; the
+ * board monitor prints it, because the writer cannot report on itself. */
+static volatile unsigned log_phase;
 enum {ResetSyncGrace = 10};
 static uint8_t *boot_log_buffer;   // LogMsgBlocks blocks: the message buffer, then reused for a slot and the header
 
@@ -1148,9 +1154,13 @@ static void writer(void *arg, wait_result_t result) {
     // Text slot, then the message buffer, then the header that makes both visible.
     memset(boot_log_buffer, 0, LogSlotBlocks * LogBlock);
     compose((char *)boot_log_buffer, LogSlotBlocks * LogBlock, h.slots_written, now);
+    log_phase = 1;
     ok &= native_ufs_log_write(LogSlotFirst + (uint64_t)(h.slots_written % slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer);
+    log_phase = 2;
     h.msg_bytes = copy_msgbuf(boot_log_buffer);
+    log_phase = 3;
     ok &= native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
+    log_phase = 4;
     if (ok) ++h.slots_written;
     else ++h.write_errors;
     // The newest complete export is already on the medium; the header names it.
@@ -1169,13 +1179,19 @@ static void writer(void *arg, wait_result_t result) {
     if (&native_ufs_store_gpt_check && !(h.rounds % 30)) h.gpt_last = native_ufs_store_gpt_check();
     memset(boot_log_buffer, 0, LogBlock);
     memcpy(boot_log_buffer, &h, sizeof h);
+    log_phase = 5;
     ok &= native_ufs_log_write(0, 1, boot_log_buffer);
+    log_phase = 6;
+    log_phase = 7;
     ok &= native_ufs_log_sync();
+    log_phase = 8;
     if (ok) __atomic_fetch_add(&log_sync_seq, 1, __ATOMIC_RELAXED);
     if (!ok) {boot_log_errors = ++errors;} else errors = 0;
     if (errors >= LogMaxErrors) {boot_log_state = 3; return;}
     if (h.gpt_last != h.gpt_open) {boot_log_state = 4; return;}
+    log_phase = 9;
     IOSleep(LogPeriodMs);
+    log_phase = 10;   // woke; anything still at 9 is inside the sleep, anything at 10 is compose
   }
 }
 
@@ -1210,6 +1226,18 @@ void boot_log_tick(unsigned now) {
         thread_t thread;
         if (kernel_thread_start_priority(writer, 0, BASEPRI_KERNEL, &thread) == KERN_SUCCESS) thread_deallocate(thread);
       }
+    }
+  }
+  /* Phase heartbeat: once a second is too much, once on every change plus every tenth second
+   * otherwise. A writer that stops leaves its last phase on the console and nothing else. */
+  static unsigned last_phase = ~0U, last_at;
+  {
+    const unsigned phase = __atomic_load_n(&log_phase, __ATOMIC_RELAXED);
+    if (phase != last_phase || now - last_at >= 10) {
+      last_phase = phase; last_at = now;
+      char row[64];
+      const int n = snprintf(row, sizeof row, "BLPHASE t=%us phase=%u\n", now, phase);
+      if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(row, (size_t)n < sizeof row ? (size_t)n : sizeof row - 1);
     }
   }
   if (!tick_autoreset || tick_reset_tried) return;
