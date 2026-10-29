@@ -285,7 +285,10 @@ kernel_args = [
   "sheng-cpufreq=3",
   "sheng-pmgr=2",
   "-no_slto_panic",
-  "ml-timeout-lock-panic-scale=40",
+  # ml-timeout-lock-panic-scale=40 is dropped for now: it only scales how long a lock
+  # timeout waits before panicking, nothing in this tree reads it, and the command line
+  # is at 1018 bytes against a 1000-byte limit. It comes back when something else frees
+  # the room.
   # NativeUfs defaults to stream 0x60, which is sheng's board. SM8250 routes the
   # UFS host through 0x0e0 and 0x4e0.
   "native-ufs-stream=0xe0",
@@ -450,9 +453,11 @@ kernel_args = [
   # storm, but the very next boot stopped about 5 s in, before launchd, and the one thing that
   # changed is that u241 was the first boot to write the Data overlay: this boot is the first
   # that has to mount an overlay that was written. reset=1 discards it, so if the mount was the
-  # blocker this boot gets past it; if it stops in the same place, the overlay is not the cause
-  # and mode 2 goes back.
-  "sheng-data-persist=0",
+  # blocker this boot gets past it; if it stops in the same place, the overlay is not the cause.
+  # Mode must stay 2 for reset to do anything: NativeRamBlock.cpp:79 reads the argument, but the
+  # discard only happens inside the `if (mode && ...)` block, so with mode 0 the overlay written
+  # by u241 would simply stay.
+  "sheng-data-persist=2",
   "sheng-data-reset=1",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
