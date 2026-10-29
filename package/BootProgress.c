@@ -236,6 +236,22 @@ extern volatile uint64_t native_legacy_frame_color_other[8] __attribute__((weak_
 extern volatile uint32_t native_legacy_swap_accepted_count __attribute__((weak_import));
 extern volatile uint32_t native_legacy_swap_rejected_count __attribute__((weak_import));
 extern volatile uint32_t native_legacy_swap_reason_counts[8] __attribute__((weak_import));
+// The framebuffer itself: a checksum over every 4096th dword says whether anything writes pixels,
+// whether or not a swap carried a surface. A static screen keeps one value, a drawing one does not.
+extern volatile uint64_t native_legacy_gop_virtual __attribute__((weak_import));
+extern volatile uint64_t native_legacy_gop_bytes __attribute__((weak_import));
+static uint32_t framebufferChecksum(void) {
+  if (!&native_legacy_gop_virtual || !native_legacy_gop_bytes) return 0;
+  const volatile uint32_t *base = (const volatile uint32_t *)(uintptr_t)native_legacy_gop_virtual;
+  if (!base) return 0;
+  const uint64_t dwords = native_legacy_gop_bytes / 4;
+  uint32_t hash = 2166136261u;
+  for (uint64_t i = 0; i < dwords; i += 4096) {
+    hash ^= base[i];
+    hash *= 16777619u;
+  }
+  return hash;
+}
 extern volatile uint32_t native_gop_ready __attribute__((weak_import));
 extern volatile uint32_t native_gop_failures __attribute__((weak_import));
 extern volatile uint64_t native_gop_transfers __attribute__((weak_import));
@@ -313,6 +329,12 @@ static void gpu_client_report(void) {
                  native_legacy_swap_validation_reason, native_legacy_transfer_calls,
                  native_legacy_transfer_status, (unsigned long long)native_legacy_transfer_bytes,
                  native_legacy_retired_frames, native_legacy_presented_generation);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+  }
+  if (&native_legacy_gop_virtual) {
+    n = snprintf(line, sizeof line, "GPUFB checksum %08x width %u height %u bytes %llu\n", framebufferChecksum(),
+                 &native_legacy_gop_width ? native_legacy_gop_width : 0, &native_legacy_gop_height ? native_legacy_gop_height : 0,
+                 (unsigned long long)native_legacy_gop_bytes);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   if (&native_legacy_swap_reason_counts) {
