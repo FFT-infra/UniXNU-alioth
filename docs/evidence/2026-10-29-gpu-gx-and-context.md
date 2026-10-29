@@ -320,6 +320,22 @@ not what decides it: the two outcomes alternate between boots of the same
 image. The desktop appearing is therefore a race, and the first thing to
 establish is what the two outcomes correlate with, not which argument was set.
 
+## The framebuffer changes whether or not a swap carries a surface
+
+A checksum over every 4096th dword of the mapped framebuffer (GPUFB) settles
+what no swap counter can:
+
+```
+GPUFB checksum 33a6969c width 1080 height 2400 bytes 10368000
+GPUFB checksum 6599802e ...
+GPUFB checksum dc1c2bfb ...
+```
+
+In a boot where every swap was refused for carrying no surface, the panel
+memory still changed between reports, so something writes pixels by a route
+the legacy swap API does not see. That is why "no accepted surfaces" and "the
+desktop appeared" can both be true in the same minute.
+
 ## The desktop draws
 
 Splitting the accepted swaps by validation reason shows what the frames
