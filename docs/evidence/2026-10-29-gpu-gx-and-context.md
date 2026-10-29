@@ -692,3 +692,24 @@ stale input.
 A third symptom belongs to the same family: a component source that `git
 checkout` has just replaced can crash clang the same way once, because the
 length the VM cached belongs to the previous revision. A second run clears it.
+
+## What the four inputs were enough for
+
+With the six request offsets, `NATIVE_LEGACY_LEAVES`, the vsync client offset
+and the two request structures supplied — and nothing else — the parity
+component builds under `-Werror` and passes its object audit:
+
+```
+NativeLegacyDisplay: -Werror build and actual ARM64/iOS 17 object audit passed
+```
+
+That is the positive answer to the migration question the earlier section could
+only pose. The remaining inputs were never a matter of judgement: each is an
+offset or a size the original code fixes, and the recipe now derives or asserts
+each one.
+
+One size in that set is not from the original. `OriginalLegacyStateRequest` is
+28 bytes because 17 bytes of read fields round up to the struct's alignment;
+the original body never indexes past 16. The assert pins that choice against a
+later edit. It is not evidence about the original ABI and should not be cited
+as such.
