@@ -812,3 +812,40 @@ This matters beyond storage. On the u237 boot the panel fell from
 is where the desktop's assets live. A volume that stops answering is a
 sufficient explanation for a desktop that loses its content, and it would mean
 the mostly-black screen is not a GPU question at all.
+
+## The Data volume, not the GPU, decides whether a boot is measurable
+
+u239 differs from u237 in one boot argument (`sheng-autoreset` 3600 → 600), and
+that argument cannot affect a boot before 600 s. It still produced a completely
+different boot:
+
+| Round | Data volume first `device is not ready` | `corruption detected` | GPU rows on the console |
+| --- | --- | --- | --- |
+| u237 | none before the desktop | 314 (in the window that reached 334 s) | 471 |
+| u239 | **136 s** | 0 | **0** |
+
+On u239 the volume reported not ready at 136 s and never recovered: 854 such
+lines by 600 s, and the console has no `GPU` line at all. The display probe
+never ran, so there was nothing to measure — not a GPU failure, an earlier
+one.
+
+Two things follow.
+
+1. **Every frame-rate or brightness reading is conditional on that volume.**
+   A round that lands on a boot like u239 measures nothing, and a round like
+   u237 measures a desktop that loses its assets partway through. Before the
+   panel numbers mean anything, the boot has to be one where `disk1` stays
+   ready.
+
+2. **The corruption lines and the not-ready lines are not the same event.**
+   u238's window had both at ~334 s; u239 has not-ready alone from 136 s with
+   zero corruption. So corruption is not the cause of the stall — at most it is
+   one of its consequences. The earlier section named the timed reset as a
+   candidate for the corruption; nothing here supports that as the cause of the
+   stall.
+
+The next useful measurement is not on the panel at all: it is whether the
+block device goes not-ready because the UFS link drops, or because the driver
+stops being asked. `UFS requests=328563 ... failures=0 integrity=0` on u238
+says the driver's own counters saw no failure, which points away from the link
+and towards the stack above it.
