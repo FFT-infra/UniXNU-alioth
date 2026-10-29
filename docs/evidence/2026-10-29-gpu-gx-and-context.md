@@ -451,6 +451,14 @@ person or a different read-back path.
 
 ## Open
 
+**The SpringBoard trap is an environment assertion, not a graphics one.** Its
+addresses land in IMDPersistence with frames in WebCore and TextInputCore, and
+healthappd and ReportCrash trap in Espresso and DocumentManager the same way.
+The fix belongs on the environment side (the storage or service those
+frameworks expect, or holding them back through a job override); it is not on
+the GPU main line and the desktop draws between the traps.
+
+
 `cb0 fsr 00000400` on the GPU's context bank, next to a successful write and a
 clean CP. The FSR was read after the write completed, so either a benign
 earlier access left it set or a speculative access was reported. Recorded, not
