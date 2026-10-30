@@ -691,3 +691,31 @@ works (`irq` 0 to 42 on the PON), and the pad level is right (`mask=0` at rest).
 **Not yet shown:** that pressing volume-up moves `mask` to `4`, and that volume-down moves it
 to `8` independently. bt4's snapshot was too early for a press. That is the next round's
 single question, and it needs one press per key.
+
+## The repeated fault this round: a measure that does not measure the thing
+
+Every wrong turn in this round had the same shape - a reading that could not answer the
+question it was asked, and my reading it as if it had.
+
+| reading | what it measures | what I read it as |
+| --- | --- | --- |
+| `stats[7] = 3` after the blink loop | that the loop ran | that three packets reached the panel |
+| `rep` (`mask` change count) | that the level changed | that the thread was polling |
+| `adb devices | tail -1` | the blank line `adb` prints last | that no device was attached |
+| `err` (the PDC version) | the arbiter's version number | that the GPIO's owner EE was 2 |
+| `mask=4` at idle | a constant bit 2 | that the GPIO pin was correct |
+| a single `latest.txt` snapshot | one instant | the round's behaviour |
+| `pdc` before bt3 | the PDC version only | a loop count |
+
+The last one is the one that cost two rounds: `rep` counts changes of the pressed mask, so it
+stays at 1 both when the thread is blocked and when it polls a constant level. I used it to
+answer "is the thread polling", which it cannot. The `pdc` loop counter was added correctly -
+the fault was reading the old counter as if it answered the new question.
+
+The pattern to check before trusting any reading: **does this value change when the thing I am
+asking about changes, and only then?** `stats[7] = 3` was a literal, so it never could. `rep`
+changes for a different reason than the one I was testing. `tail -1` is a fixed line.
+
+Three faults of this shape were caught by other sessions before I saw them (`stats[7]`, `err`,
+`tail -1`); four I found by adding a counter that could fail. The counter is the cheaper habit:
+it turns "what does this mean" into "does this move".
