@@ -267,3 +267,30 @@ established.
 What is established: the packets are accepted by the controller (no fault, and the write
 returns 0), and the sweep runs to completion without hanging. What is not: whether the panel
 receives them, and what its DCS 0x52 would say.
+
+## 2026-10-31 btn5: the read-backs hold the round, and the round is lost
+
+Image `tmp/boot-btn5.img`, sha256 `d7339d4b650976700c96e0c94ceb6fcdc46e13b7e06585bc3bf2eed60e863a85`,
+tag `btn5`, `alioth-bl=2` plus `alioth-bt=1`. It booted at 01:35 and was still running at
+01:44 - nine minutes, against btn4's ~200 s - with the kernel alive (`Qualcomm XNU Debug`
+enumerated, a fresh `/dev/tty.usbmodem14101`) and the screen frozen. The timed reset never
+fired. The board had to be power-cycled by hand and **no log was read back**: there is no
+`build/sheng-logs/btn5-*`, so this round produced no reading at all.
+
+### Why it held
+
+`sendPacket` polled twice per packet: up to 20 ms for `DSI_STATUS` bit 2 to clear and up to
+50 ms for the done status. Neither can succeed on this board - the vendor only takes the TPG
+FIFO path in `secure_mode` (`dsi_ctrl.c:1170-1180`), and completion is an interrupt nothing
+here attaches (`alioth.dts:30921-30922`). btn5 added two more read-backs per level than btn4,
+and the accumulating waits held the round past the reset.
+
+Both polls are now optional and non-fatal: the packet is written and triggered regardless, a
+refusal is recorded in `stats[6]`, and `stats[7]` counts how many were refused.
+
+### The criterion changes
+
+btn6 leads mode 2 with three off/on blinks (`0x28` then `0x10`, `0x11` then `0x29`, one
+second dark each). That is the check that needs neither a read-back nor an observer judging a
+small brightness change: if the packets reach the panel the screen goes dark and comes back,
+and if it does not, the packets are not arriving and no read-back could have been trusted.
