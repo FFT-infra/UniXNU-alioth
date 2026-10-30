@@ -311,23 +311,26 @@ step_look(void)
 	get(0, "pcie_0_phy_bcr (phy reset)", GCC_PCIE_0_PHY_BCR);
 	printf("pcie: %u: the controller is %s (gdscr %#x), its clock votes %#x\n", pcie_step,
 	    (gdscr & GDSC_POWER_ON) ? "on" : "off", gdscr, misc);
-	/*
-	 * THE WINDOW PROBE, and it runs before the early return on purpose.
-	 *
-	 * The ELBI read below, at the end of this function, has never executed: the early return
-	 * fires on every run so far (gdscr 0x22f001 has PWR_ON clear, axi_misc 0x4100040 has its
-	 * low six bits clear, not 0x3f), so nothing in this file has ever touched
-	 * 0x60000000..0x60002000 -- and that whole window hangs on its first access in steps 12.
-	 * This one read answers the question that has never been answered: is that window reachable
-	 * from the CPU at all, with the controller still collapsed and no clock voted for?
-	 *
-	 * Binary outcome, no guessing:
-	 *   hangs here      -> unreachable regardless of anything this file does; the address or
-	 *                      the way it is mapped is wrong, and every later step is wasted.
-	 *   reads here      -> reachable, so some later step shuts it; bisect by moving this probe
-	 *                      after steps 3, 4 and 6.
-	 */
-	get(3, "elbi_sys_ctrl (window probe, before the early return)", 0x04);
+	{
+		/*
+		 * The early return below tests (misc & 0x3f) != 0x3f, and this line has only ever been
+		 * read as "it returned", never as "what the six vote bits are". If none of them is set,
+		 * the controller believes its own clocks are not voted for, and a slave port that thinks
+		 * that may simply not answer -- which is a different cause from "the address is wrong"
+		 * and is not excluded by the probe below running before step 3 votes anything.
+		 */
+		uint32_t votes = misc & 0x3fu;
+
+		line("the clock votes are %#x, all six are voted: %s", votes,
+		    votes == 0x3fu ? "yes" : "NO -- none of slv_axi, mstr_axi, cfg_ahb, aux, slv_q2a is voted yet");
+		/*
+		 * The window probe used to run here, with the controller still collapsed AND no clock
+		 * voted -- two things at once. It hung, which said the window was unreachable in that
+		 * state but could not say which of the two made it unreachable. It now runs in step 2,
+		 * after the controller is powered and still before step 3 votes anything: that is one
+		 * variable.
+		 */
+	}
 	if ((gdscr & GDSC_POWER_ON) == 0 || (misc & 0x3f) != 0x3f) {
 		say("its clocks are not all voted for, so neither its PHY's nor its own registers are read here\n");
 		return true;
@@ -370,6 +373,28 @@ step_gdsc(void)
 		return false;
 	}
 	line("THE CONTROLLER HAS POWER (gdscr %#x, %u ms)", gdscr, waited);
+	/*
+	 * THE WINDOW PROBE, one variable: the controller is powered now, and step 3 has not run,
+	 * so no clock is voted for yet. wifi6 ran this read in step 1 with the controller still
+	 * collapsed and got a hang; that left "power" and "votes" entangled. This position splits
+	 * them.
+	 *
+	 * Three states, not two: a bus that answers with a wrong value is a different failure from
+	 * a bus that never answers, and 0xffffffff is the classic "no response" return. Reading
+	 * something is not the same as the window being usable.
+	 *
+	 *   hangs         -> power alone does not make it reachable; look at votes (step 3) next,
+	 *                    or at the address/mapping if votes change nothing.
+	 *   reads a value -> power was what it needed, and the votes become the next variable.
+	 */
+	{
+		uint32_t elbi = get(3, "elbi_sys_ctrl (window probe, powered, no votes yet)", 0x04);
+
+		line("the window probe returned %#x (%s)", elbi,
+		    elbi == 0xffffffffu ? "all ones -- the bus answered with no data, which is not readable"
+		                        : (elbi == 0 ? "zero -- readable, and the register is clear"
+		                                     : "a real value -- the window is reachable"));
+	}
 	return true;
 }
 

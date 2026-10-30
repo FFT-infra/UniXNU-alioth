@@ -642,3 +642,59 @@ PCIE 1: gcc pcie_0_phy_bcr (phy reset) = 0
 更实际的做法：**查 vendor 在访问这段之前是否做过某个我们不做的映射**（`dma-coherent`、
 `iommu-map`、或 `iommu_dma` 配置）。本板 DT 里 pcie0 有 `dma-coherent` 与
 `qcom,smmu-sid-base = 0x1c00`，而**本树没有 SMMU 的 SID 配置**。
+
+## 2026-10-31 04:23：控制器有电之后，window probe 仍然挂——电不是变量
+
+镜像 `boot-wifi7.img` sha256 `70bb2fe4…`，内核 `cbb7e07b…`（与 wifi6 的 `6ad614ad…` 不同），
+`pcie=12 pcie_skip=32`，无 bt/bl。38 行 PCIE（`tmp/console-wifi7r1.log`）。
+
+### 一、把 probe 从 step 1 挪到 step 2（消掉一个变量）
+
+wifi6 把 ELBI 读放在 step 1 的早退之前，那时控制器**仍在塌陷**且**一个时钟都没投票**——
+两个条件同时成立，挂死说明「这一状态不可访问」，但说不清是哪个条件造成的。
+
+本轮把同一读挪到 `step_gdsc` 末尾：控制器已上电，step 3 还没投票。**只剩一个变量：电。**
+
+### 二、结果：仍然挂（事实）
+
+```
+PCIE 2: gcc pcie_0_gdscr after (...) = 0xf822f000
+PCIE 2: THE CONTROLLER HAS POWER (gdscr 0xf822f000, 1 ms)
+   <- 日志到此为止
+```
+
+`0xf822f000` 的 bit31 置位（PWR_ON），控制器确实有电。之后 probe 的
+`about to read` 行**没有出现**（`grep -c` = 0），板子 39 s 后复位回来。
+
+### 三、两个变量都排掉了
+
+| 状态 | probe 结果 |
+| --- | --- |
+| 塌陷（gdscr 0x22f001，无投票） | **挂**（wifi6） |
+| 有电（gdscr 0xf822f000，无投票） | **挂**（本轮） |
+
+**所以「控制器没上电」和「时钟没投票」都不是这一段不可访问的原因。** 剩下的是地址/映射本身。
+
+### 四、顺带确认：六个投票位一个都没置（事实）
+
+step 1 现在会打印：
+
+```
+PCIE 1: the clock votes are 0, all six are voted: NO -- none of slv_axi, mstr_axi,
+        cfg_ahb, aux, slv_q2a is voted yet
+```
+
+`misc = 0x4100040`，低 6 位全 0。这解释了 `step_look` 为何每轮早退——**但它不是窗口不可访问的原因**
+（本轮已证明：有电、仍挂；而 wifi5 已证明：step 3 投了 5 个位之后，step 12 仍挂）。
+
+### 五、下一步
+
+只剩两条，都不是「再试一个寄存器」：
+
+1. **地址/映射本身**。`parf`（`0x01c00000`）走同一个 `ml_io_map` 却可读，所以映射机制没问题，
+   是这段物理地址特别。要查的是 `io_map` 为 `0x60000000` 建立的映射是否真的指向了总线上那个从端口
+   ——例如 SMMU 的 SID 配置（本板 DT 有 `qcom,smmu-sid-base = 0x1c00` 与 `iommu-map`，
+   而**本树没有 SID 配置**）。
+2. **上游**：这段窗口属于 DWC，可能有一个 `gdscr` 之外的电源/复位域（例如 NoC 端口或 CX 域）。
+
+**建议先查第 1 条，零成本、不用板子。**
