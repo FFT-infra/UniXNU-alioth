@@ -25,8 +25,12 @@ A-3 的驱动 `AliothUSBDevice` 已经能编译、vtable 正确、宿主测试�
 | **D. 改 `CONFIG_XNU_EXTRA_LD_ARCHIVES` 的值** | `configs/alioth_defconfig`（**设备仓库**） | **否** | LinkStubs 也要加 `-force_load`，可能撞 weak/strong 冲突（见 §3） |
 | A. 改 `build-xnu-4k-baseline.sh` 加一行 | 基仓库 | **是** | 一行，语义最清楚 |
 
-**`EXTRA_LD_ARCHIVES` 能带多个**——实测过：make 按词拆分，两个 `-Wl,-force_load` 成为两个独立参数
-（`MakeInc.kernel:228` 里 `$(LD_KERNEL_ARCHIVES)` 不加引号展开）。
+**`EXTRA_LD_ARCHIVES` 能带多个**——实测过：make 按词拆分，两个 `-Wl,-force_load` 成为两个独立参数。
+
+`$(LD_KERNEL_ARCHIVES)` 在 `MakeInc.kernel` 里出现 **4 次**，全部不加引号展开：
+`:228`（LTO 链接）、`:230`（非 LTO）、`:233`（debug）、`:238`（`link.filelist` 路径），
+另有 `:263` 把它原样写进 `.linkarchives` 文件。**所以无论走哪条链接路径，多参数都能塞**——
+这是它成立的原因，不是某一条的巧合。
 
 ---
 
@@ -56,9 +60,23 @@ defconfig 拷成 `out/alioth/<os_profile>/alioth/.config` 的**快照**，之后
 
 ### 判据
 
-1. `build kernel` 成功（链接无重复定义错误）
-2. `nm kernel.macho | grep AliothUSBDevice` 有输出——**类符号真的进内核了**
-3. `nm kernel.macho | grep -c 'native_legacy_display_probe'` 与改前相同（LinkStubs 的解析未变）
+```sh
+K=<tree>/build/xnu/obj/.../kernel
+
+# 1. 未定义符号必须为 0。force_load 拉进一个没人引用的 archive 时，
+#    若它带未解析的外部引用，失败会报「未定义符号」而不是「重复定义」，
+#    两者修法完全不同。先查这个比事后读链接错误快。
+#    基线：现有候选 nm -u 实测 0 条，所以「仍为 0」是可判定的。
+llvm-nm -u "$K" | wc -l          # 期望 0
+
+# 2. 类符号真的进内核了
+llvm-nm "$K" | grep -c AliothUSBDevice        # 期望 >= 39（18 方法 + vtable + metaclass）
+
+# 3. LinkStubs 的解析没变
+llvm-nm "$K" | grep -c native_legacy_surface_stride   # 与改前相同
+```
+
+**第 1 条是这次补的，也是最先该跑的。**
 
 ### 回退
 
@@ -140,6 +158,59 @@ link fails」。**所以 LinkStubs 普通链接就能拉进来，不需要 `-for
 （改基仓库脚本，一行 `-Wl,-force_load,$ALIOTH_USB_ARCHIVE`）。
 
 ---
+
+## 4.1 D1 的可直接套用形式
+
+### 唯一一行改动
+
+`configs/alioth_defconfig:98`：
+
+```diff
+-CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a"
++CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a -Wl,-force_load,{tree}/build/alioth-usb/libAliothUSBDevice.a"
+```
+
+`{tree}` 占位符保留——`scripts/unixnu/kernel.py:18` 的 `xnu_env()` 会用 `str(ctx.tree)`
+替换它。**不要写成绝对路径**，否则换构建目录就失效。
+
+### 完整执行顺序
+
+```sh
+# 1. 改上面那一行
+# 2. 让快照跟上（不改这步，构建会成功但用旧的 EXTRA_LD_ARCHIVES）
+./unixnu defconfig alioth_defconfig -D ../UniXNU-alioth-usb
+
+# 3. 确认快照真的变了
+grep EXTRA_LD_ARCHIVES out/alioth/ipados-17.7.11-21H461/alioth/.config
+#    必须能看到 -Wl,-force_load,{tree}/build/alioth-usb/libAliothUSBDevice.a
+
+# 4. 构建
+./unixnu build kernel -D ../UniXNU-alioth-usb
+```
+
+### 三条判据（按顺序跑，第一条最先）
+
+```sh
+K=<tree>/build/xnu/obj/DEVELOPMENT_ARM64_BCM2837/kernel
+
+llvm-nm -u "$K" | wc -l                              # 1. 期望 0
+llvm-nm "$K" | grep -c AliothUSBDevice               # 2. 期望 >= 39
+llvm-nm "$K" | grep -c native_legacy_surface_stride  # 3. 与改前相同
+```
+
+第 1 条的意义：`-force_load` 拉进一个没人引用的 archive 时，若它带未解析的外部引用，
+失败会报「未定义符号」而非「重复定义」——**两者修法完全不同**，先跑这条比事后读链接错误快。
+基线：现有内核候选 `nm -u` 实测 **0** 条，所以「仍为 0」是可判定的。
+
+### 回退
+
+```diff
+-CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a -Wl,-force_load,{tree}/build/alioth-usb/libAliothUSBDevice.a"
++CONFIG_XNU_EXTRA_LD_ARCHIVES="{tree}/build/link-stubs/libLinkStubs.a"
+```
+
+再跑一次 `./unixnu defconfig alioth_defconfig`，重建。
+**回退不涉及基仓库、不涉及板子、不涉及其它会话。**
 
 ## 5. 与其它阻塞的关系
 
