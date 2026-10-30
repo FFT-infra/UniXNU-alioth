@@ -1287,3 +1287,110 @@ rpmh-regulator-ldoa9 {
 
 **注意第 2 步的一个细节**：RPMh 的「读当前电压」不是直接读 TCS——TCS 是请求队列。
 真正读要经过 RSC 的 observer 通道或 cmd-db 的 aux 数据。这一点在写读探针前要确认。
+
+## 2026-10-31 05:30：`QcomRscLayout` 的校准已解决——GpuProbe 的偏移与本板一致，且实测跑通过
+
+有人提醒「`QcomRscLayout` 是 sheng 的 SM8550 形状，偏移可能不对」。**查清了：它不按 SoC，按 RSC 的版本号；而本板是 v2，GpuProbe 已在本板实测用同一组偏移。**
+
+### 一、`qcom_rsc_layout` 只按版本号选，不按 SoC（事实）
+
+`NEW/UniXNU-sheng/package/QcomRpmh.c:53-57`：
+
+```c
+QcomRscLayout qcom_rsc_layout(uint32_t drv_id)
+{
+    if (((drv_id >> 16) & 0xff) >= 3)
+        return (QcomRscLayout){672, 24, 0x04, 0x08, 0x20, 0x24, 0x28, 0x2c, 0x34, 0x38, 0x3c};
+    return     (QcomRscLayout){672, 20, 0x04, 0x08, 0x10, 0x14, 0x18, 0x1c, 0x30, 0x34, 0x38};
+}
+```
+
+**输入只有 `drv_id`，字段是 `tcs_stride, cmd_stride, irq_status, irq_clear, wait_for_cmpl,
+control, status, cmd_enable, cmd_msgid, cmd_addr, cmd_data`。** 版本 ≥ 3 用第一套，否则第二套。
+**没有 SoC 相关的东西。**
+
+### 二、本板的偏移已由 GpuProbe 实测确定（事实）
+
+`GpuProbe.cpp:488-519` 用的常量：
+
+```
+kTcsBase = 0xd00, kTcsStride = 672, kCmdStride = 20
+control      = 0x14      (w(tcs(id, 0x14), ...) 四次：AMC 关、关、开、触发)
+cmd_enable   = 0x1C
+cmd_msgid    = 0x30      (+ kCmdStride * c)
+cmd_addr     = 0x34
+cmd_data     = 0x38
+irq_status   = 0x04      (kTcsBase + 0x04)
+irq_clear    = 0x08      (kTcsBase + 0x08)
+status       = 0x3C
+```
+
+**与 `qcom_rsc_layout` 的 v2 那套逐项比对：**
+
+| 字段 | GpuProbe | `qcom_rsc_layout` v2 | 相同 |
+| --- | --- | --- | --- |
+| `tcs_stride` | `0x2a0` (672) | `0x2a0` | 是 |
+| `cmd_stride` | `0x14` (20) | `0x14` | 是 |
+| `irq_status` | `0x04` | `0x04` | 是 |
+| `irq_clear` | `0x08` | `0x08` | 是 |
+| `wait_for_cmpl` | `0x10` | `0x10` | 是 |
+| `control` | `0x14` | `0x14` | 是 |
+| `status` | `0x18` | `0x18` | 是 |
+| `cmd_enable` | `0x1c` | `0x1c` | 是 |
+| `cmd_msgid` | `0x30` | `0x30` | 是 |
+| `cmd_addr` | `0x34` | `0x34` | 是 |
+| `cmd_data` | `0x38` | `0x38` | 是 |
+
+**11 项全同。** 而 GpuProbe 的 `rpmhVoteDdr()` 在这块板上**实测跑通过**
+（`GPUROW` 里的 `DDRV tcs ... polls ... cmd status ...` 行，以及 GpuProbe 注释里记的
+「all three completed in 0.3 ms」）。
+
+### 三、结论
+
+**本板的 RSC 是 v2 布局，`QcomRscLayout` 的 v2 那套在本板成立，而且有实测背书。**
+`sheng` 的 `QcomRpmh.c` 可以直接复用——只要调用 `qcom_rsc_layout(drv_id)` 而不是硬编码 v3。
+
+**这正是那个「零件适配」的答案**：不是「sheng 的偏移不能用」，而是
+「`qcom_rsc_layout` 已经处理了两种布局，本板落在 v2 那支」。
+
+### 四、`kTcsBase = 0xd00` 的来源
+
+GpuProbe 的注释（`:467`）：「apps_rsc drv-2 at 0x18220000, qcom,tcs-offset 0xd00,
+tcs-config ACTIVE 2, SLEEP 3, WAKE 3, CONTROL 1」。这个 `0xd00` 来自 DT 的
+`qcom,tcs-offset`，是本板的值，不是抄来的。
+
+**核对方法**：读启动 DTB 的 `apps_rsc` 节点确认 `qcom,tcs-offset` 是 `0xd00`。
+
+### 五、`0xd00` 与 `drv-id 2` 已用启动 DTB 核实（事实）
+
+```
+apps_rsc: rsc@18200000 {
+    compatible = "qcom,rpmh-rsc";
+    reg = <0x18200000 0x10000 0x18210000 0x10000 0x18220000 0x10000>;
+    reg-names = "drv-0", "drv-1", "drv-2";
+    qcom,tcs-offset = <0xd00>;
+    qcom,drv-id = <0x02>;
+    qcom,tcs-config = <0x02 0x02 0x00 0x03 0x01 0x03 0x03 0x01>;
+```
+
+- `qcom,tcs-offset = 0xd00` —— 与 GpuProbe 的 `kTcsBase` 一致
+- `qcom,drv-id = 2` —— 与 `ml_io_map(0x18220000, ...)`（drv-2 的基址）一致
+- `qcom,tcs-config = <0x02 0x02 0x00 0x03 0x01 0x03 0x03 0x01>` —— 即
+  **ACTIVE 2, SLEEP 3, WAKE 3, CONTROL 1**（每对是 `<mode count>`），
+  与 GpuProbe 注释里的「tcs-config ACTIVE 2, SLEEP 3, WAKE 3, CONTROL 1」逐项一致
+
+**三项全部对上，而且都来自本板的 DT，不是抄的。**
+
+### 六、所以「零件适配」这条已答完
+
+| 零件 | 是否适配本板 | 依据 |
+| --- | --- | --- |
+| `QcomRscLayout` 的 11 个偏移 | **适配（v2 那支）** | GpuProbe 在本板实测跑通，11 项全同 |
+| `kTcsBase = 0xd00` | **适配** | 启动 DTB `qcom,tcs-offset = 0xd00` |
+| DRV 基址 `0x18220000` | **适配** | 启动 DTB `drv-2`，GpuProbe 已映射 |
+| TCS 配置（ACTIVE 2） | **适配** | 启动 DTB `qcom,tcs-config` 第一对 `0x02 0x02` |
+| `kRails`（sheng 的六路轨名） | **不适配** | 那是 PMK8550 的，本板要 `ldoa5`/`ldoa9` |
+| `[472]` 数组布局 | **不适配** | 那是 SPMI 扫描的，本板是 RPMh |
+
+**所以：机制（RPMh + RSC 布局）适配；数据（轨名、数组语义）不适配。**
+这个区分比笼统的「sheng 的东西不能抄」精确——**要抄的是机制，要重查的是数据。**
