@@ -42,6 +42,7 @@
 typedef struct {
     uint32_t pipe_count;      /* pipes in this alternative setting */
     uint32_t in_count;        /* of those, how many are IN */
+    uint32_t out_count;       /* the rest; in_count + out_count must equal pipe_count */
 } alioth_usb_setting_summary;
 
 typedef struct {
@@ -78,6 +79,7 @@ static inline int alioth_usb_assign_setting(uint8_t *ids,
     if (setting->pipe_count > ALIOTH_USB_MAX_PIPES_PER_SETTING) return -1;
     if (setting->pipe_count && !ids) return -1;
     if (setting->in_count > setting->pipe_count) return -1;
+    if (setting->out_count > setting->pipe_count - setting->in_count) return -1;
     if (cursor->written + setting->pipe_count > cursor->limit) return -1;
     *used_in = 0;
     *used_out = 0;
@@ -98,6 +100,43 @@ static inline int alioth_usb_assign_setting(uint8_t *ids,
         const uint32_t number = is_in ? in_first + nin : out_first + nout;
         if (is_in) nin++; else nout++;
         ids[cursor->written++] = (uint8_t)(number | (is_in ? 0x80u : 0u));
+    }
+    *used_in = nin;
+    *used_out = nout;
+    return 0;
+}
+
+/* Assign a setting whose pipe directions are given one by one, in the order the interface
+ * reports them. This is what a real configuration needs: the Family's pipe order is the
+ * descriptor's, not IN-first, so a summary of counts cannot express it.
+ *
+ * `directions[i]` is 0 for OUT and 1 for IN, the same encoding IOUSBDevicePipe::getDirection
+ * returns. Same two-pass rule as above: nothing is written unless every number fits. */
+static inline int alioth_usb_assign_setting_directions(uint8_t *ids,
+                                                       alioth_usb_endpoint_cursor *cursor,
+                                                       uint32_t in_first, uint32_t out_first,
+                                                       const uint8_t *directions,
+                                                       uint32_t pipe_count,
+                                                       uint32_t *used_in, uint32_t *used_out)
+{
+    uint32_t i, nin = 0, nout = 0;
+    if (!cursor || !directions || !used_in || !used_out) return -1;
+    if (pipe_count > ALIOTH_USB_MAX_PIPES_PER_SETTING) return -1;
+    if (pipe_count && !ids) return -1;
+    if (cursor->written + pipe_count > cursor->limit) return -1;
+    *used_in = 0;
+    *used_out = 0;
+    for (i = 0; i < pipe_count; i++) {
+        const uint32_t number = directions[i] ? in_first + nin : out_first + nout;
+        if (directions[i] > 1) return -1;
+        if (directions[i]) nin++; else nout++;
+        if (number > 15 || number * 2 + (uint32_t)directions[i] >= cursor->limit) return -1;
+    }
+    nin = nout = 0;
+    for (i = 0; i < pipe_count; i++) {
+        const uint32_t number = directions[i] ? in_first + nin : out_first + nout;
+        if (directions[i]) nin++; else nout++;
+        ids[cursor->written++] = (uint8_t)(number | (directions[i] ? 0x80u : 0u));
     }
     *used_in = nin;
     *used_out = nout;

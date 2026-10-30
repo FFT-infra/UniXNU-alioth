@@ -18,6 +18,7 @@ static alioth_usb_setting_summary setting(uint32_t pipes, uint32_t ins)
     alioth_usb_setting_summary s;
     s.pipe_count = pipes;
     s.in_count = ins;
+    s.out_count = pipes - ins;
     return s;
 }
 
@@ -127,6 +128,56 @@ int main(void)
         const uint32_t before = c.written;
         assert(alioth_usb_assign_setting(ids, &c, 15, 15, &two_in, &ui, &uo) != 0);
         assert(c.written == before);
+    }
+
+    // A real configuration's pipe order is the descriptor's, not IN-first. The directions
+    // variant must number them by their own direction, and it must refuse a value that is
+    // neither 0 nor 1 rather than treating it as OUT.
+    {
+        uint8_t ids[ALIOTH_USB_ENDPOINT_COUNT];
+        alioth_usb_endpoint_cursor c;
+        uint32_t ui, uo;
+        const uint8_t order[3] = { 1, 0, 0 };   // IN, OUT, OUT
+        alioth_usb_cursor_init(&c, ALIOTH_USB_ENDPOINT_COUNT);
+        assert(alioth_usb_assign_setting_directions(ids, &c, 1, 1, order, 3, &ui, &uo) == 0);
+        assert(ui == 1 && uo == 2);
+        assert(ids[0] == 0x81);                  // the IN pipe takes IN 1
+        assert(ids[1] == 0x01 && ids[2] == 0x02); // the two OUT pipes take OUT 1 and 2
+        const uint8_t bad[2] = { 1, 2 };          // 2 is neither OUT nor IN
+        alioth_usb_cursor_init(&c, ALIOTH_USB_ENDPOINT_COUNT);
+        assert(alioth_usb_assign_setting_directions(ids, &c, 1, 1, bad, 2, &ui, &uo) != 0);
+        assert(c.written == 0);
+    }
+
+    // in_count + out_count must not exceed pipe_count; the summary is input, not a guess.
+    {
+        uint8_t ids[ALIOTH_USB_ENDPOINT_COUNT];
+        alioth_usb_endpoint_cursor c;
+        uint32_t ui, uo;
+        alioth_usb_setting_summary s;
+        s.pipe_count = 2; s.in_count = 1; s.out_count = 2;   // 3 > 2
+        alioth_usb_cursor_init(&c, ALIOTH_USB_ENDPOINT_COUNT);
+        assert(alioth_usb_assign_setting(ids, &c, 1, 1, &s, &ui, &uo) != 0);
+    }
+
+    // Alternatives APPEND: the ids array grows by each alternative's pipe count, and the same
+    // number appearing under two alternatives is intended, because only one is active at a time.
+    // Keeping the maximum instead of the sum would silently drop every alternative but the widest,
+    // and the Family indexes ids by the pipe it is building, so the later ones would read as unset.
+    {
+        uint8_t ids[ALIOTH_USB_ENDPOINT_COUNT];
+        alioth_usb_endpoint_cursor c;
+        uint32_t ui, uo;
+        const uint8_t a0[2] = { 1, 0 };          // alt0: IN 1, OUT 1
+        const uint8_t a1[4] = { 1, 0, 1, 0 };    // alt1: IN 1, OUT 1, IN 2, OUT 2
+        alioth_usb_cursor_init(&c, ALIOTH_USB_ENDPOINT_COUNT);
+        assert(alioth_usb_assign_setting_directions(ids, &c, 1, 1, a0, 2, &ui, &uo) == 0);
+        assert(c.written == 2);
+        assert(alioth_usb_assign_setting_directions(ids, &c, 1, 1, a1, 4, &ui, &uo) == 0);
+        assert(c.written == 6);                  // 2 + 4, not max(2,4)
+        assert(ids[0] == 0x81 && ids[1] == 0x01);
+        assert(ids[2] == 0x81 && ids[3] == 0x01);   // alt1 reuses IN 1 and OUT 1
+        assert(ids[4] == 0x82 && ids[5] == 0x02);   // and adds IN 2 and OUT 2
     }
 
     printf("alioth_usb_endpoint_host: all checks passed\n");

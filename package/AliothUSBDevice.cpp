@@ -7,6 +7,7 @@
 // fixed values and are filled in order.
 #include "IOUSBDeviceController.h"
 #include "AliothUsbEndpoint.h"
+#include "AliothUsbInterface.h"
 
 #define STUB_UNSUPPORTED kIOReturnUnsupported
 
@@ -98,8 +99,68 @@ UInt32 AliothUSBDevice::getConnectionSpeed() { return 1; }              // 1 = f
  * that enumerate far enough to look like progress. */
 IOReturn AliothUSBDevice::provideEndpointIDsForConfiguration(OSArray *interfaces, UInt8 *ids)
 {
-    (void)interfaces; (void)ids;
-    return STUB_UNSUPPORTED;
+    alioth_usb_endpoint_cursor cursor;
+    uint32_t index, interfaces_count;
+
+    if (!interfaces || !ids) return kIOReturnBadArgument;
+    interfaces_count = interfaces->getCount();
+    if (!interfaces_count) return kIOReturnBadArgument;
+    /* The ids array is indexed by physical endpoint, so its capacity is the controller's. */
+    alioth_usb_cursor_init(&cursor, ALIOTH_USB_ENDPOINT_COUNT);
+
+    for (index = 0; index < interfaces_count; index++) {
+        IOUSBDeviceInterface *interface = IOUSBDeviceInterface::fromObject(interfaces->getObject(index));
+        alioth_usb_endpoint_cursor interface_start = cursor;
+        int alternatives, alt;
+        uint32_t reserve_in = 0, reserve_out = 0;
+        if (!interface) return kIOReturnBadArgument;
+        alternatives = interface->getAlternateSettingCount();
+        if (alternatives <= 0 || alternatives > 256) return kIOReturnUnsupported;
+
+        /* Every alternative setting of one interface draws from the same starting numbers, and
+         * the interface then advances by the largest one used, so two alternatives never claim
+         * the same endpoint.
+         *
+         * The ids array accumulates across alternatives: each alternative's pipes each append an
+         * entry, so the count is the sum of all alternatives' pipe counts, not the maximum. That
+         * is what the Family expects -- it indexes ids by the pipe it is building, and the same
+         * number appearing under two alternatives is the point, since only one is active at a
+         * time. Apple's own driver and the working MSM8998 port both append with one running
+         * index; assigning into a per-alternative copy and keeping the maximum would drop every
+         * alternative but the widest. */
+        for (alt = 0; alt < alternatives; alt++) {
+            int pipes = interface->getPipeCountForAlternateSetting((UInt8)alt);
+            uint8_t directions[ALIOTH_USB_MAX_PIPES_PER_SETTING];
+            uint32_t used_in = 0, used_out = 0, p;
+            alioth_usb_endpoint_cursor probe = cursor;
+            if (pipes <= 0 || pipes > ALIOTH_USB_MAX_PIPES_PER_SETTING) return kIOReturnNoResources;
+            for (p = 0; p < (uint32_t)pipes; p++) {
+                IOUSBDevicePipe *pipe = interface->getPipeForAlternateSetting((int)p, (UInt8)alt);
+                int direction;
+                if (!pipe) return kIOReturnBadArgument;
+                direction = pipe->getDirection();
+                if (direction != 0 && direction != 1) return kIOReturnBadArgument;
+                directions[p] = (uint8_t)direction;
+            }
+            /* Assign into a copy first: if this alternative does not fit, the interface's
+             * earlier alternatives must not be left half-written. */
+            if (alioth_usb_assign_setting_directions(ids, &probe,
+                                                     interface_start.first_in, interface_start.first_out,
+                                                     directions, (uint32_t)pipes,
+                                                     &used_in, &used_out) != 0) {
+                return kIOReturnNoResources;
+            }
+            /* Append: this alternative's pipes go after the ones already written. */
+            cursor.written = probe.written;
+            if (used_in > reserve_in) reserve_in = used_in;
+            if (used_out > reserve_out) reserve_out = used_out;
+        }
+        cursor.first_in = interface_start.first_in;
+        cursor.first_out = interface_start.first_out;
+        alioth_usb_advance(&cursor, reserve_in, reserve_out);
+    }
+    setProperty("USBDeviceEndpointIDs", ids, cursor.written);
+    return kIOReturnSuccess;
 }
 /* Called when the host selects a configuration, before the endpoints are activated. Apple's own
  * DWC2 driver deactivates every enabled endpoint first and then restarts endpoint configuration;
