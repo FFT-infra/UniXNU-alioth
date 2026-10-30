@@ -606,3 +606,43 @@ Two candidates, and the next round should separate them:
 
 The second is the more likely one, because the PON's two bits read as released (mask has no
 power or volume-down bits) while the GPIO's reads as pressed.
+
+### bt3's full sequence: interrupts do arrive, and the GPIO bit never clears
+
+The B row across all 90 slots, run-length compressed:
+
+```
+ 39 slots   irq=0   rep=1   mask=4     idle, before any press
+  1 slot    irq=3   rep=4   mask=c
+  1 slot    irq=4   rep=5   mask=4
+  1 slot    irq=6   rep=7   mask=4
+  1 slot    irq=11  rep=12  mask=c
+  1 slot    irq=21  rep=22  mask=c
+  1 slot    irq=31  rep=31  mask=c
+ 21 slots   irq=38  rep=37  mask=4
+ 24 slots   irq=42  rep=41  mask=4
+```
+
+Two things this settles and one it does not.
+
+**Interrupts do arrive.** `irq` climbs 0 to 42 and `rep` 1 to 41, so the SPMI path works:
+`armPeripheral` took effect and the arbiter forwards. The earlier statement that the interrupt
+path is unimplemented is wrong - it was based on a single early snapshot where `irq` was still 0.
+
+**The GPIO bit never clears.** `mask` takes only two values in the whole round, `4` and `c`:
+
+| value | bits |
+| --- | --- |
+| `0x4` | volume up (GPIO 6) |
+| `0xc` | volume up **and** volume down (PON resin) |
+
+It never reads `0` (nothing pressed) or `8` (volume down alone). Bit 2 is therefore set in every
+slot - the GPIO is read as held down continuously - and the only real transition, `4` to `c`,
+comes from the PON's volume-down bit. That is the shape of reading a register that is not the
+pad level, not the shape of a key that works.
+
+**So the interrupt path works and the GPIO level does not.** Those are separate faults, and the
+first one being fixed made the second visible: with `irq=0` nothing could distinguish them.
+
+bt4 carries the `0xc5` correction. Its test is whether `mask` ever shows `0` or `8`; a round
+that still shows only `4` and `c` means the address was not the fault.
