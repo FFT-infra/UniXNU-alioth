@@ -55,6 +55,13 @@
 #include <sys/systm.h>
 #include <vm/vm_kern.h>
 
+/*
+ * The command database lookup, reused from GpuPowerBoard.h rather than reimplemented: it is a
+ * pure-C static inline (no class, no namespace) and GpuProbe already proved it on this board --
+ * it resolves gfx.lvl, mx.lvl, cx.lvl, gmxc.lvl, SH0, MC0, ACV and CN0 every boot.
+ */
+#include "GpuPowerBoard.h"
+
 extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 extern void thread_terminate(thread_t thread);
 /*
@@ -1010,6 +1017,85 @@ step_dm_core(void)
 	return true;
 }
 
+/*
+ * Step 13: what the command database says about the two rails the vendor turns on.
+ *
+ * This answers a narrower question than "is the rail on". APSS cannot answer that: rpmh-regulator.c
+ * get_voltage reads vreg->req.reg[], which is the kernel's own cache of what it asked for
+ * (:1021-1030, :842-843), and is_enabled reads the same cache (:891). cmd_db_read_aux_data reads
+ * the ARC level mapping, a constant table loaded once at init (:1277-1310). And PM8150 exposes no
+ * LDO on SPMI at all -- its spmi-pmic node has pon, temp-alarm, clkdiv, sdam, gpio, rtc, adc5 and
+ * adc-tm5, and no regulator -- so there is no SPMI back door either.
+ *
+ * What IS answerable, and is what this step asks:
+ *   1. Does the command database know ldoa5 and ldoa9? Their addresses are the only way to vote
+ *      them, and a missing entry means RPMh does not know these rails by those names.
+ *   2. What does their aux data hold? For a VRM regulator the aux data is the ARC level mapping;
+ *      its length says how many levels exist. This is the check that a voltage value written
+ *      later is one the table actually has -- the one guard against writing a bad level.
+ *
+ * Names from the board's own DT: kona-regulators.dtsi gives qcom,resource-name "ldoa5" and
+ * "ldoa9" (and the vendor driver uses that string directly, rpmh-regulator.c:1889 -- the mainline
+ * driver would instead need qcom,pmic-id, which this board's DTB does not have at all).
+ *
+ * Read only. No vote is made here.
+ */
+static bool
+step_rails(void)
+{
+	static uint8_t db[GPB_CMD_DB_BYTES] __attribute__((aligned(8)));
+	static const char *const rails[] = { "ldoa5", "ldoa9" };
+	struct gpb_cmd_db_entry e;
+	vm_offset_t va;
+
+	announce("ask the command database about ldoa5 and ldoa9, the two rails the vendor turns on before it "
+	    "touches dm_core; APSS cannot read whether they are on, but it can read whether RPMh knows them");
+
+	va = ml_io_map(GPB_CMD_DB_BASE, GPB_CMD_DB_BYTES);
+	if (!va) {
+		line("no memory to map the command database at %#llx", (unsigned long long)GPB_CMD_DB_BASE);
+		return false;
+	}
+	/*
+	 * Copy with 32-bit reads: the database is mapped as device memory and byte accesses to it are
+	 * not what GpuProbe uses either (GpuProbe.cpp:198-202).
+	 */
+	for (uint32_t i = 0; i < GPB_CMD_DB_BYTES / 4; i++) {
+		uint32_t v = ((volatile uint32_t *)va)[i];
+
+		__builtin_memcpy(db + 4 * i, &v, 4);
+	}
+	line("the command database at %#llx: version %#x magic %#x (expected magic %#x)",
+	    (unsigned long long)GPB_CMD_DB_BASE, gpb_le32(db), gpb_le32(db + 4), GPB_CMD_DB_MAGIC);
+
+	for (unsigned i = 0; i < sizeof(rails) / sizeof(rails[0]); i++) {
+		__builtin_memset(&e, 0, sizeof e);
+		if (gpb_cmd_db_find(db, sizeof db, rails[i], &e) != 0) {
+			line("%s: NOT IN THE COMMAND DATABASE -- RPMh does not know this rail by that name", rails[i]);
+			continue;
+		}
+		/*
+		 * The aux length is what says how many levels the rail's table has. A zero length means
+		 * the entry exists but carries no mapping, which is the case a vote would have to be
+		 * checked against before writing any level.
+		 */
+		line("%s: address %#x, aux %u bytes (%u levels of 4)", rails[i], e.address, e.aux_bytes,
+		    e.aux_bytes / 4);
+		if (e.aux_bytes && e.aux) {
+			char row[96];
+			unsigned n = 0;
+
+			n += snprintf(row + n, sizeof row - n, "%s: aux", rails[i]);
+			for (unsigned k = 0; k + 3 < e.aux_bytes && n < sizeof row - 8; k += 4) {
+				n += snprintf(row + n, sizeof row - n, " %u", gpb_le32(e.aux + k));
+			}
+			line("%s", row);
+		}
+	}
+	line("step 13 is read only; no rail has been voted");
+	return true;
+}
+
 /* ---- what runs ------------------------------------------------------------------------------ */
 
 static bool (*const steps[])(void) = {
@@ -1025,6 +1111,7 @@ static bool (*const steps[])(void) = {
 	step_endpoint,
 	step_train,
 	step_dm_core,
+	step_rails,
 	step_elbi,
 	step_dbi,
 };
