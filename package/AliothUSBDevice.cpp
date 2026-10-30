@@ -6,6 +6,7 @@
 // per slot. This file implements only what A-3 needs so far; the other pure slots still return
 // fixed values and are filled in order.
 #include "IOUSBDeviceController.h"
+#include "AliothUsbEndpoint.h"
 
 #define STUB_UNSUPPORTED kIOReturnUnsupported
 
@@ -84,8 +85,31 @@ void AliothUSBDevice::handleAbortEndpoint(int) {}
 void AliothUSBDevice::handleSetAddressPreStatusPhase(int) {}
 void AliothUSBDevice::handleSetAddressPostStatusPhase(int) {}
 UInt32 AliothUSBDevice::getConnectionSpeed() { return 1; }              // 1 = full speed, lowest
-IOReturn AliothUSBDevice::provideEndpointIDsForConfiguration(OSArray *, UInt8 *) { return STUB_UNSUPPORTED; }
-void AliothUSBDevice::prepareConfiguration(OSArray *) {}
+/* The Family hands the selected configuration's interface list and an `ids` array indexed by
+ * physical endpoint. Every pipe gets a number here, and the Family builds its pipes from those
+ * numbers, so this is the one place a wrong count turns into "the host cannot open the
+ * configuration" much later. The arithmetic lives in AliothUsbEndpoint.h with a host test
+ * (package/tests/alioth_usb_endpoint_host.c); this method only walks the OSArray.
+ *
+ * Not implemented yet: the pipe objects carry the per-pipe direction and the per-alternative
+ * grouping, and IOUSBDeviceInterface's accessors are declared in the Family's private headers
+ * that this port has not reconstructed. Until they are, the method reports the configuration as
+ * unsupported rather than guessing an order: a guessed order produces wrong endpoint numbers
+ * that enumerate far enough to look like progress. */
+IOReturn AliothUSBDevice::provideEndpointIDsForConfiguration(OSArray *interfaces, UInt8 *ids)
+{
+    (void)interfaces; (void)ids;
+    return STUB_UNSUPPORTED;
+}
+/* Called when the host selects a configuration, before the endpoints are activated. Apple's own
+ * DWC2 driver deactivates every enabled endpoint first and then restarts endpoint configuration;
+ * that needs the controller, which qcom-usb-debug owns until A-5. Reporting nothing here is
+ * correct while the driver has no controller: the Family still holds the configuration, and
+ * activateEndpoint (also stubbed) is what would have used it. */
+void AliothUSBDevice::prepareConfiguration(OSArray *interfaces)
+{
+    (void)interfaces;
+}
 IOReturn AliothUSBDevice::activateEndpoint(int, int, int, int, tIOUSBDeviceInterfacePipeProperty) { return STUB_UNSUPPORTED; }
 void AliothUSBDevice::deactivateEndpoint(int) {}
 bool AliothUSBDevice::isEndpointStalled(int) { return false; }
