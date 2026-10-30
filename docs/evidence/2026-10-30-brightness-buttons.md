@@ -455,3 +455,51 @@ success is the part that is still unexplained and should not be generalised from
 none of them depended on a done. The blink working is therefore independent of the timeout
 behaviour - the packets were launched and the panel acted on them, which is what the screen
 showed.
+
+## 2026-10-31 the button readings were not evidence
+
+btn2, btn4 and btn6 all printed the same B row:
+
+```
+B st=3 irq=0 rep=1 mask=4 apid=13/26 off=65536 pdc=20000 err=131072 spur=512
+```
+
+I read that as "the driver armed, and a press reached the HID device", and reported it as
+verified on hardware three times. It is not. Two faults, both now fixed in the driver.
+
+### `irq=0` means the thread never polled
+
+`native_buttons_stats[1]` counts interrupts, and it is zero in every round - no interrupt has
+ever arrived. The thread's wait was:
+
+```c
+assert_wait((event_t)&gEvents, THREAD_UNINT);   // no timeout
+if (gEvents != seen) clear_wait(current_thread(), THREAD_AWAKENED);
+else thread_block(THREAD_CONTINUE_NULL);        // nothing wakes it
+```
+
+With `gEvents` never changing, `thread_block` does not return. **The thread reads the levels
+once, blocks forever, and `rep=1` is that single sample - not a button being reported.** The
+three "reproductions" reproduced one constant, and `mask=4` may have been the volume-up level
+at boot rather than anyone pressing it.
+
+`assert_wait_timeout(..., 50 ms)` makes the same thread a poller when the line is dead, which
+is the reference board's own arrangement.
+
+### `err=131072` was the PDC version, not an error
+
+`BootLog.c:400-402` prints `stats[8]` as `err`, and `setup()` copied the PDC version register
+into `stats[7]` **and** `stats[8]`. So `err=131072` is `0x20000`, the same number as the `pdc`
+column. The claim that it showed the GPIO entry's owner EE was read out of a field that never
+held it. `stats[8]` is now `-1` until a step fails.
+
+`findApid` records every match's APID and owner EE now, rather than only the first, so the next
+round can say what the GPIO's entry is instead of inferring it from the PON's.
+
+### What this means for the record
+
+Buttons are **not** verified. The driver is in the tree and the hardware facts (PPID `0x008` /
+`0x0c6`, arbiter v5 layout, PON RT_STS bits, GPIO active-low) stand, but no press has been
+shown to reach the HID device, and the interrupt path has never fired. `reference.md:156`
+records this board as "cannot - buttons not implemented"; that is now the wrong fault, and the
+right one is "implemented, mechanism unverified".
