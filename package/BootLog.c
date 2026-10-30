@@ -202,17 +202,19 @@ extern struct boot_log_msgbuf *msgbufp;
  * was gone from the only copy on disk.
  *
  * So: the working snapshot stays at LogMsgFirst and keeps rotating content as before, and a
- * second snapshot is written ONCE at round LogFrozenAt into LogFrozenFirst and never touched
- * again. At 2 s per round round 60 is about t=120 s, which is inside the first ring pass, so
- * that frozen copy holds t=0..120 s: the whole boot-time probe window. Its block number goes
- * into the header (frozen_first, 0 = not taken) so a reader finds it without guessing.
+ * second snapshot is written ONCE at uptime LogFrozenAtS into LogFrozenFirst and never touched
+ * again. The trigger is seconds, not rounds: a round is 2 s of sleep plus a UFS write and the
+ * occasional GPT check or diagnostic export, so rounds and seconds drift apart. 100 s leaves
+ * 32 s of margin under the ~132 s ring, so the frozen copy holds t=0..100 s: the whole
+ * boot-time probe window. Its block number goes into the header (frozen_first, 0 = not taken)
+ * so a reader finds it without guessing; frozen_round records which round actually took it.
  *
  * Cost: LogFrozenBlocks = 32 blocks = 128 KiB, the same as the working copy. LogSlotFirst moves
  * from 33 to 65, and slot_count from 509 to 507 in the 8192-block window. Blocks 33..64 were
  * unused tail before, so no other consumer moves.
  */
 enum {LogBlock = 4096, LogMsgFirst = 1, LogMsgBlocks = 32,
-      LogFrozenFirst = 33, LogFrozenBlocks = 32, LogFrozenAt = 60,
+      LogFrozenFirst = 33, LogFrozenBlocks = 32, LogFrozenAtS = 100,
       LogSlotFirst = LogFrozenFirst + LogFrozenBlocks,          /* 33 + 32 = 65 */
       LogSlotBlocks = 16, LogPeriodMs = 2000, LogMaxErrors = 3,
       LogExportStage = 64};   // export bytes staged per write: 256 KiB
@@ -231,7 +233,7 @@ struct boot_log_header {
   // version 4: the diagnostic file export (BootDiagExport.c) at block diag_first of the export region, diag_bytes long (0 = none)
   uint32_t diag_first, diag_bytes;
   // version 5: the frozen early-boot msgbuf snapshot at block frozen_first (LogFrozenBlocks long), taken once at
-  // round LogFrozenAt and never rewritten; 0 = not taken yet. msg_first still names the live working snapshot.
+  // uptime LogFrozenAtS and never rewritten; 0 = not taken yet. msg_first still names the live working snapshot.
   uint32_t frozen_first, frozen_round;
 };
 // Writer state for the board page: 0 off, 1 waiting for the window, 2 writing, 3 stopped after errors, 4 stopped (GPT changed).
@@ -1227,12 +1229,18 @@ static void writer(void *arg, wait_result_t result) {
     log_phase = 3;
     ok &= native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
     /* Take the frozen early-boot snapshot exactly once, while the boot-time IOLog is still inside
-     * the kernel ring. copy_msgbuf always returns the newest 131072 bytes, so at round LogFrozenAt
-     * that copy covers about t=0..120 s. Writing it to LogFrozenFirst and never touching that block
-     * again is what survives a long run; rotating the working block cannot, because the bytes that
-     * fall out of the kernel ring are gone. frozen_first is published only after the block landed,
-     * so a reader never sees a block number for a write that failed. */
-    if (!h.frozen_first && h.slots_written >= LogFrozenAt) {
+     * the kernel ring. copy_msgbuf always returns the newest 131072 bytes, so a copy taken at
+     * t=LogFrozenAtS covers t=0..LogFrozenAtS. Writing it to LogFrozenFirst and never touching that
+     * block again is what survives a long run; rotating the working block cannot, because the bytes
+     * that fall out of the kernel ring are gone.
+     *
+     * Trigger on the writer's own uptime, not on a round count. A round is 2 s of sleep plus a UFS
+     * write, a GPT check every 30 rounds and any diagnostic export, so rounds and seconds drift apart:
+     * at round 60 a slow run could already be past the ~132 s ring and the snapshot would begin
+     * mid-boot, which reads as "the freeze did not work". LogFrozenAtS = 100 leaves 32 s of margin
+     * and frozen_round still records which round actually took it. frozen_first is published only
+     * after the block landed, so a reader never sees a block number for a write that failed. */
+    if (!h.frozen_first && now >= LogFrozenAtS) {
       log_phase = 11;
       memset(boot_log_buffer, 0, LogFrozenBlocks * LogBlock);
       (void)copy_msgbuf(boot_log_buffer);

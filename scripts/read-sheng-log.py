@@ -80,6 +80,10 @@ def header_fields(d):
     (export_first, export_blocks, export_bytes, export_generation) = struct.unpack_from('<4I', d, 120)
     export_below, = struct.unpack_from('<I', d, 136)
     diag_first, diag_bytes = struct.unpack_from('<2I', d, 140)
+    # version 5 adds the frozen early-boot snapshot. Older images stop before these bytes, so read
+    # them only when the header says it carries them, and treat a zero block as "not taken".
+    frozen_first, frozen_round = (struct.unpack_from('<2I', d, 148)
+                                  if header_bytes >= 156 else (0, 0))
     return {
         'magic': d[0:8].decode('latin1'),
         'version': version, 'header_bytes': header_bytes,
@@ -92,6 +96,7 @@ def header_fields(d):
         'export_first': export_first, 'export_blocks': export_blocks,
         'export_bytes': export_bytes, 'export_generation': export_generation,
         'export_below': export_below, 'diag_first': diag_first, 'diag_bytes': diag_bytes,
+        'frozen_first': frozen_first, 'frozen_round': frozen_round,
     }
 
 
@@ -148,13 +153,26 @@ def main():
         for key in ('magic version header_bytes boot_id first_lba window_blocks msg_first msg_blocks '
                     'msg_bytes slot_first slot_blocks slot_count slots_written uptime_s rounds '
                     'write_errors gpt_open gpt_last state tag export_first export_blocks export_bytes '
-                    'export_generation export_below diag_first diag_bytes').split():
+                    'export_generation export_below diag_first diag_bytes '
+                    'frozen_first frozen_round').split():
             value = h[key]
             f.write('%-18s %s\n' % (key, ('0x%x' % value) if key in ('boot_id', 'first_lba') else value))
 
     with open(os.path.join(dest, 'msgbuf.txt'), 'w') as f:
         off = h['msg_first'] * BLOCK
         f.write(text(d[off:off + h['msg_blocks'] * BLOCK]))
+
+    # version 5: the frozen early-boot snapshot, taken once at uptime frozen_round's round and never
+    # rewritten. It is the copy that still holds the boot-time IOLog after a long run, so it gets its
+    # own file: comparing its first timestamp with msgbuf.txt's is the check that the freeze worked.
+    # An older image, or one whose run ended before the freeze, has frozen_first == 0; write an
+    # explicit note rather than an empty file so a missing freeze is visible and not mistaken for one.
+    with open(os.path.join(dest, 'frozen.txt'), 'w') as f:
+        if h['frozen_first']:
+            off = h['frozen_first'] * BLOCK
+            f.write(text(d[off:off + h['msg_blocks'] * BLOCK]))
+        else:
+            f.write('# no frozen snapshot: header version %d, frozen_first 0 (not taken)\n' % h['version'])
 
     slots = []
     for i in range(min(h['slots_written'], h['slot_count'])):
