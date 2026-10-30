@@ -121,6 +121,9 @@ extern volatile uint32_t native_swipe_stats[16] __attribute__((weak_import));
 extern volatile int32_t native_touch_extent[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_method_stats[20][4] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_vm_phase_us[2][8] __attribute__((weak_import));
+/* Per map kind: count, total us, total spans (NativeAdrenoVm.cpp:350-353, :400-404). kind 0 is driver memory, 1 an import
+ * mapped exclusive, 2 an import that needed the full alias check. The porting guide asks for this row next to [vm map]. */
+extern volatile uint64_t native_adreno_vm_kind_us[5][3] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_map_fail[7][2] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_pool_stats[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_wc_audit[6] __attribute__((weak_import));
@@ -558,6 +561,20 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
                (unsigned long long)p[4], k ? "retire" : "-", (unsigned long long)p[5], (unsigned long long)p[6], (unsigned long long)(p[7] >> 20));
       at = put(out, at, cap, row, sizeof row);
     }
+  }
+  if (&native_adreno_vm_kind_us) {
+    char row[170];
+    static const char *const kinds[3] = {"owned", "import-exclusive", "import-checked"};
+    size_t used = (size_t)snprintf(row, sizeof row, "[vm kinds]");
+    for (unsigned k = 0; k < 3 && used < sizeof row; ++k) {
+      const volatile uint64_t *p = native_adreno_vm_kind_us[k];
+      if (!p[0]) continue;
+      /* A mean is what a comparison between two builds reads; the raw total hides a small kind behind a large one. */
+      const uint64_t mean_us = p[0] ? p[1] / p[0] : 0;
+      used += (size_t)snprintf(row + used, sizeof row - used, " %s n=%llu mean=%lluus spans=%llu", kinds[k],
+                               (unsigned long long)p[0], (unsigned long long)mean_us, (unsigned long long)p[2]);
+    }
+    at = put(out, at, cap, row, sizeof row);
   }
   if (&native_adreno_pool_stats) {
     char row[200];
