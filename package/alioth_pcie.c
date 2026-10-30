@@ -302,6 +302,41 @@ map_all(void)
 #define DWC_CORE_PRESET         0x55555555      /* PCIE_GEN3_PRESET_DEFAULT, pci-msm.c:42 */
 #define DWC_TLP_RD_SIZE         0x5             /* PCIE_TLP_RD_SIZE, pci-msm.c:198 */
 
+/* RPMh, from this board's DT and the vendor regulator driver. The RSC layout is v2 on this
+ * board and GpuProbe proved every offset of it here (its rpmhVoteDdr runs each boot). */
+#define RSC_DRV2_BASE           0x18220000      /* DT apps_rsc reg-names drv-2 */
+#define RSC_TCS_OFFSET          0xd00           /* DT qcom,tcs-offset */
+#define RSC_TCS_STRIDE          672             /* v2 layout, QcomRpmh.c:56 */
+#define RSC_CMD_STRIDE          20              /* v2 layout */
+#define RSC_DRV_IRQ_STATUS      0x04
+#define RSC_DRV_IRQ_ENABLE      0x00
+#define RSC_DRV_IRQ_CLEAR       0x08
+#define RSC_DRV_CONFIG          0x0c            /* DRV_PRNT_CHLD_CONFIG */
+#define RSC_TCS_CONTROL         0x14            /* v2 */
+#define RSC_TCS_STATUS          0x18
+#define RSC_TCS_CMD_ENABLE      0x1c            /* v2 */
+#define RSC_CMD_MSGID           0x30
+#define RSC_CMD_ADDR            0x34
+#define RSC_CMD_DATA            0x38
+#define RSC_CMD_STATUS          0x3c
+#define RSC_CONTROL_AMC_ON      (1u << 16)
+#define RSC_CONTROL_TRIGGER     (1u << 24)
+#define RSC_CMD_MSGID_WRITE_RESPONSE (8u | (1u << 8) | (1u << 16))
+
+/* The two rails the vendor turns on before it touches dm_core (pci-msm.c:930-935 required,
+ * kona-pcie.dtsi:47-48). Both are VRM (qcom,rpmh-vrm-regulator, pmic5-ldo), so their registers
+ * are voltage/enable/mode at +0/+4/+8 (rpmh-regulator.c:87-99), NOT an ARC level index --
+ * rpmh-regulator.c:1926-1928 only loads the aux level mapping for ARC. */
+#define RAIL_LDOA5_ADDR         0x41800
+#define RAIL_LDOA9_ADDR         0x41b00
+#define RAIL_VRM_VOLTAGE        0               /* +0, millivolts (rpmh-regulator.c:986) */
+#define RAIL_VRM_ENABLE         4               /* +4 */
+#define RAIL_VRM_MODE           8               /* +8 */
+#define RAIL_LDOA5_MV           880             /* DT pm8150_l5, min = max = 880000 uV */
+#define RAIL_LDOA9_MV           1200            /* DT pm8150_l9, min = max = 1200000 uV */
+#define RAIL_ENABLE_ON          1
+#define RAIL_MODE_PMIC5_LDO_HPM 7               /* rpmh-regulator.c:281; NOT the enum HPM = 4 */
+
 #define PHY_STATUS              0x814           /* dt: qcom,phy-status-offset; bit 6: ready */
 #define PHY_POWER_DOWN          0x840           /* dt: qcom,phy-power-down-offset */
 
@@ -1106,6 +1141,155 @@ step_rails(void)
 	return true;
 }
 
+/*
+ * Step 14: turn ldoa5 on through RPMh -- the first write this file makes to the PMIC.
+ *
+ * Gated twice, because this is the first write to a power rail and a wrong value is not a
+ * failed experiment, it is damaged hardware:
+ *   pcie_rail=1  print the exact command sequence and make no write  (dry run)
+ *   pcie_rail=2  make the writes
+ * With no pcie_rail argument, step 14 does nothing at all.
+ *
+ * Why ldoa5 and not ldoa9 first: 0.9 V is the lower of the two, and the DT lists them as
+ * separate rails (vreg-0p9 = pm8150_l5, vreg-1p8 = pm8150_l9), so turning one on is the
+ * smallest experiment that can change the DWC window's reachability.
+ *
+ * The three values, each traced to the offset it is actually written to rather than to a
+ * name that sounds right:
+ *   +0  voltage  880 mV   DT pm8150_l5 min = max = 880000 uV; rpmh-regulator.c:986 divides by
+ *                         1000, so the register takes millivolts
+ *   +4  enable   1        RPMH_REGULATOR_REG_VRM_ENABLE, index 1 (rpmh-regulator.c:87-99)
+ *   +8  mode     7        RPMH_REGULATOR_MODE_PMIC5_LDO_HPM (rpmh-regulator.c:281). This is
+ *                         the pmic_mode FIELD, not the enum RPMH_REGULATOR_MODE_HPM which is 4;
+ *                         set_mode_index writes the field (rpmh-regulator.c:1049-1050)
+ *
+ * These rails are VRM, not ARC (qcom,rpmh-vrm-regulator, pmic5-ldo), so rpmh-regulator.c
+ * never loads an aux level mapping for them (:1926-1928) -- their aux word is not a level
+ * table and must not be used as one.
+ *
+ * The RSC sequence follows GpuProbe's rpmhVoteDdr, which runs on this board every boot: the
+ * v2 register offsets, DRV 2 at 0x18220000, TCS offset 0xd00, one idle TCS, IRQ enable, the
+ * commands, cmd_enable, active mode then trigger, then wait for the completion bit.
+ */
+static bool
+step_rail_vote(void)
+{
+	uint32_t mode = 0, config, tcs_count, per_tcs, id, polls, status;
+	volatile uint32_t *drv;
+	struct {
+		uint32_t addr, data;
+		const char *what;
+	} cmds[3];
+
+	PE_parse_boot_argn("pcie_rail", &mode, sizeof(mode));
+	if (mode == 0) {
+		return true;            /* not asked for: nothing happens, nothing is printed */
+	}
+
+	cmds[0].addr = RAIL_LDOA5_ADDR + RAIL_VRM_VOLTAGE;
+	cmds[0].data = RAIL_LDOA5_MV;
+	cmds[0].what = "voltage 880 mV";
+	cmds[1].addr = RAIL_LDOA5_ADDR + RAIL_VRM_ENABLE;
+	cmds[1].data = RAIL_ENABLE_ON;
+	cmds[1].what = "enable 1";
+	cmds[2].addr = RAIL_LDOA5_ADDR + RAIL_VRM_MODE;
+	cmds[2].data = RAIL_MODE_PMIC5_LDO_HPM;
+	cmds[2].what = "mode 7 (pmic5-ldo HPM)";
+
+	announce("the first write this file makes to a power rail: ldoa5 (pm8150_l5, 0.9 V) through RPMh");
+	/*
+	 * Always print the sequence, in both modes. A dry run whose output has to be trusted from
+	 * memory is not a check; this is the line a person reads before the write is allowed.
+	 */
+	for (unsigned i = 0; i < 3; i++) {
+		line("command %u: address %#x, data %u (%s)", i + 1, cmds[i].addr, cmds[i].data, cmds[i].what);
+	}
+	if (mode != 2) {
+		line("pcie_rail=%u: dry run, no write made; pcie_rail=2 makes these three", mode);
+		return true;
+	}
+
+	drv = (volatile uint32_t *)(uintptr_t)ml_io_map(RSC_DRV2_BASE, 0x10000);
+	if (!drv) {
+		line("no memory to map the RSC DRV 2 at %#x; no vote", RSC_DRV2_BASE);
+		return false;
+	}
+	config = drv[RSC_DRV_CONFIG / 4];
+	tcs_count = (config >> 12) & 0x3f;
+	per_tcs = (config >> 27) & 0x1f;
+	line("the RSC DRV 2 config reads %#x: %u TCS, %u commands each", config, tcs_count, per_tcs);
+	if (tcs_count < 2 || per_tcs < 3) {
+		line("the DRV has too few TCS or command slots for this request; no vote");
+		return false;
+	}
+
+	/* The TCS to use is the first one whose status reads non-zero (idle), as GpuProbe does. */
+	for (id = 0; id < 2; id++) {
+		if (drv[(RSC_TCS_OFFSET + RSC_TCS_STRIDE * id + RSC_TCS_STATUS) / 4]) {
+			break;
+		}
+	}
+	if (id == 2) {
+		line("no idle TCS among the first two; no vote");
+		return false;
+	}
+	line("using TCS %u (status %#x)", id,
+	    drv[(RSC_TCS_OFFSET + RSC_TCS_STRIDE * id + RSC_TCS_STATUS) / 4]);
+
+#define RSC_W(off, val) do { drv[(off) / 4] = (val); __asm__ volatile("dsb sy" ::: "memory"); } while (0)
+#define TCS(reg) (RSC_TCS_OFFSET + RSC_TCS_STRIDE * id + (reg))
+
+	RSC_W(TCS(RSC_TCS_CMD_ENABLE), 0);
+	RSC_W(RSC_DRV_IRQ_ENABLE, drv[RSC_DRV_IRQ_ENABLE / 4] | (1u << id));
+	for (unsigned i = 0; i < 3; i++) {
+		const uint32_t cmd = TCS(RSC_CMD_MSGID) + RSC_CMD_STRIDE * i;
+
+		RSC_W(cmd, RSC_CMD_MSGID_WRITE_RESPONSE);
+		RSC_W(cmd + (RSC_CMD_ADDR - RSC_CMD_MSGID), cmds[i].addr);
+		RSC_W(cmd + (RSC_CMD_DATA - RSC_CMD_MSGID), cmds[i].data);
+	}
+	RSC_W(TCS(RSC_TCS_CMD_ENABLE), (1u << 3) - 1u);
+	{
+		uint32_t control = drv[TCS(RSC_TCS_CONTROL) / 4];
+
+		control &= ~RSC_CONTROL_TRIGGER; RSC_W(TCS(RSC_TCS_CONTROL), control);
+		control &= ~RSC_CONTROL_AMC_ON;  RSC_W(TCS(RSC_TCS_CONTROL), control);
+		RSC_W(TCS(RSC_TCS_CONTROL), RSC_CONTROL_AMC_ON);
+		RSC_W(TCS(RSC_TCS_CONTROL), RSC_CONTROL_AMC_ON | RSC_CONTROL_TRIGGER);
+	}
+	for (polls = 0; polls < 2000; polls++) {
+		if (drv[RSC_DRV_IRQ_STATUS / 4] & (1u << id)) {
+			break;
+		}
+		delay_for_interval(5, NSEC_PER_USEC);   /* 5 microseconds, the vendor's poll interval */
+	}
+	status = drv[(TCS(RSC_CMD_STATUS)) / 4];
+	RSC_W(RSC_DRV_IRQ_CLEAR, 1u << id);
+	RSC_W(TCS(RSC_TCS_CMD_ENABLE), 0);
+	RSC_W(RSC_DRV_IRQ_ENABLE, drv[RSC_DRV_IRQ_ENABLE / 4] & ~(1u << id));
+#undef TCS
+#undef RSC_W
+
+	line("the vote %s after %u polls; command status %#x",
+	    (drv[RSC_DRV_IRQ_STATUS / 4] & (1u << id)) || polls < 2000 ? "completed" : "DID NOT COMPLETE",
+	    polls, status);
+
+	/*
+	 * The criterion. This file has never made a dm_core access that returned, in any state it
+	 * could produce. If this one returns, the rail was the reason -- and if it hangs, the rail
+	 * is not, because after this vote it is certainly on.
+	 */
+	announce("read the DWC window, which is the whole point of the vote");
+	{
+		uint32_t v = get(6, "dwc window after the rail vote", DWC_GEN3_GEN2_CTRL);
+
+		line("the DWC window returned %#x (%s)", v,
+		    v == 0xffffffffu ? "all ones -- the bus answered with no data, so the rail was not it"
+		                      : "a value -- the window answered, so the rail WAS the reason");
+	}
+	return true;
+}
+
 /* ---- what runs ------------------------------------------------------------------------------ */
 
 static bool (*const steps[])(void) = {
@@ -1120,7 +1304,8 @@ static bool (*const steps[])(void) = {
 	step_parf_init,
 	step_endpoint,
 	step_train,
-	step_rails,      /* must run BEFORE step_dm_core: that one hangs, and a hang takes the rest */
+	step_rails,
+	step_rail_vote,  /* gated by pcie_rail; no argument, no write */
 	step_dm_core,
 	step_elbi,
 	step_dbi,
