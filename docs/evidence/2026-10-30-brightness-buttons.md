@@ -712,10 +712,24 @@ stays at 1 both when the thread is blocked and when it polls a constant level. I
 answer "is the thread polling", which it cannot. The `pdc` loop counter was added correctly -
 the fault was reading the old counter as if it answered the new question.
 
-The pattern to check before trusting any reading: **does this value change when the thing I am
-asking about changes, and only then?** `stats[7] = 3` was a literal, so it never could. `rep`
+The pattern to check before trusting any reading: **in what circumstances does this value
+change, and is that circumstance the thing I want to judge?** The weaker form matters - "and
+only then" is too strong, since `irq` moves both when an interrupt arrives and when one is
+cleared, and both are the same event seen twice. What identifies the fault is that the
+circumstance and the question are different: `rep` moves when the level changes, and the
+question was whether the thread runs. `stats[7] = 3` was a literal, so it never could. `rep`
 changes for a different reason than the one I was testing. `tail -1` is a fixed line.
 
 Three faults of this shape were caught by other sessions before I saw them (`stats[7]`, `err`,
 `tail -1`); four I found by adding a counter that could fail. The counter is the cheaper habit:
 it turns "what does this mean" into "does this move".
+
+### bt5's press window has to outlast a sampling slot
+
+`mask` is a snapshot taken once per log slot, and a slot is about 2 s. bt3's press was visible
+because it lasted roughly 40 s (slots 39-44). A press of about a second can fall entirely
+between two slots and be missed.
+
+So bt5 asks for **4-5 seconds held, 2 seconds between presses**, which puts each press across
+at least two slots, and the criterion is "at least one slot shows the value", not "the value
+appears exactly once".
