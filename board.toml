@@ -19,6 +19,40 @@ kit = "alioth"
 # llvm, and its output is never archived by the generic pipeline anyway.
 include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "ShengUfs", "ShengHidInput", "VirtioMmioBlock", "RamBlock", "GopFramebuffer", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState", "QcomXnuUsbDebug"]
 
+[ipsw]
+# The donor image, described by the board instead of only inherited from the OS profile. The
+# profile profiles/os/ipados-17.7.11-21H461/profile.toml carries the same values, so the merged
+# configuration does not change; what this block adds is one place a reader can check "is this
+# the image this board is for", which is the reference proprietary-files.txt already makes when
+# it says the two disk images are hashed under [ipsw.sha256].
+#
+# Verified against the image itself on 2026-10-30 through its BuildManifest.plist: ProductVersion
+# 17.7.11, ProductBuildVersion 21H461, SupportedProductTypes includes iPad7,1, and the j120ap
+# Erase identity is ApChipID 0x8011, ApBoardID 0x0C.
+url = "https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw"
+product = "iPad7,1"
+version = "17.7.11"
+build = "21H461"
+device_class = "j120ap"
+# Apple's ApChipID and ApBoardID of the j120ap identity, which is what ipsw.Ipsw._identity()
+# compares against the manifest's BuildIdentities. These are not [payload.adt] chip_id: that
+# 0x164 is the Qualcomm SoC ID devicetree.py writes into /chosen/chip-id, and feeding it here
+# fails the lookup with "no Erase build identity for j120ap in this IPSW" (measured 2026-10-30).
+chip_id = 0x8011
+board_id = 0x0C
+fetch = ["KernelCache", "DeviceTree", "StaticTrustCache", "Cryptex1,SystemTrustCache"]
+
+[ipsw.sha256]
+# The members the fetch list extracts, hashed from the files in out/ipsw/21H461/ on 2026-10-30.
+# Ipsw.extract() checks a pin by the member's base name, so every entry here is consulted.
+# KernelCache is absent on purpose: ipsw.kernelcache() reads it and pins the decompressed result
+# through [kernel.prelink] kernelcache_sha256, so a pin on the packed member would be dead.
+"044-76034-038.dmg" = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
+"044-76040-038.dmg" = "3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d"
+"044-76034-038.dmg.trustcache" = "9742f3d566369e6c48f63b3dc0740b06c243d13c6650e25bbf44616e13d6d097"
+"044-76040-038.dmg.trustcache" = "4563bdbf6ed8f72237d45dbba3ccde432634338f95c10d79d5d4631678a97c7c"
+"DeviceTree.j120ap.im4p" = "3f612f64819fbf6a8aacc03fabeda08ba897c4bf5385df995c59815c0c80c8f0"
+
 [userdata]
 # Android's userdata on UFS LUN 0, read from the phone's GPT.
 first_lba = 0x2a8000
@@ -125,6 +159,34 @@ DEVICE_MODEL = "1"
 MEMORY_PROTECTION = "TRUE"
 SHIP_MODE = "FALSE"
 BUILDID_STRING = "alioth-research"
+
+# No [bootimg.image] and no [[bootimg.dtb_node]]. The specification says the image parameters
+# default to the Mu-Silicium device configuration and that a dtb_node is for something the stock
+# bootloader needs that the firmware tree does not already carry. Neither override is needed,
+# and both halves are checked rather than assumed:
+#
+#   * Image parameters come from Resources/Configs/alioth.toml, and scripts/check-alioth.py
+#     compares every one of them (header_version, base, kernel_offset, ramdisk_offset,
+#     tags_offset, pagesize) against this board's own descriptor. A [bootimg.image] table would
+#     be a second copy that the preflight does not read.
+#   * The splash region is already in the tree that "unixnu bootimg --dtb" appends. Measured
+#     2026-10-30 on ../uefi-alioth/Resources/DTBs/alioth.dtb:
+#     /reserved-memory/cont_splash_region@9c000000, reg 0x9c000000+0x2300000, label
+#     cont_splash_region. scripts/check-alioth.py:141-154 fails the firmware preflight when that
+#     node is missing or lies outside the Display Reserved descriptor, so its presence is
+#     enforced on every firmware build, not left to review.
+#   * A [[bootimg.dtb_node]] for it would move nothing and resize nothing: fdtput -c writes a
+#     second node at the same address under a different name (measured: the appended tree gains
+#     /reserved-memory/splash_region beside cont_splash_region@9c000000). The firmware's
+#     ShengBootMemoryDxe subtracts both, and Subtract() is idempotent for identical extents, so
+#     the duplicate is configuration that changes no range.
+#
+# dts/alioth.dts also declares splash_region@9c000000. That reaches hardware.dtb, and
+# hardware.dtb only feeds devicetree.generate() for the ADT, which reads /memory, /cpus, /psci
+# and the unixnu,adt-name nodes and never /reserved-memory. Measured 2026-10-30: removing the
+# node from the DTS leaves the generated ADT byte for byte identical (same length, same sha256),
+# so the node documents the region but is not an input to anything. The copy the bootloader and
+# the firmware act on is the firmware DTB's.
 
 [payload]
 volume = "ALIOTHESP"
