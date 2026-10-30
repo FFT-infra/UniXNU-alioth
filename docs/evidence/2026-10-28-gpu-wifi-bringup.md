@@ -1699,3 +1699,38 @@ cmd[j].data = req_active.reg[i];
 2. **`mode` 的值**（HPM 在 RPMh 的编码是多少）——`qcom,init-mode = <RPMH_REGULATOR_MODE_HPM>` 在 DT 里有
 
 **这两条都是零成本的源码核对。在没核对前不投。**
+
+### 十四、投票所需的三个值全部核实（事实）
+
+| 项 | 值 | 出处 |
+| --- | --- | --- |
+| 电压单位 | **mV** | `rpmh-regulator.c:986` `mv = DIV_ROUND_UP(min_uv, 1000)` |
+| `ldoa5` 电压 | **880** | DT `pm8150_l5`：min = max = 880000 µV |
+| `ldoa9` 电压 | **1200** | DT `pm8150_l9`：min = max = 1200000 µV |
+| 使能值 | **1** | `RPMH_REGULATOR_REG_VRM_ENABLE` 的 `req_active.reg[1]`，`regulator_enable` 置 1 |
+| 模式值 | **7** | `rpmh-regulator.c:281` `RPMH_REGULATOR_MODE_PMIC5_LDO_HPM = 7`；DT `qcom,init-mode = HPM` |
+
+**注意模式值不是枚举 `RPMH_REGULATOR_MODE_HPM`（=4），而是 `pmic_mode` 字段（=7）。**
+`set_mode_index`（`:1049-1050`）写的是 `aggr_vreg->mode[mode_index].pmic_mode`，
+而 `pmic5_ldo` 的 HPM 项是 `RPMH_REGULATOR_MODE_PMIC5_LDO_HPM = 7`（`:367`）。
+
+**所以完整的投票是：**
+
+```
+ldoa5 (0x41800):  +0 = 880 (mV)   +4 = 1 (enable)   +8 = 7 (HPM)
+ldoa9 (0x41b00):  +0 = 1200 (mV)  +4 = 1 (enable)   +8 = 7 (HPM)
+```
+
+共 6 条命令，超过 `qcom_rpmh_active_request` 的 `count <= 4` 上限。
+
+**所以必须分两次投**（每次 3 条：一个 rail 的 voltage/enable/mode），
+或者只投一个 rail（3 条）作为单变量——**后者更符合「一次只改一个变量」**。
+
+### 十五、推荐的投票顺序
+
+1. **只投 `ldoa5`（0.9 V）**：`{0x41800:880, 0x41804:1, 0x41808:7}` —— 3 条，单变量
+2. 投完立刻读 dm_core `0x60000000`
+3. 若可读 → 根因确定；若仍挂 → 再投 `ldoa9`（1.2 V），或说明轨不是原因
+
+**为什么先 `ldoa5`**：0.9 V 是较低的电压，即使写错，后果比 1.2 V 轻。而且 DT 里它是 `vreg-0p9`，
+与 `vreg-1p8` 是两条独立轨——**先开一路，看窗口有没有变化，是最小实验。**
