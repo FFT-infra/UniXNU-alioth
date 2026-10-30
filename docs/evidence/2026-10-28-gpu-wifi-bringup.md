@@ -915,3 +915,64 @@ PCIE 12: about to read conf conf_vendor_device (window probe) at 0xfffffff799add
 
 **但还有一个更基本的可能**：这整片 `0x60000000+` 在 XNU 的 physmap/IO 视图里可能根本不可达
 ——`parf`/`phy` 可读可能只是因为它们在某个默认范围内。
+
+## 2026-10-31 04:55：`pmap_enter` 不会对 `0x60000000` 静默失败
+
+离线核对（不用板子）。这条排掉「映射没建出来」这个解释。
+
+### 一、`pmap_enter` 的完整检查链（事实）
+
+`pmap_enter`（`pmap.c:5142`）→ `pmap_enter_addr`（`:5115`）→ `pmap_enter_options_addr`（`:5922`）
+→ `pmap_enter_options_internal`（`:5534`）。
+
+唯一的物理地址检查是**对齐**（`pmap.c:5572-5575`）：
+
+```c
+if ((pa) & pt_attr_leaf_offmask(pt_attr)) {
+    panic("pmap_enter_options() pmap %p pa 0x%llx", pmap, (uint64_t)pa);
+}
+```
+
+`0x60000000` 是页对齐的，所以这条不触发。
+
+**没有任何 `gPhysBase` / `real_phys_size` 范围拒绝。** 全文搜 `gPhysBase`，只有
+`pmap_data.c:406,549` 与 `pmap.c:11463`，都不在 `pmap_enter` 这条路径上。
+
+### 二、`is_dram_addr` 只决定属性，不拒绝（事实）
+
+`vm_param.h:303`：
+```c
+#define is_dram_addr(addr)  (((uint64_t)(addr) - gDramBase) < gDramSize)
+```
+它只被 `wimg_to_pte`（`pmap.c:5361,5373,5381,5391`）用来选属性，**从不作为拒绝条件**。
+
+`gDramBase`/`gDramSize` 来自 DT 的 `/chosen` 节点 `dram-base` / `dram-size`（`arm_init_sptm.c:892-893`）。
+
+### 三、最后一层 `sptm_map_page` 不在本树
+
+`pmap_enter_pte` 里对它的调用是 `__assert_only`（`pmap.c:1405,1497,4898`），
+即**只在 assert 构建里检查返回值**；它的实现由固件提供，本树没有。
+
+**所以「`pmap_enter` 静默失败」这条在本树内无法成立**：代码里没有任何会吞掉这段地址的检查。
+
+### 四、结论
+
+`0x60000000` 的映射**是建出来的**（属性 Device-nGnRnE，VA 在 `io_submap` 内）。
+所以「VA 指向未映射页」这个解释排掉。
+
+**这与 `parf` 可读、DWC 窗口全挂完全一致**：两者的映射都建成了，差别在**总线上有没有应答**。
+
+### 五、条件表更新（第 7 条也排掉了）
+
+| 解释 | 状态 |
+| --- | --- |
+| SMMU SID | 排除 |
+| VA 记账错 | 排除 |
+| 映射属性错 | 排除 |
+| **映射未建立 / 静默失败** | **排除（本条）** |
+| 没上电 | 排除（wifi7） |
+| 没投票 | 排除（wifi5/7） |
+| 漏了 vendor 的 dm_core 写 | 排除（wifi9） |
+| **「只是某段地址」** | **排除（wifi10：conf 也挂）** |
+
+剩下的是**这片 DWC 地址空间在总线上没有应答**——即 AP 侧到 DWC slave 端口之间有一个我们没打开的门。
