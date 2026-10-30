@@ -542,3 +542,24 @@ acceptance table that treated `rep` as "the thread is polling" was wrong for tha
 `gPpidMatches` write only happens on the `gPon < 0` path and returns immediately, so a round
 that gets past setup reads `0x20000 + N`. bt2 measured `pdc=20000`, which is the version alone
 and confirms the baseline.
+
+### Reading the loop counter: check `st` first
+
+`stats[7]` is written in three places, and which one wins depends on the path:
+
+| where | when |
+| --- | --- |
+| PDC version | `setup()` unconditionally, once |
+| `gPpidMatches` | only inside `if (gPon < 0)`, which returns immediately |
+| loop count | every pass through `buttonsThread`'s loop |
+
+So the loop count is `stats[7] - 0x20000` **only when `st = 3`**. A round that failed before
+arming (`st` negative) took the `gPon < 0` path, where `stats[7]` is a match count smaller than
+26 - subtracting the version from that gives a negative number that is not a loop count. Read
+`st` first, then the difference:
+
+| `st` | `stats[7]` | meaning |
+| --- | --- | --- |
+| 3 | above `0x20000` | the loop is running |
+| 3 | exactly `0x20000` | the thread never left its first wait |
+| negative | anything | a failure path; `stats[7]` is not a count |
