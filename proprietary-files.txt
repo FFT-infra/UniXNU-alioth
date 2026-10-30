@@ -17,11 +17,16 @@
 #                              part answers identity reads (0x5652) and reports frames without
 #                              any download step, so there is no blob to record here.
 #
-# Nothing is listed because nothing is used. When the GPU path is enabled (Adreno 650 through
-# NativeAdreno), the a650 firmware becomes a real input and must be recorded here with its
-# source and digest before the image that uses it is published:
+# One input is consumed but not listed here: the Adreno 650 firmware. package/GpuFirmwareA650.c
+# compiles four images into the kernel as const arrays, taken from the copies already in this
+# workspace (ARCHIVE/UniXNU/out/alioth/ios-sweet-0081/diag-markers-v41/src/bsd/dev/redwood_fw_a650.c),
+# whose array lengths match the recorded vendor sizes: gmu 41548, sqe 31632, zap.mdt 6860,
+# zap.b02 1676. GpuProbe.cpp weak-imports the three symbols it needs.
 #
-#   a650_gmu.bin, a650_sqe.fw, a650_zap.mdt, a650_zap.b02
+# They are not listed as path|sha256 lines because they are not files the build reads at run
+# time: they are source. Recording them as an external blob would describe a download step that
+# does not exist. If the images are ever moved out of source into a proprietary directory, this
+# file gains four lines and board.toml gains their digests in the same change.
 #
-# They are not listed now because no image of this board loads them, and a manifest that names
-# files the build does not consume is worse than one that says it consumes none.
+# Earlier versions of this file said no image of this board loads them. That was true before the
+# GPU path was enabled and is not true now.
