@@ -38,9 +38,10 @@
  *  10  drives  the endpoint's two pads: WLAN_EN (TLMM 20) high, then PERST# (TLMM 79) released,
  *              and reads the link state. This is the step that first powers the endpoint.
  *  11  writes  PARF_LTSSM bit 8 to start link training, then reads the link state
- *  12  writes  the seven dm_core registers the vendor writes before it reads ELBI
- *  13  reads   the link control block's status word (ELBI), the signal the vendor polls
- *  14  reads   the configuration space: the root complex's and the QCA6390's vendor and device
+ *  12  reads   what the command database says about the two PMIC rails (ldoa5, ldoa9)
+ *  13  writes  the seven dm_core registers the vendor writes before it reads ELBI
+ *  14  reads   the link control block's status word (ELBI), the signal the vendor polls
+ *  15  reads   the configuration space: the root complex's and the QCA6390's vendor and device
  *
  * Boot-arg pcie=N performs steps 1 to N and stops; pcie_pause=MS is how long a step waits after
  * announcing a group of accesses (default 2200, as the loader notes the log every two seconds).
@@ -1110,8 +1111,8 @@ static bool (*const steps[])(void) = {
 	step_parf_init,
 	step_endpoint,
 	step_train,
+	step_rails,      /* must run BEFORE step_dm_core: that one hangs, and a hang takes the rest */
 	step_dm_core,
-	step_rails,
 	step_elbi,
 	step_dbi,
 };
