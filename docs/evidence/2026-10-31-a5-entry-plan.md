@@ -70,6 +70,28 @@ package/LinkStubs.c:48-49   __attribute__((weak)) volatile uint32_t native_ufs_d
 
 **这是 D 路唯一的实质风险，而且我无法离线验证**——它取决于链接器行为，必须真跑一次构建。
 
+### 这条风险已实测排除（2026-10-31）
+
+不需要链接就能验：重复定义只可能发生在符号层面，所以比符号即可。
+
+```
+libAliothUSBDevice.a 导出  39 个符号
+libLinkStubs.a       导出 325 个符号
+两者重叠            0
+```
+
+而且我们的 39 个符号 **全部**在 `AliothUSBDevice` 命名空间内
+（`grep -c AliothUSBDevice` = 39/39）：`__ZTV15AliothUSBDevice`、
+`__ZTVN15AliothUSBDevice9MetaClassE`、18 个方法、4 个 metaclass 成员。
+**没有任何裸名符号**（没有 `native_legacy_*`、没有 `boot_progress_poll`）。
+
+所以与 LinkStubs 不可能撞，与内核 .o 也不可能撞——内核不可能定义 `AliothUSBDevice` 这个类。
+
+**但结论仍然是「LinkStubs 不加 force_load」**，理由换成更准的一条：
+不是「会撞」（实测不撞），而是「没必要」——它的符号被
+`offline-component-load-probes.patch:79-80,185-186` 真实调用，普通链接就拉得进来；
+给它加 force_load 只会多拉进几个没人用的 weak 定义，收益为零。
+
 ### 如果撞了，退路
 
 只给我们的驱动加 `-force_load`，LinkStubs 保持普通链接：
@@ -119,6 +141,7 @@ link fails」。**所以 LinkStubs 普通链接就能拉进来，不需要 `-for
 
 | 项 | 为什么 |
 | --- | --- |
+| ~~符号冲突~~ | **已排除**：39/39 在 `AliothUSBDevice` 命名空间内，与 LinkStubs 零重叠 |
 | `EXTRA_LD_ARCHIVES` 混合普通/force_load 写法能否被 make 正确拆分 | 只测了两个纯 `-force_load` 的情形 |
 | LinkStubs 加 `-force_load` 是否撞重复定义 | 取决于链接器，必须真跑 |
 | `nm kernel.macho` 里能否看到 `AliothUSBDevice` | 驱动进了内核才有，要构建后验 |
