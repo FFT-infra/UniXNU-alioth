@@ -129,6 +129,13 @@ archives = [
   # linker dropped the object and every image ran the touch core with no HID device at all
   # (boot-usb70: contacts 2, interrupt line low 879 times, hid 0).
   "component:ShengHidInput",
+  # The board's own USB device controller: an IOUSBDeviceController subclass for this DWC3 core.
+  # A package recipe, not a component, because the driver is board-private and components are
+  # catalog entries in the shared base repository. Its header is reconstructed from this board's
+  # own kernelcache and the recipe refuses to archive a vtable that is not the 234-slot layout.
+  # A-3 is in progress: only createIOBuffer does real work so far, the other pure slots are still
+  # fixed values, and nothing enables it — qcom-usb-debug keeps the controller until A-5.
+  "build-alioth-usb.py",
 ]
 
 # The iOS USB device stack, so the host can reach usbmuxd/AFC instead of only the CDC-ACM
