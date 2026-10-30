@@ -767,11 +767,22 @@ Uptime 178 s, 90 slots, `write_errors 0`.
 
 `pdc` climbs `0x20013` to `0x20ddb`, so the thread polled throughout.
 
-### What this proves
+### What this proves, and what it does not
 
-`irq` goes 0 to 9 and `rep` 0 to 6: **presses reached the driver, produced interrupts, and
-were published as HID reports.** Combined with bt4's `mask=0` at rest, the button path works
-end to end.
+`rep` is incremented only inside `if (mask != last)`, after the sink call, so `rep` 0 to 6 means
+**six HID reports were actually sent** - the sink was attached and the level changed six times.
+`irq` 0 to 9 means nine interrupts arrived. Those are two different events (one press produces
+both edges, and an interrupt can arrive before the sink is attached), so 9 against 6 is not a
+discrepancy to explain.
+
+What this does **not** prove is which key was pressed. `mask` was sampled at 0 in all 90 slots,
+so no snapshot caught a press, and `rep` does not record the value it sent. The button path
+works - presses reach the driver, produce interrupts and are published - but the specific claim
+"volume up produces mask 4" has no evidence yet.
+
+That needs a press held long enough to cross a slot boundary: **20 seconds, which is 10 slots.**
+A round that shows `mask=4` in at least one slot confirms it; 20 seconds of `mask=0` means
+`pressed()` or `read8` still has a fault.
 
 ### What it does not prove, and why that is a sampling limit
 
