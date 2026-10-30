@@ -733,3 +733,20 @@ between two slots and be missed.
 So bt5 asks for **4-5 seconds held, 2 seconds between presses**, which puts each press across
 at least two slots, and the criterion is "at least one slot shows the value", not "the value
 appears exactly once".
+
+### The lock gate that did not gate
+
+bt5's first attempt lost the board-lock race to another session and **booted anyway**:
+
+```sh
+( set -C; echo ... > "$BOARD_LOCK" ) 2>/dev/null && echo "LOCK: ..." || echo LOST
+fastboot -s "$SERIAL" boot "$IMG"      # ran regardless
+```
+
+The `||` branch printed a message and fell through, so the next line executed and its
+`usb_write` failed with `e00002c0` against a board the other session was flashing.
+
+This is the same fault as the seven in the table above, and the same one I had already
+criticised in this file - a check that produces a message instead of an exit. A gate has to
+stop the thing it guards, not report on it. Fixed by making the lost race `exit 1` before
+anything touches the board.
