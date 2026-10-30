@@ -563,3 +563,46 @@ arming (`st` negative) took the `gPon < 0` path, where `stats[7]` is a match cou
 | 3 | above `0x20000` | the loop is running |
 | 3 | exactly `0x20000` | the thread never left its first wait |
 | negative | anything | a failure path; `stats[7]` is not a count |
+
+## 2026-10-31 bt3: the thread polls, and the levels never change
+
+Image `tmp/boot-bt3.img`, kernel
+`68bd5df89ed553c5a16830a0b1d2172336ecfecc8aa62ce0a90febda2ce954d6`, carrying `alioth-bl=1` and
+`alioth-bt=1`. Log `build/sheng-logs/bt3-0000000038bd5675`, tag `bt3`, uptime 178 s, 90 slots,
+`write_errors 0`.
+
+```
+B st=3 irq=0 rep=1 mask=4 apid=13/26 off=65536 pdc=20013..20176 err=26 spur=65536
+```
+
+### `pdc` answers the question `rep` could not
+
+`stats[7]` is the PDC version (`0x20000`) plus the loop count, and it climbs across the round:
+
+| slot reading | loop count |
+| --- | --- |
+| `0x20013` | 19 |
+| `0x2003a` | 58 |
+| ... | ... |
+| `0x20176` | 374 |
+
+The steps are 39-40 per slot, which is the 50 ms poll period against the log's roughly 2 s
+interval. **The thread is alive and polling.** It is not blocked: `assert_wait_timeout` works,
+and btn2's `rep=1` was never a stalled thread.
+
+### So the fault is in the read, not the wait
+
+With the thread polling and `rep` pinned at 1, the pressed mask never changes. `mask=4` means
+`bt_pressed_mask` returns volume-up every time, which for an active-low GPIO means bit 0 of
+`RT_STS` reads 0 - "held down" - continuously.
+
+Two candidates, and the next round should separate them:
+
+- `read8` failing and its result being read as a level. `pressed()` forces `pon = 0` on a failed
+  PON read but passes the GPIO only when `gpioRead == 0`, so a failed GPIO read contributes
+  nothing - a stuck `mask=4` therefore means the GPIO read *succeeds* and returns 0.
+- The GPIO peripheral or register address is wrong, so a different register is being read as
+  the pad level.
+
+The second is the more likely one, because the PON's two bits read as released (mask has no
+power or volume-down bits) while the GPIO's reads as pressed.
