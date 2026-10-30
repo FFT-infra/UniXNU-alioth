@@ -1166,8 +1166,13 @@ bool publish() {
     kDeviceInfo.gmem_base = gUcheGmem16M ? 0x1000000 : 0;
     p[0] = uint32_t(gSubmit->attach(vm, gRing));
     p[1] = uint32_t(gTimer->attach(&gTimerIo, NativeAdrenoTimeCp));
-    p[2] = uint32_t(native_adreno_publish(vm, gSubmit, gRing, &gClock, p[1] ? nullptr : gTimer, &kDeviceInfo, 31,
-                                          native_gpu_context.output_bits));
+    // The context's own GPU address size, not a constant. Publish derives every user client's VA window as
+    // (1 << input_bits) - GpuClientVaStart and refuses the client when that is zero, so a hardcoded value below
+    // 33 rejects every non-kernel connection with kIOReturnNoResources at the scope step (measured 2026-10-31:
+    // [gpu windows] mount fail stage 3 st e00002be, three processes refused). 31 was harmless on the fork, which
+    // stored input_bits without reading it; the parity source reads it.
+    p[2] = uint32_t(native_adreno_publish(vm, gSubmit, gRing, &gClock, p[1] ? nullptr : gTimer, &kDeviceInfo,
+                                          NativeAdrenoGpuContextInputBits(), native_gpu_context.output_bits));
     publishRow(p[0] || p[2] ? "failed" : "ok");
     return !p[0] && !p[2];
 }
