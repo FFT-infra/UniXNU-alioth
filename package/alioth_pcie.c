@@ -37,7 +37,8 @@
  *   9  writes  the vendor driver's init sequence into PARF
  *  10  drives  the endpoint's two pads: WLAN_EN (TLMM 20) high, then PERST# (TLMM 79) released,
  *              and reads the link state. This is the step that first powers the endpoint.
- *  11  reads   the configuration space: the root complex's and the QCA6390's vendor and device
+ *  11  writes  PARF_LTSSM bit 8 to start link training, then reads the link state
+ *  12  reads   the configuration space: the root complex's and the QCA6390's vendor and device
  *
  * Boot-arg pcie=N performs steps 1 to N and stops; pcie_pause=MS is how long a step waits after
  * announcing a group of accesses (default 2200, as the loader notes the log every two seconds).
@@ -738,6 +739,62 @@ step_endpoint(void)
 	return true;
 }
 
+
+/*
+ * Step 11: start the link training, which nothing in this file has ever done.
+ *
+ * The vendor writes PARF_LTSSM bit 8 as the last thing before it polls for the link
+ * (pci-msm.c:4409, inside msm_pcie_link_train: msm_pcie_write_mask(dev->parf + PCIE20_PARF_LTSSM,
+ * 0, BIT(8)) -- clear_mask 0, set_mask BIT(8), so it is a read-modify-write that ORs the bit in).
+ * Until it is set the LTSSM stays in DETECT_QUIET (0), which is exactly what steps 8, 9 and 10
+ * have all read, so the endpoint being powered and out of reset is necessary but not sufficient.
+ *
+ * This step does that one write and nothing else. The vendor's link_train also rewrites several
+ * GEN3 preset registers through the DBI window before this bit, and this file must not: that
+ * window is the block step 12 hangs on, and mixing it in would cost the attribution this round
+ * is for. If the link needs those presets, parf_ltssm below will still say so -- it will move
+ * out of detect without reaching L0.
+ *
+ * The criterion: parf_ltssm was 0 (LTSSM_DETECT_QUIET) at steps 8, 9 and 10. Anything else means
+ * the training engine started. 0x11 is L0, a trained link (pci-msm.c:433).
+ */
+static bool
+step_train(void)
+{
+	uint32_t value;
+
+	announce("set PARF_LTSSM bit 8, which is what the vendor writes to start link training, and then read "
+	    "the link state; this is the one write that starts the training engine");
+
+	value = get(1, "parf_ltssm before (LTSSM_EN)", 0x1b0);
+	/*
+	 * The register's own bits (pci-msm.c:63-65): 0..5 the LTSSM state, 8 LTSSM_EN, 10
+	 * SW_CLR_FLUSH_MODE, 11 FLUSH_MODE. The vendor reads the state as val & 0x3f (pci-msm.c:7581),
+	 * so the write preserves everything else and only ORs the enable in -- the same
+	 * read-modify-write msm_pcie_write_mask does with clear_mask 0.
+	 */
+	put(1, "parf_ltssm (LTSSM_EN, bit 8 in)", 0x1b0, value | (1u << 8));
+	/*
+	 * The vendor polls ELBI for up to 100 ms after this (pci-msm.c:4416-4424). The ELBI window is
+	 * inside the DBI block this file has not accessed yet, so the poll here is time only and the
+	 * state comes from PARF, which is the block already proven readable.
+	 */
+	sleep_ms(100);
+	value = get(1, "parf_ltssm after LTSSM_EN", 0x1b0);
+	/*
+	 * The state is bits 0..5 only: this read also carries the LTSSM_EN bit just written, so the
+	 * state must be masked or a trained link would read 0x111 and look like an unknown value.
+	 */
+	{
+		const uint32_t state = value & 0x3fu;
+
+		line("the link state after LTSSM_EN is %#x (state %#x, %s)", value, state,
+		    state == 0 ? "LTSSM_DETECT_QUIET, the training engine did not move"
+		               : (state == 0x11 ? "LTSSM_L0, the link trained" : "not detect, see the enum"));
+	}
+	return true;
+}
+
 /* ---- what runs ------------------------------------------------------------------------------ */
 
 static bool (*const steps[])(void) = {
@@ -751,6 +808,7 @@ static bool (*const steps[])(void) = {
 	step_parf,
 	step_parf_init,
 	step_endpoint,
+	step_train,
 	step_dbi,
 };
 
