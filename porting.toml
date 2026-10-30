@@ -310,7 +310,7 @@ evidence = []
 id = "diagnostics"
 status = "device-verified"
 components = ["QcomXnuUsbDebug"]
-paths = ["scripts/check-*", "scripts/probe-*", "scripts/audit-*", "scripts/read-*", "scripts/prepare-*", "scripts/data/**", "package/tests/**", "package/*Tests*", "package/*Diagnostic*", "package/*Probe*", "package/Boot*", "package/linux-log/**", "unixnu.lock", "scripts/run-sheng-unattended.sh"]
+paths = ["scripts/check-*", "scripts/probe-*", "scripts/audit-*", "scripts/read-*", "scripts/prepare-*", "scripts/data/**", "package/tests/**", "package/*Tests*", "package/*Diagnostic*", "package/*Probe*", "package/Boot*", "package/linux-log/**", "unixnu.lock", "scripts/run-sheng-unattended.sh", "docs/evidence/**"]
 inputs = [
   "The board's DWC3 controller, its apps SMMU stream, and the boot arguments qcom-usb-debug=1 and qcom-usb-ctl=1 in board.toml.",
   "The diagnostic page is boot-progress=2 with boot-diag-resume=10, so it returns after scanout stops.",
