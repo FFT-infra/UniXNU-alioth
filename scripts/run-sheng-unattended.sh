@@ -20,6 +20,19 @@ IMG=${1:?usage: run-sheng-unattended.sh <test.img> [timeout]}
 # plus the log sync (porting/log-capture) -- a default equal to the deadline can declare a stage
 # failed while the reset it is waiting for is still inside its log-sync grace.
 TIMEOUT=${2:-240}
+# Refuse a timeout that leaves no margin. Measured 2026-10-30 over 24 rounds: the board returned
+# at 195 s fifteen times and at 198 s seven times, while the callers passed 180 (round.sh) and
+# 200 (rounds-n.sh). Seven of those rounds sat two seconds inside the limit, so the next slow
+# boot would have been recorded as a hung kernel. The floor is autoreset plus the log-sync grace
+# that porting/log-capture asks for.
+AUTORESET=180
+FLOOR=$((AUTORESET + 60))
+if [ "$TIMEOUT" -lt "$FLOOR" ]; then
+    printf 'run-sheng-unattended: timeout %ss is below the floor of %ss (sheng-autoreset %ss plus 60s log-sync grace).\n' \
+        "$TIMEOUT" "$FLOOR" "$AUTORESET" >&2
+    printf 'A round that returns at the deadline cannot tell a slow boot from a hung kernel.\n' >&2
+    exit 2
+fi
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=${SHENG_LOG_OUT:-$HERE/../build/sheng-logs}
 SERIAL=${SERIAL:-}
@@ -30,7 +43,7 @@ say() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
 # bootloader answers, otherwise say so instead of pretending.
 fail() {
     say "FAILED at $1"
-    if $FB devices 2>/dev/null | grep -q fastboot; then
+    if ${FB:-fastboot} devices 2>/dev/null | grep -q fastboot; then
         # Put back the slot the board started on. With "fastboot boot" the test image never
         # touched a slot, so forcing b here would move a board that began on a.
         if [ -n "${ORIG_SLOT:-}" ] && [ "${ORIG_SLOT}" != "a" ]; then
@@ -44,12 +57,12 @@ fail() {
     exit 1
 }
 
-[ -f "$IMG" ] || fail "image $IMG does not exist"
-
 FB="fastboot"
 [ -n "$SERIAL" ] && FB="fastboot -s $SERIAL"
 ADBM="adb"
 [ -n "$SERIAL" ] && ADBM="adb -s $SERIAL"
+
+[ -f "$IMG" ] || fail "image $IMG does not exist"
 
 say "stage 1: board must already be in the bootloader"
 $FB devices | grep -q fastboot || fail "no fastboot device"
