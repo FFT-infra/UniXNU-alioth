@@ -38,8 +38,9 @@
  *  10  drives  the endpoint's two pads: WLAN_EN (TLMM 20) high, then PERST# (TLMM 79) released,
  *              and reads the link state. This is the step that first powers the endpoint.
  *  11  writes  PARF_LTSSM bit 8 to start link training, then reads the link state
- *  12  reads   the link control block's status word (ELBI), the signal the vendor polls
- *  13  reads   the configuration space: the root complex's and the QCA6390's vendor and device
+ *  12  writes  the seven dm_core registers the vendor writes before it reads ELBI
+ *  13  reads   the link control block's status word (ELBI), the signal the vendor polls
+ *  14  reads   the configuration space: the root complex's and the QCA6390's vendor and device
  *
  * Boot-arg pcie=N performs steps 1 to N and stops; pcie_pause=MS is how long a step waits after
  * announcing a group of accesses (default 2200, as the loader notes the log every two seconds).
@@ -282,6 +283,17 @@ map_all(void)
 #define GPIO_PERST              79u
 #define GPIO_WLAN_EN            20u
 
+/* The DWC's own configuration window (dm_core), the registers the vendor writes before it
+ * reads ELBI for the first time (pci-msm.c:4379-4406). Offsets from pci-msm.c:47-50,93,100. */
+#define DWC_GEN3_SPCIE_CAP      0x0154          /* pci-msm.c:47 */
+#define DWC_DEVICE_CONTROL_STTS 0x0078          /* pci-msm.c:100 */
+#define DWC_GEN3_GEN2_CTRL      0x080c          /* pci-msm.c:48 */
+#define DWC_GEN3_RELATED        0x0890          /* pci-msm.c:49 */
+#define DWC_GEN3_EQ_CONTROL     0x08a8          /* pci-msm.c:50 */
+#define DWC_GEN3_MISC_CONTROL   0x08bc          /* pci-msm.c:52 */
+#define DWC_CORE_PRESET         0x55555555      /* PCIE_GEN3_PRESET_DEFAULT, pci-msm.c:42 */
+#define DWC_TLP_RD_SIZE         0x5             /* PCIE_TLP_RD_SIZE, pci-msm.c:198 */
+
 #define PHY_STATUS              0x814           /* dt: qcom,phy-status-offset; bit 6: ready */
 #define PHY_POWER_DOWN          0x840           /* dt: qcom,phy-power-down-offset */
 
@@ -374,27 +386,13 @@ step_gdsc(void)
 	}
 	line("THE CONTROLLER HAS POWER (gdscr %#x, %u ms)", gdscr, waited);
 	/*
-	 * THE WINDOW PROBE, one variable: the controller is powered now, and step 3 has not run,
-	 * so no clock is voted for yet. wifi6 ran this read in step 1 with the controller still
-	 * collapsed and got a hang; that left "power" and "votes" entangled. This position splits
-	 * them.
-	 *
-	 * Three states, not two: a bus that answers with a wrong value is a different failure from
-	 * a bus that never answers, and 0xffffffff is the classic "no response" return. Reading
-	 * something is not the same as the window being usable.
-	 *
-	 *   hangs         -> power alone does not make it reachable; look at votes (step 3) next,
-	 *                    or at the address/mapping if votes change nothing.
-	 *   reads a value -> power was what it needed, and the votes become the next variable.
+	 * The window probe that used to run here is gone. wifi6 and wifi7 both hung on it, which
+	 * settled what it was for (the window is not reachable in either the collapsed or the
+	 * powered-no-votes state). Leaving it in would only hang this round before step 12's
+	 * dm_core writes ever ran -- measured on wifi8, which lost its whole round to it.
+	 * Step 12 now makes the first write this file has ever made to that window, and that
+	 * attempt is the probe: it either lands or it does not.
 	 */
-	{
-		uint32_t elbi = get(3, "elbi_sys_ctrl (window probe, powered, no votes yet)", 0x04);
-
-		line("the window probe returned %#x (%s)", elbi,
-		    elbi == 0xffffffffu ? "all ones -- the bus answered with no data, which is not readable"
-		                        : (elbi == 0 ? "zero -- readable, and the register is clear"
-		                                     : "a real value -- the window is reachable"));
-	}
 	return true;
 }
 
@@ -905,6 +903,88 @@ step_elbi(void)
 	return true;
 }
 
+/*
+ * Step 12: the seven dm_core writes the vendor makes before its first ELBI read.
+ *
+ * This file has never touched 0x60000000. Every state it can put the controller in has now been
+ * tried -- collapsed (wifi6), powered (wifi7), powered with five clocks voted (wifi5 step 12) --
+ * and the window failed in all of them. The vendor writes this window seven times and then reads
+ * ELBI (pci-msm.c:4379-4406, then :4419), so the state it reads in is one this file has never
+ * reached.
+ *
+ * Careful about what that does and does not mean. It does NOT prove the window is reachable here:
+ * the vendor's writes succeed in the vendor's environment, which says the vendor reaches a state
+ * we have not, not that we can. Two extrapolations are both wrong -- "the vendor does less than
+ * us" and "the vendor can, so we can".
+ *
+ * The seven, in the vendor's order. msm_pcie_write_reg_field (pci-msm.c:1303-1314) is
+ * read-modify-write: clear the mask, OR the value in at its shift.
+ *   0x080c  field 0x1f00 = 1
+ *   0x08a8  mask  0x20
+ *   0x0890  mask BIT(0) = 0        (i.e. clear bit 0)
+ *   0x08bc  mask BIT(0) = 1
+ *   0x0154  whole register = 0x55555555
+ *   0x08bc  mask BIT(0) = 0
+ *   0x0078  field 0x7000 = 5       (set max tlp read size)
+ * The vendor's other write, 0x70+PCI_EXP_LNKCTL2 for target_link_speed, is skipped: the board
+ * has no max-link-speed in its device tree (checked against the boot DTB), so target_link_speed
+ * is 0 and the vendor skips it too.
+ *
+ * ELBI is NOT read in this step. If these writes land and ELBI still fails, ELBI is its own
+ * question; if the first write hangs, ELBI never mattered.
+ */
+static bool
+step_dm_core(void)
+{
+	uint32_t v;
+
+	announce("the seven dm_core writes the vendor makes before it reads ELBI; the first access this file "
+	    "has ever made to 0x60000000");
+
+	/* 0x080c: field 0x1f00 = 1 (read-modify-write, mask 0x1f00, value 1) */
+	v = get(6, "dwc gen3_gen2_ctrl before", DWC_GEN3_GEN2_CTRL);
+	put(6, "dwc gen3_gen2_ctrl (0x1f00 = 1)", DWC_GEN3_GEN2_CTRL, (v & ~0x1f00u) | (1u << 8));
+
+	/* 0x08a8: mask 0x20 set */
+	v = get(6, "dwc gen3_eq_control before", DWC_GEN3_EQ_CONTROL);
+	put(6, "dwc gen3_eq_control (bit 5 in)", DWC_GEN3_EQ_CONTROL, v | 0x20u);
+
+	/* 0x0890: mask BIT(0) cleared */
+	v = get(6, "dwc gen3_related before", DWC_GEN3_RELATED);
+	put(6, "dwc gen3_related (bit 0 out)", DWC_GEN3_RELATED, v & ~1u);
+
+	/* 0x08bc: mask BIT(0) set, then cleared -- the vendor brackets the preset write with it */
+	v = get(6, "dwc gen3_misc_control before", DWC_GEN3_MISC_CONTROL);
+	put(6, "dwc gen3_misc_control (bit 0 in)", DWC_GEN3_MISC_CONTROL, v | 1u);
+
+	/* 0x0154: the whole register, the default preset */
+	get(6, "dwc gen3_spcie_cap before", DWC_GEN3_SPCIE_CAP);
+	put(6, "dwc gen3_spcie_cap (0x55555555)", DWC_GEN3_SPCIE_CAP, DWC_CORE_PRESET);
+
+	v = get(6, "dwc gen3_misc_control again", DWC_GEN3_MISC_CONTROL);
+	put(6, "dwc gen3_misc_control (bit 0 out)", DWC_GEN3_MISC_CONTROL, v & ~1u);
+
+	/* 0x0078: field 0x7000 = 5, the max tlp read size */
+	v = get(6, "dwc device_control_status before", DWC_DEVICE_CONTROL_STTS);
+	put(6, "dwc device_control_status (0x7000 = 5)", DWC_DEVICE_CONTROL_STTS,
+	    (v & ~0x7000u) | (DWC_TLP_RD_SIZE << 12));
+
+	/*
+	 * Read all seven back. Three states, and the first one is the one that matters: if the
+	 * FIRST access here had hung, this file would never have written 0x60000000 either, and
+	 * that would say the window is unreachable in this environment rather than that we are
+	 * missing a step -- a different conclusion with a different next move.
+	 */
+	get(6, "dwc gen3_gen2_ctrl after", DWC_GEN3_GEN2_CTRL);
+	get(6, "dwc gen3_eq_control after", DWC_GEN3_EQ_CONTROL);
+	get(6, "dwc gen3_related after", DWC_GEN3_RELATED);
+	get(6, "dwc gen3_misc_control after", DWC_GEN3_MISC_CONTROL);
+	get(6, "dwc gen3_spcie_cap after", DWC_GEN3_SPCIE_CAP);
+	get(6, "dwc device_control_status after", DWC_DEVICE_CONTROL_STTS);
+	line("the seven dm_core writes are done; step 13 reads ELBI next, as its own question");
+	return true;
+}
+
 /* ---- what runs ------------------------------------------------------------------------------ */
 
 static bool (*const steps[])(void) = {
@@ -919,6 +999,7 @@ static bool (*const steps[])(void) = {
 	step_parf_init,
 	step_endpoint,
 	step_train,
+	step_dm_core,
 	step_elbi,
 	step_dbi,
 };

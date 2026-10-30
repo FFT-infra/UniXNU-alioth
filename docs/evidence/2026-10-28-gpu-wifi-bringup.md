@@ -797,3 +797,54 @@ case VM_WIMG_IO:
 vendor 在第一次读 ELBI 之前**先对 dm_core 写了六次**（`pci-msm.c:4379-4395`，见上一条记录），
 而我们**从未对 dm_core 做过任何读写**。这是唯一还站着的解释：
 **这段窗口在 vendor 的时序里是通的，我们只是从未到达那个状态。**
+
+## 2026-10-31 04:40：第一次 dm_core 访问就挂——窗口在我们这里不可访问
+
+镜像 `boot-wifi9.img` sha256 `c223f758…`，内核 `8a2ee482…`，`pcie=12 pcie_skip=32`，无 bt/bl。
+241 行 PCIE（`tmp/console-wifi9r1.log`）。
+
+### 一、wifi8 白跑了一轮（我的疏忽，先记）
+
+wifi8 想跑 step 12 的七次 dm_core 写，但 wifi7 的 **step 2 window probe 还留在代码里**，
+它在 step 12 之前就挂死了。实测 `console-wifi8r1.log` 只有 39 行，最后一行是
+`about to read elbi elbi_sys_ctrl (window probe, powered, no votes yet)`。
+**step 12 一次都没执行。** 本轮已把那个 probe 删掉（它的问题 wifi6/wifi7 已答完）。
+
+### 二、第一次 dm_core 访问就挂（事实）
+
+```
+PCIE 12: the seven dm_core writes ... the first access this file has ever made to 0x60000000
+PCIE 12: about to read dbi dwc gen3_gen2_ctrl before at 0xfffffff45450380c
+   <- 到此为止，没有值
+```
+
+`0xfffffff45450380c` 是 dbi 块 VA + `0x080c`（`DWC_GEN3_GEN2_CTRL`）。
+`risky()` 已把这一行刷到介质，所以停在哪是确定的：**读不返回**。
+板子 36 s 后复位回来。
+
+### 三、这是三态里最重的一态
+
+| 结果 | 含义 |
+| --- | --- |
+| **第一次 dm_core 访问就挂（本轮）** | 那段在**我们这里**不可访问，与 vendor 不同 |
+| 写进得去、ELBI 读不出 | ELBI 那个偏移的事 |
+| 写进得去、ELBI 读得出 | preset 是前提 |
+
+**所以「vendor 写了六次所以我们也能」这个外推被否掉了。** vendor 的环境和我们的不同——
+不是我们漏了一步，而是**我们在自己的环境里到不了那个状态**。
+
+### 四、这一条同时否掉了「只是 ELBI 那个偏移」的解释
+
+之前 wifi4 读的是 ELBI（`0x60000f24`），本轮读的是 dm_core（`0x600000380c`），**两个不同偏移、都挂**。
+所以不是某个寄存器的问题，是**整段窗口**。
+
+### 五、现在还剩什么
+
+前面已排掉：SMMU（不经）、VA 记账（正确）、映射属性（Device-nGnRnE 正确）、
+没上电（wifi7）、没投票（wifi5/7）、**「漏了 vendor 的写」（本轮）**。
+
+剩下的是**这一段物理地址在本内核的 IO 映射里是否真的可达**——
+但 `parf` 走同一路径可读，所以要么这段有独立的门控，要么地址本身不对（尽管 DT 与真机 DTB 都对）。
+
+**一个此前未做的检查**：`conf`（`0x60100000`）也从未读过。它在同一 SoC 的不同窗口，
+如果它也挂，那说明问题不在「`0x60000000` 这段」，而在更普遍的东西（例如所有非 parf/phy 的窗口）。
