@@ -1139,3 +1139,43 @@ BootLog.c:736-750
 3. 若没投 → 才谈怎么投。
 
 **这三步都不需要新写 SPMI 驱动，而且第 2 步可以直接复用 GpuProbe 已经验证过的映射。**
+
+### 六、`[wifi-pmic]` 空壳的来源查清了（补充）
+
+上面说这些行「是别人留下的空壳」。查清了来源：
+
+`BootLog.c` 来自 **sheng 板原样搬来**（提交 `4fd6373` 的说明：
+「BootLog.c comes from the sheng board unchanged」）。那些 `[wifi-pmic]` / `[wifi-rails]` /
+`[wifi-1v8]` 行是 **sheng 的**，写入端在：
+
+```
+NEW/UniXNU-sheng/package/WifiProbe.cpp:55   volatile uint32_t native_wifi_pmic[24 + 2*2*112];
+NEW/UniXNU-sheng/package/WifiProbe.cpp:290  constexpr Rail kRails[] = {
+                                              {"smpg5", 850, 0x6a7}, {"ldob15", 1800, 0},
+                                              {"smpg2", 850, 0x69e}, {"smpe4", 950, 0x4a4},
+                                              {"smpg4", 1300, 0x6a4}, {"smpg6", 1860, 0x6aa}};
+NEW/UniXNU-sheng/package/WifiProbe.cpp:321  qcom_rpmh_active_request(&layout, tcs, &address, &value, 1, writes, 16);
+NEW/UniXNU-sheng/package/WifiProbe.cpp:325  qcom_rpmh_finish(&layout, tcs, writes, 16);
+```
+
+**而 sheng 走的就是 RPMh**，不是 SPMI——`qcom_rpmh_active_request` / `qcom_rpmh_finish`
+在 `NEW/UniXNU-sheng/package/QcomRpmh.c:63,86` 有完整实现（`AdspProbe.cpp` 也在用）。
+
+### 七、这意味着本板有两条可复用路径
+
+| 路径 | 位置 | 用途 |
+| --- | --- | --- |
+| **RPMh 投票** | `NEW/UniXNU-sheng/package/QcomRpmh.c` | 可直接参考实现（sheng 用它在 SM8550 上投 `ldob15` 等六路） |
+| **RPMh TCS 映射** | `NEW/UniXNU-alioth/package/GpuProbe.cpp:482` | 本板已验证 `0x18220000` 可映射（DRV 2 TCS 0） |
+| **输出形状** | `NEW/UniXNU-alioth/package/BootLog.c:736-750` | `[wifi-pmic]` 等行的字段已定，写端接上即可 |
+
+**但 sheng 的 `kRails` 是 **SM8550/PMK8550 的**（`smpg5`、`ldob15`、`smpe4` 等），
+**本板是 PM8150**，需要的是 `pm8150_l5`（0.9 V）与 `pm8150_l9`（1.8 V）。
+所以**不能直接抄 `kRails`**，要按本板的 `kona-regulators.dtsi` 重新查这两路的 cmd-db 地址。
+
+### 八、下一步
+
+1. **查 `pm8150_l5` / `pm8150_l9` 在 cmd-db 里的地址**（`[wifi-rails]` 那行要打印的正是这个形状）。
+   cmd-db 是 `/chosen` 或 smem 里的一张表，`BootLog.c:742` 的字段名说明设计者知道该查它。
+2. **读它们当前的投票状态**（RPMh TCS，复用 GpuProbe 的映射）。
+3. 若没投 → 用 `QcomRpmh.c` 的形状投这两路。
