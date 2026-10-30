@@ -38,6 +38,22 @@ A-3 的驱动 `AliothUSBDevice` 已经能编译、vtable 正确、宿主测试�
 +CONFIG_XNU_EXTRA_LD_ARCHIVES="-Wl,-force_load,{tree}/build/link-stubs/libLinkStubs.a -Wl,-force_load,{tree}/build/alioth-usb/libAliothUSBDevice.a"
 ```
 
+### 一个必须一起做的步骤：重跑 `defconfig`
+
+`configs/alioth_defconfig` **不是构建时直接读的**。`scripts/unixnu/config.py:160` 把选定的
+defconfig 拷成 `out/alioth/<os_profile>/alioth/.config` 的**快照**，之后每次构建读那份快照
+（`need_config()` → `self.config_path`）。所以改完 defconfig 必须：
+
+```sh
+./unixnu defconfig alioth_defconfig -D ../UniXNU-alioth-usb
+```
+
+否则改动不生效，而构建会**成功**——只是用的还是旧的 `EXTRA_LD_ARCHIVES`，驱动仍然不进内核。
+这是最坏的一类失败：看起来做了什么，实际什么都没做。
+
+实测当前快照与 defconfig 一致（`grep EXTRA_LD_ARCHIVES` 两边 MATCH），所以从现在开始改，
+重跑 defconfig 是唯一让改动生效的途径。
+
 ### 判据
 
 1. `build kernel` 成功（链接无重复定义错误）
@@ -142,6 +158,7 @@ link fails」。**所以 LinkStubs 普通链接就能拉进来，不需要 `-for
 | 项 | 为什么 |
 | --- | --- |
 | ~~符号冲突~~ | **已排除**：39/39 在 `AliothUSBDevice` 命名空间内，与 LinkStubs 零重叠 |
+| ~~LinkStubs 的非 weak 符号~~ | **已排除**：`LinkStubs.c` 9 个定义里只有 `native_legacy_display_probe` 非 weak，而它在 `#if !XNU_NATIVE_LEGACY_DISPLAY` 里、本板该开关为 `y`，built archive 里实测 0 命中。唯一真正存在的非 weak 是 `native_legacy_surface_stride`，它本来就被 GPU 路径调用、已经在内核里 |
 | `EXTRA_LD_ARCHIVES` 混合普通/force_load 写法能否被 make 正确拆分 | 只测了两个纯 `-force_load` 的情形 |
 | LinkStubs 加 `-force_load` 是否撞重复定义 | 取决于链接器，必须真跑 |
 | `nm kernel.macho` 里能否看到 `AliothUSBDevice` | 驱动进了内核才有，要构建后验 |
