@@ -19,6 +19,20 @@ __attribute__((weak)) uint32_t native_adreno_audit_attr;
 __attribute__((weak)) uint64_t native_adreno_audit_ticks;
 __attribute__((weak)) uint64_t native_adreno_reassert_ticks;
 __attribute__((weak)) uint32_t native_adreno_wc_distrusted;
+/* Two weak_import references the driver gained with the A740 parity source: a DVFS level table the
+ * submit path reads for its job record, and a pmap probe that names the process mapping a page the
+ * driver is about to free. Neither exists on this board, and both uses are guarded ("if the symbol
+ * is there"), so a zero stands for "no DVFS levels" and a null function pointer for "the pmap probe
+ * is absent". */
+__attribute__((weak)) uint32_t native_gpu_dcvs[15];
+/* A weak definition of the function itself, not a pointer: the caller tests the function's address
+ * and then calls it, so the two must be the same object. A weak definition that returns 0 means
+ * "no process maps that page", which is what the probe reports when it cannot find one. */
+__attribute__((weak)) unsigned int native_pmap_user_mappings(unsigned int ppnum, void **pmap, uint64_t *va, char *name)
+{
+  (void)ppnum; (void)pmap; (void)va; (void)name;
+  return 0;
+}
 __attribute__((weak)) uint32_t native_cpufreq_stage;
 __attribute__((weak)) uint64_t native_data_persist_errors;
 __attribute__((weak)) uint64_t native_data_persist_first_lba;
