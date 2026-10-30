@@ -635,11 +635,20 @@ unique_chip_id = "required"
 # The value is the OS window's own volume UUID, recorded by build/verified-root-os/verification.json.
 root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 
-# Device identity. The panel is 1080x2400 (20:9), so an iPad identity would make UIKit lay out
-# a 4:3 interface and distort it. The supplied image accepts a phone identity: SpringBoard.app's
-# Info.plist declares UIDeviceFamily = [1, 2] (1 = iPhone, 2 = iPad), so iPhone10,3 is a family
-# this image already supports. iPhone10,3 (D22) is 1125x2436 at 19.5:9, the closest shape the
-# 21H461 resource set carries to this panel.
+# Device identity: iPad7,1 / J120 / pad / 2732, which is what the tables below actually set.
+#
+# This block used to argue for iPhone10,3 (D22, 1125x2436 at 19.5:9) on the grounds that the
+# panel is 1080x2400 and an iPad identity would make UIKit lay out a 4:3 interface. That
+# reasoning was wrong for this image: the iPadOS 17.7.11 root ships only ~ipad wallpaper
+# collections, so a phone idiom leaves PosterBoard with no material to choose from. The tree
+# carries pad, and `reference.md` section 182 records the conflict.
+#
+# Changing the identity is allowed and does not violate the documentation -- zh/porting/display
+# never mentions wallpaper, so the choice is a local trade-off, not a requirement. Two rules
+# apply if it is changed: clear
+# /private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/
+# afterwards, or MobileGestalt keeps answering from the old values, and clear it again when
+# reverting. Geometry follows installBootDimensions' 1080x2400 regardless of identity.
 #
 # These tables are top-level [adt.*], not [payload.adt.*]. devicetree.generate() reads two
 # different tables: platform = config['adt'] supplies the ADT property nodes below, while
