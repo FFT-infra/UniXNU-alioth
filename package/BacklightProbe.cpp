@@ -448,7 +448,11 @@ void panelThread(void *, wait_result_t) {
         IOLockUnlock(gLock);
         IOSleep(800);
     }
-    native_backlight_stats[7] = 3;   // three blinks attempted
+    // [7] used to be written as the literal 3 here, which recorded "the loop ran" rather than
+    // "three packets were launched" - it could not fail and so proved nothing. The counter that
+    // can fail is [10], bumped by sendPacket; [7] now carries the launch count before the sweep,
+    // so a round can compare it with the blink count it asked for.
+    native_backlight_stats[7] = native_backlight_stats[10];
     IOLockLock(gLock);
     writeBrightness(kMaxLevel);
     const int32_t afterMax = readBrightness();
