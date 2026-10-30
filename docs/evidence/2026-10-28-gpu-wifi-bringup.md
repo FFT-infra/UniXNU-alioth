@@ -1579,3 +1579,44 @@ qcom_rpmh_active_request(&layout, tcs, {0x41800, 0x41b00}, {1, 1}, 2, writes, ca
 
 `values = {1, 1}` 是 **ARC 等级索引**，不是电压（aux 表只有一档，1 是唯一合法值）。
 投完立刻读 dm_core `0x60000000` —— 那一读就是判据。
+
+### 八、`GPB_CMD_DB_BASE` 不是「GPU 的常量」——它就是 RPMh 的 cmd-db（事实）
+
+有人提醒：「`GPB_CMD_DB_BASE` 来自 `GpuPowerBoard.h`，那是 GPU 的板级常量；如果 RPMh 的 cmd-db 是另一块内存，读到的就是错的表。」
+
+**核了，是同一块。**
+
+本板启动 DTB 里：
+```
+cmd_db: reserved-memory {
+    reg = <0x00 0x80860000 0x00 0x20000>;
+    compatible = "qcom,cmd-db";
+    no-map;
+};
+```
+
+而 `GpuPowerBoard.h:346-347`：
+```c
+#define GPB_CMD_DB_BASE 0x80860000ULL
+#define GPB_CMD_DB_BYTES 0x20000u
+```
+
+**基址与大小逐字一致。** 而且源码链也对上：`kona.dtsi:393` 的
+`cmd_db: reserved-memory@80860000 { reg = <0x0 0x80860000 0x0 0x20000>; compatible = "qcom,cmd-db"; }`。
+
+**vendor 的 `cmd-db.c:402` 是 `memremap(rmem->base, rmem->size, MEMREMAP_WB)`，
+`rmem` 来自这个 reserved-memory 节点**——所以 Linux 读的也是同一块。
+
+### 九、而且本轮实测已经证明它是对的（事实）
+
+`PCIE 12` 打出的那一行：
+
+```
+the command database at 0x80860000: version 0x1 magic 0xc0330db (expected magic 0xc0330db)
+```
+
+- **magic 正确**（`0xc0330db`，与 `GpuPowerBoard.h:348` 的 `GPB_CMD_DB_MAGIC` 一致）
+- **version 0x1** 是合法值
+- **而且查到了 `ldoa5` / `ldoa9`** —— 如果读的是错的表，这两个名字不可能在里面
+
+**所以「读到错的表」这条排除。** 实测比源码推断更硬：表是对的，因为它答出了两个只有 RPMh 的 cmd-db 才有的名字。
