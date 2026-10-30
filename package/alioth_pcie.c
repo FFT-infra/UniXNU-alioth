@@ -613,8 +613,36 @@ step_parf_init(void)
 
 	value = get(1, "parf_phy_ctrl", 0x40);
 	put(1, "parf_phy_ctrl (bit 0 out)", 0x40, value & ~1u);
-	put(1, "parf_dbi_base (zero)", 0x168, 0);
-	get(1, "parf_dbi_base (vendor, 0x350) after", 0x350);
+	put(1, "parf_dbi_base (zero, v2 offset 0x168)", 0x168, 0);
+	/*
+	 * The v3 layout the vendor driver uses puts the same register at 0x350 (pci-msm.c:43).
+	 * Step 8 read 0x350 as 0, but that was BEFORE any write, so it says nothing about whether
+	 * this register accepts one. Writing it here is the single variable for this round: the
+	 * whole dm_core/elbi/iatu window (0x60000000..0x60002000) hangs on its first access, and
+	 * parf_dbi_base is what points that window at its base, so if this write does not stick
+	 * the window has never been given one.
+	 */
+	put(1, "parf_dbi_base (zero, vendor offset 0x350)", 0x350, 0);
+	/*
+	 * Read both back, separately and before anything touches the window: if 0x350 does not
+	 * hold its zero, the ELBI read in step 12 is not worth attempting and this round stops
+	 * with a readable answer instead of a hang.
+	 */
+	value = get(1, "parf_dbi_base 0x168 read back", 0x168);
+	if (value != 0) {
+		line("0x168 did not take the zero write (reads %#x)", value);
+	}
+	value = get(1, "parf_dbi_base 0x350 read back", 0x350);
+	/*
+	 * The value written was 0, so 0 is what a register that accepted it reads back. Anything
+	 * else -- including a non-zero base left from the bootloader -- means this offset is not
+	 * the live one, and the ELBI read would be an unaimed access into a window whose base
+	 * was never set. Stop here instead: the log then says which of the two offsets is real.
+	 */
+	if (value != 0) {
+		line("0x350 did not take the zero write (reads %#x); the ELBI read is skipped", value);
+		return false;
+	}
 	/*
 	 * The controller's system control word as a later vendor variant of this init writes it: the master's and
 	 * the slave's AXI clock gating off, and -- this one matters here -- the core clock's gating off too

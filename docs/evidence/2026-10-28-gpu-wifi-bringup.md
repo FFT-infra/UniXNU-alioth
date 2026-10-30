@@ -414,3 +414,43 @@ vendor DT 证实这三条是**一段连续 AXI 窗口**，只为 Linux 资源模
 **下一步单变量**：把 `parf_dbi_base` 的零写同时写到 `0x168` 与 `0x350`，读回比对，再试一次 ELBI 读。
 这一段窗口的基址由 `parf_dbi_base` 决定，而我们只写过 v2 的 `0x168`，v3 的 `0x350` 从未被写。
 写的是 PARF（已证明可写），不是那段死窗口。
+
+## 2026-10-31 04:02：两个 DBI base 偏移都写进去了，ELBI 仍然挂
+
+镜像 `boot-wifi5.img` sha256 `9c5fc01c…`，内核 `13c77bee…`（与 wifi4 的 `aa87f2c1…` 不同），
+`pcie=12 pcie_skip=32`，无 bt/bl。236 行 PCIE（`tmp/console-wifi5r1.log`）。
+
+### 一、判据落在三态里的第二态（事实）
+
+```
+PCIE 9: parf parf_dbi_base 0x168 read back = 0     <- 写进去了
+PCIE 9: parf parf_dbi_base 0x350 read back = 0     <- 写进去了
+PCIE 12: about to read elbi elbi_sys_ctrl at ...   <- 之后没有回读
+```
+
+两个偏移都接受写入并回读为 0，**ELBI 的首次访问仍然挂死**。板子 36 s 后回来（复位，非 180 s 定时）。
+
+**结论：`parf_dbi_base` 不是那一段窗口不可访问的原因。** 这一段的上游另有问题。
+
+### 二、一条我自己差点报错的读数（更正）
+
+我看到 `slv_axi_halt` / `mstr_axi_halt` 读作 `0x220`，一度判定「bit 5 置位 = halted」。
+**错了。** `clk-branch.h:34` 的 `BRANCH_HALT` 是「1 = halt」，但测试用的是 `halt_bit` 字段
+（`clk-branch.c:40-45`：`val &= BIT(br->halt_bit)`），而 `gcc_pcie_0_slv_axi_clk`
+（`gcc-kona.c:2288-2295`）**没有设 `halt_bit`，默认 0**。
+
+`0x220` 的 bit 0 是 **0** → 按 vendor 定义这条分支**没有 halt**，时钟在跑。
+`0x220` 里的 bit 5 与 bit 9 是别的字段，与 halt 判定无关。
+
+**所以时钟不是原因**，我差点据此写出一条错误结论。
+
+### 三、下一步的候选（都不是时钟）
+
+1. **`parf_slv_addr_space_size`（`0x358`）**：已写 `0x4000000` 并回读正确。但这是「slave 地址空间大小」，
+   决定这段窗口对外可见的地址范围。若它必须**包含** `0x60000000` 这一段的基址，而基址现在是 0，
+   那窗口的地址映射本身就不成立。
+2. **`parf_axi_mstr_wr_addr_halt_v2`（`0x1a8`）**：已写 bit31，回读 `0x80000014`。
+   vendor 用它「halt the master's write address」，可能必须在某一步**释放**而不是置位。
+3. 这一段可能依赖 `conf` 窗口（`0x60100000`）先映射——从未读过，也从未验证。
+4. **最根本的**：我们从未验证过这一段在**任何**内核状态下可读。`elbi` 一次都没读过，
+   `iatu` 只在会挂的那一轮被碰过。所以「它可读」这个前提本身从未成立过。
