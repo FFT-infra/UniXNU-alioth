@@ -81,6 +81,10 @@ constexpr uint8_t kRtSts = 0x10, kSetType = 0x11, kPolHigh = 0x12, kPolLow = 0x1
 // The status word is decoded by bt_status_result in ButtonsCore.h, not by bit tests here.
 // PDC: pin 1, SPI 481, IRQ_i_CFG at 0x110, enable bank at 0x10 (qcom-pdc.c:31-34).
 constexpr uint32_t kPdcPin = BT_PDC_PIN, kSpi = BT_SPI, kPdcCfg = 0x110, kPdcEnableBank = 0x10, kPdcVersion = 0x1000;
+// The thread's poll period. Without an interrupt it must still read the levels, so the wait
+// times out and re-reads; 50 ms is the reference board's default and is finer than any human
+// press. A working interrupt wakes it sooner, so this costs nothing once the line is attached.
+constexpr uint32_t kPollMs = 50;
 
 struct Window {IOMemoryMap *map; volatile uint32_t *va;};
 Window gCore, gCnfg, gObs, gChn, gIntr, gPdc;
@@ -148,9 +152,13 @@ int findApid(uint32_t ppid) {
         // spmi-pmic-arb.c:50), not at cnfg + 4 * apid. Reading the wrong register is what
         // rejected the PON in u279, where off=1 proved the map entry existed.
         const uint32_t owner = gCnfg.va[bt_ownership_offset(i) / 4];
+        // Record every match's APID and owner EE, not just the first. [6] used to hold one
+        // sample, and because only the PON satisfied the filter it could never describe the
+        // GPIO - so "the GPIO's owner EE is 2" was read out of a field that never held it.
+        // [8] and [9] carry the most recent match: APID, then irq-owner bit | owner EE.
+        native_buttons_stats[8] = (int32_t)i;
+        native_buttons_stats[9] = (int32_t)((bt_entry_irq_owner(map) ? 1 : 0) << 16 | bt_owner_ee(owner));
         if (matched == 1) {
-            // One sample of what the rejection saw, for the next round: the entry's IRQ-owner
-            // bit and this APID's owner EE both land in [6].
             native_buttons_stats[6] = (int32_t)((bt_entry_irq_owner(map) ? 1 : 0) << 16 | bt_owner_ee(owner));
         }
         if (bt_entry_irq_owner(map) && bt_owner_ee(owner) == 0) found = (int)i;
@@ -239,7 +247,9 @@ bool setup() {
     // recorded in [7]'s neighbour below so a round can show what it actually held.
     gConfigWord = gCore.va[0x04 / 4];
     native_buttons_stats[7] = (int32_t)gPdc.va[kPdcVersion / 4];
-    native_buttons_stats[8] = (int32_t)gPdc.va[kPdcVersion / 4];
+    // [8] is BootLog's "err" and must stay -1 until a step actually fails; copying the PDC
+    // version into it made "err=131072" read as an error code that was really the version.
+    native_buttons_stats[8] = -1;
     // The layout follows the version, as the vendor driver's ops table does. Only the v5 layout
     // is implemented: it keeps every channel register inside the 0x10000 * apid page, which is
     // what this board's 32 MiB chnls window implies. A version this code does not know is
@@ -256,9 +266,9 @@ bool setup() {
     native_buttons_stats[0] = 1;
     gPon = findApid(kPonPpid); gGpio = findApid(kGpioPpid);
     native_buttons_stats[4] = gPon; native_buttons_stats[5] = gGpio;
-    // [9] carries core[0x04] on the healthy path: BootLog calls it "spur", which only matters
-    // once interrupts are armed. This is what the field held when it was mistaken for a count.
-    native_buttons_stats[9] = (int32_t)(gConfigWord & 0x7ffu);
+    // [9] is left as findApid set it - the last matched entry's irq-owner bit and owner EE -
+    // because that is what the next round needs to explain the GPIO. The core[0x04] word it
+    // used to carry here is in gConfigWord and no longer read as an APID count.
     if (gPon < 0) {
         // off carries the PPID match count on this failure path, where no interrupt has been
         // cleared yet: 0 means 0x008 is absent from the APID map, nonzero means it is present
@@ -308,7 +318,12 @@ void buttonsThread(void *, wait_result_t) {
             void (*sink)(void *, uint32_t) = __atomic_load_n(&gSink, __ATOMIC_ACQUIRE);
             if (sink) {sink(gSinkContext, mask); native_buttons_stats[2] = native_buttons_stats[2] + 1;}
         }
-        assert_wait((event_t)&gEvents, THREAD_UNINT);
+        // Wait for an interrupt, but not forever. btn2/btn4/btn6 all read irq=0, so no
+        // interrupt has ever arrived: with a plain assert_wait the thread blocks on the first
+        // pass and never reads the levels again, and rep=1 is that single sample rather than
+        // a button being reported. A timeout makes the same thread a poller when the interrupt
+        // path is dead, which is what the three identical rounds were actually showing.
+        assert_wait_timeout((event_t)&gEvents, THREAD_UNINT, kPollMs, 1000 * NSEC_PER_USEC);
         if (gEvents != seen) clear_wait(current_thread(), THREAD_AWAKENED);
         else thread_block(THREAD_CONTINUE_NULL);
         seen = gEvents;
