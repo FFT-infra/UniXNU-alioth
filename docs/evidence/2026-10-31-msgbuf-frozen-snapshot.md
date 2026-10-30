@@ -73,8 +73,10 @@ start = (bufx + size - cap) % size = bufx          <- 环的最老字节
 
 `read-sheng-log.py` 加 version 5 分支：
 
-- `header_fields()` 只在 `header_bytes >= 156` 时读 `frozen_first`/`frozen_round`，
-  旧镜像默认 `(0, 0)`。
+- `header_fields()` 只在 `header_bytes >= 160` 时读 `frozen_first`/`frozen_round`，
+  旧镜像默认 `(0, 0)`。**160 是 v5 的精确 `sizeof`，不是下界**：v4 是 152，加两个
+  uint32（字节 148..155）后补齐到 8 就是 160。`header_bytes` 是读者判断「这一段在不在」
+  的唯一依据，v6 加字段时下一个人会照这个数字推，所以必须精确。
 - 输出多一个 `frozen.txt`：`frozen_first` 非零时写那 32 块；为零时写
   `# no frozen snapshot: header version N, frozen_first 0 (not taken)`。
   **写说明而不是空文件**，这样「没冻结」是可见的，不会被误当成「冻结了但没内容」。
@@ -151,4 +153,5 @@ rc = 0
 | 单文件编译 | **事实**，rc=0 |
 | 阅读器 v4 兼容 | **事实**，对 u276 的 v4 日志跑通，`frozen_first` 默认 0 |
 | 阅读器 v5 分支 | **事实**，用改过 header 的副本模拟，`frozen_first=33` 时读出了内容 |
+| 阈值边界 | **事实**，`header_bytes=156` 时返回 `(0,0)`，`=160` 时才读；编译器确认 `sizeof=160` |
 | 真机效果 | **未验证**，需要一轮长跑（≥240 s） |

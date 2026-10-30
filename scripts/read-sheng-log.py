@@ -82,8 +82,12 @@ def header_fields(d):
     diag_first, diag_bytes = struct.unpack_from('<2I', d, 140)
     # version 5 adds the frozen early-boot snapshot. Older images stop before these bytes, so read
     # them only when the header says it carries them, and treat a zero block as "not taken".
+    # The threshold is the exact v5 size, not a lower bound: sizeof(struct boot_log_header) is 160
+    # for version 5 (152 for version 4, plus the two uint32 at 148..155, padded to 8). header_bytes
+    # is the only thing a reader has to tell whether a section exists, so the next version must be
+    # able to derive its own starting value from this one; a fuzzy range would let it guess wrong.
     frozen_first, frozen_round = (struct.unpack_from('<2I', d, 148)
-                                  if header_bytes >= 156 else (0, 0))
+                                  if header_bytes >= 160 else (0, 0))
     return {
         'magic': d[0:8].decode('latin1'),
         'version': version, 'header_bytes': header_bytes,
