@@ -503,3 +503,42 @@ Buttons are **not** verified. The driver is in the tree and the hardware facts (
 shown to reach the HID device, and the interrupt path has never fired. `reference.md:156`
 records this board as "cannot - buttons not implemented"; that is now the wrong fault, and the
 right one is "implemented, mechanism unverified".
+
+## 2026-10-31 bt2: the GPIO's owner EE, and a counter that could not tell two things apart
+
+Image `tmp/boot-bt2.img`, sha256
+`8f53b0ccedd100baec4925c942d98c58daadd0b82bc5c47be98734db620b8b81`, kernel
+`b4ad143d828c1f3ff28ba198814574995865bfbe3b1c4fa942cef4853dc1154c`, carrying `alioth-bl=1` and
+`alioth-bt=1` - one variable, so a change in the button readings cannot be a brightness sweep
+disturbing the timing. Log `build/sheng-logs/bt2-000000004ff04878`, tag `bt2`, uptime 178 s,
+89 slots, `write_errors 0`.
+
+```
+B st=3 irq=0 rep=1 mask=4 apid=13/26 off=65536 pdc=20000 err=26 spur=65536
+```
+
+`rep` is 1 in all 89 slots.
+
+### The GPIO's owner EE is 0 - a value that had never been measured
+
+`err=26` is `stats[8]`, which `findApid` now writes with the APID of each matched entry: 26 is
+the GPIO's. `spur=65536` is `stats[9]` as `irqOwner << 16 | ownerEE`, so `0x10000` is
+IRQ-owner 1 and **owner EE 0**. The GPIO is therefore not owned by another execution engine;
+the earlier reading of "2" was the PDC version number sitting in the slot BootLog calls `err`,
+and that claim is withdrawn.
+
+Both fields changing while `rep` stayed at 1 is the useful part: it proves the new code ran,
+so "the change did not take effect" is ruled out, and the fault is in the loop rather than in
+the recording.
+
+### `rep = 1` cannot answer the question it was asked
+
+`rep` counts changes of the pressed mask, so it stays at 1 both when the thread is blocked and
+when the thread polls but reads a constant level. Two different faults, one reading. The
+acceptance table that treated `rep` as "the thread is polling" was wrong for that reason.
+
+`stats[7]` now counts every pass through the loop instead. Its value is `stats[7]` after
+`setup()` plus the loop count: `setup()` writes the PDC version there unconditionally, the
+`gPpidMatches` write only happens on the `gPon < 0` path and returns immediately, so a round
+that gets past setup reads `0x20000 + N`. bt2 measured `pdc=20000`, which is the version alone
+and confirms the baseline.
