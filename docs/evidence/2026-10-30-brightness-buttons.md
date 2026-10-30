@@ -334,3 +334,29 @@ rounds cannot be reproduced byte for byte. Their readings and their sha256 are k
 btn2 (`20b2cf30585a09dc4d504f0a8d9c97729202c92eb668aca06aadddb1e4e2cb90`) and btn4
 (`74461b1c76bc27ad7caca2167d908807d609457f857fa801eb1d1960336a76d4`) are still on disk
 under `tmp/`, because each of them produced a reading.
+
+## btn6's round as this branch runs it
+
+Structure differs from btn1-btn5, which were built from the shared device repository with a
+fresh `--out` root. That root is a dead end: `unixnu tree` does not rebuild the board archives,
+so a new root starts missing `libVirtioMmioBlock.a`, the prelink candidate and the
+display-analysis record, and each round dies one item further along than the last.
+
+This branch therefore builds into the shared `out/alioth` and isolates itself with two locks
+instead:
+
+| lock | covers |
+| --- | --- |
+| `tmp/build.lock` | `defconfig` through `bootimg`, because `out/` and the kernel source tree are shared |
+| `tmp/board.lock` | every `fastboot`, `adb` and serial-port use, because those devices are exclusive |
+
+`board.toml` is this branch's own file (`alioth-bl=2` committed here), so no shared file is
+patched and restored.
+
+The image is proven to carry this round's kernel rather than assumed to: `build kernel` records
+`kernel.macho`'s sha256, and after `payload` the script compares it with `payload.json`'s
+`kernel_sha256`, failing with exit 7 on a mismatch.
+
+Acceptance is the three-outcome table above. The screen is read by a person; `stats[7]` says
+how many packets the driver launched, and the two together separate "reached the panel",
+"launched but the panel ignored it" and "never launched".
