@@ -19,11 +19,11 @@
 //              Active low, so a clear bit is a press.
 //
 // The PPIDs the arbiter maps: ppid = sid << 8 | (peripheral address >> 8)
-// (spmi-pmic-arb.c:977,996), so PON is 0x008 and GPIO 6 is 0x0c6 - NOT sheng's 0x013/0x18d,
+// (spmi-pmic-arb.c:977,996), so PON is 0x008 and GPIO 6 is 0x0c5 - NOT sheng's 0x013/0x18d,
 // whose board has its PON and GPIO at different peripheral pages. Copying sheng's values would
 // ask the arbiter for a peripheral this phone does not have.
 //
-// GPIO 6's PPID is 0x0c6 because its own SPMI interrupt names the peripheral 0xc6, not the pad's
+// GPIO 6's PPID is 0x0c5 because its own SPMI interrupt names the peripheral 0xc5, not the pad's
 // full address 0xc600: alioth.dts:4261 lists interrupts = <0x00 0xc6 0x00 0x00> named
 // "pm8150_gpio6", and the arbiter keys the peripheral page. Deriving it from the pad address
 // (0xc600 >> 8 = 0xc6, which happens to agree here) is the same number, but the interrupt is the

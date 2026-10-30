@@ -18,10 +18,14 @@ enum {
   BT_CORE = 0xc440000, BT_CHNLS = 0xc600000, BT_OBSRVR = 0xe600000, BT_INTR = 0xe700000,
   BT_CNFG = 0xc40a000, BT_PDC = 0xb220000,
   BT_PON_PPID = 0x008,     // sid 0, peripheral 0x800: ppid = sid << 8 | (addr >> 8)
-  // GPIO 6's own SPMI interrupt names peripheral 0xc6, not 0xc600: the pad's interrupt
-  // sub-peripheral is 0xc6 and the arbiter keys on the peripheral page, so ppid = 0xc6
-  // (alioth.dts:4261, interrupts = <0x00 0xc6 0x00 0x00> named pm8150_gpio6).
-  BT_GPIO_PPID = 0x0c6,
+  // GPIO 6's own SPMI interrupt names peripheral 0xc5, so ppid = 0x0c5. The pad sits at
+  // 0xc500, not 0xc600: the block is reg = <0xc000 0xa00> with 0x100 per pad and pads numbered
+  // from 1 (PMIC_GPIO_PHYSICAL_OFFSET, pinctrl-spmi-gpio.c:102,1108), so gpio_idx 6 is i = 5
+  // and pad->base = 0xc000 + 5 * 0x100 (:1120). The devicetree's own interrupt list agrees:
+  // qcom,gpios-disallowed = <2 4 5 8> and the names pm8150_gpio1/3/6/7/9/10 name peripherals
+  // 0xc0/0xc2/0xc5/0xc6/0xc8/0xc9 (alioth.dts:4257-4262), so 0xc5 is GPIO 6 and 0xc6 is GPIO 7.
+  // Reading 0xc600 read GPIO 7's pad, whose RT_STS is a different register.
+  BT_GPIO_PPID = 0x0c5,
   BT_PDC_PIN = 1, BT_SPI = 481,   // PDC pin 1 -> GIC SPI 0x1e0 + 1
 };
 

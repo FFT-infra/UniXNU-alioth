@@ -25,7 +25,11 @@ int main(void) {
   // GPIO 6's SPMI interrupt names the peripheral 0xc6 (alioth.dts:4261), and the arbiter keys
   // on that page, so the PPID is 0xc6 - not 0xc600 >> 8 from the pad's own address and not
   // sheng's 0x18d.
-  assert(ppid_for(0, 0xc600) == BT_GPIO_PPID);
+  // GPIO 6 is at 0xc500: pads are 0x100 apart from a 0xc000 base and numbered from 1, so
+  // gpio_idx 6 is the sixth pad (i = 5). The devicetree's own interrupt list names peripheral
+  // 0xc5 for pm8150_gpio6 and 0xc6 for pm8150_gpio7, which agrees.
+  assert(ppid_for(0, 0xc500) == BT_GPIO_PPID);
+  assert(ppid_for(0, 0xc600) != BT_GPIO_PPID);   // 0xc600 is GPIO 7
   assert(BT_PON_PPID != 0x013 && BT_GPIO_PPID != 0x18d);
 
   // The PDC hop: pin 1 to GIC SPI 0x1e0 + 1 = 481, which the driver attaches as 32 + 481.
