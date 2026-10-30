@@ -294,3 +294,24 @@ btn6 leads mode 2 with three off/on blinks (`0x28` then `0x10`, `0x11` then `0x2
 second dark each). That is the check that needs neither a read-back nor an observer judging a
 small brightness change: if the packets reach the panel the screen goes dark and comes back,
 and if it does not, the packets are not arriving and no read-back could have been trusted.
+
+## btn6's acceptance criteria
+
+Mode 2 leads with three off/on blinks before the level sweep, and `stats[7]` counts how many
+packets were launched. The two together separate three outcomes, not two - and the third is
+the one that decides what to do next.
+
+| Screen | `stats[7]` | Meaning | Next |
+| --- | --- | --- | --- |
+| blinks three times | 3 | the packets reach the panel | brightness works; continue with the sweep and the iOS service |
+| no blink | 3 | the packets were launched but the panel did not act | the TPG FIFO path does not hold on this command-mode panel; implement the vendor's DMA-buffer path instead |
+| no blink | < 3 | the controller never launched the packet | the launch sequence itself is wrong; check DMA_CTRL, DMA_LENGTH and the trigger |
+
+`stats[7]` alone cannot tell "the panel received it" from "the packet never left", so a
+reading of 3 with no blink is not evidence that anything reached the panel - it is evidence
+that the driver issued the packet. The screen is what separates those two.
+
+The blink itself: `0x28` (display off), 120 ms, `0x10` (sleep in), 1000 ms dark, `0x11`
+(sleep out), 80 ms, `0x29` (display on), three times with 800 ms between. A one-second dark
+screen is unmistakable, which is why this replaced judging a few levels of brightness on a
+lock screen.
