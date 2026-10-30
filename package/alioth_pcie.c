@@ -936,7 +936,32 @@ step_elbi(void)
 static bool
 step_dm_core(void)
 {
-	uint32_t v;
+	uint32_t v, probe = 0;
+
+	/*
+	 * pcie_probe=conf: read the configuration window (0x60100000) before touching dm_core.
+	 *
+	 * A separate switch on purpose. dm_core and iatu both hang on their first access, and both
+	 * are inside 0x60000000..0x60002000; conf is a different window on the same controller.
+	 * If conf reads, the failure is specific to that range. If conf hangs too, it is something
+	 * broader -- every window except parf and phy -- and the range stops being the suspect.
+	 *
+	 * The vendor reads exactly this word to decide whether the endpoint's config space is up:
+	 * readl(dev->conf) != PCIE_LINK_DOWN, where PCIE_LINK_DOWN is 0xffffffff
+	 * (pci-msm.c:4611, :202). So a return of 0xffffffff here has the vendor's own meaning.
+	 */
+	PE_parse_boot_argn("pcie_probe", &probe, sizeof(probe));
+	if (probe != 0) {
+		uint32_t conf;
+
+		announce("probe the configuration window (0x60100000) before dm_core, to say whether the failure "
+		    "is this range or every window but parf and phy");
+		conf = get(5, "conf_vendor_device (window probe)", 0x00);
+		line("the configuration window returned %#x (%s)", conf,
+		    conf == 0xffffffffu ? "0xffffffff -- PCIE_LINK_DOWN, the vendor's own \"not accessible\" value"
+		                         : "not 0xffffffff -- the window answered, so the failure is specific to 0x60000000");
+		return true;            /* stop here: the probe is the whole round */
+	}
 
 	announce("the seven dm_core writes the vendor makes before it reads ELBI; the first access this file "
 	    "has ever made to 0x60000000");
