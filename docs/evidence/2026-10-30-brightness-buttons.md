@@ -750,3 +750,36 @@ This is the same fault as the seven in the table above, and the same one I had a
 criticised in this file - a check that produces a message instead of an exit. A gate has to
 stop the thing it guards, not report on it. Fixed by making the lost race `exit 1` before
 anything touches the board.
+
+## 2026-10-31 bt5: presses are detected and reported
+
+Round `bt5` is bt4's image booted a second time, so the log directory is
+`build/sheng-logs/bt4-000000004df5b202` (tag `bt4`, a different boot id from the earlier
+`bt4-00000001d6232c52`). Image sha
+`6a544622bfb51421080debefc3a9fbe48b718aa89b5da0bf8f8eac13dda33c56`, unchanged from bt4.
+Uptime 178 s, 90 slots, `write_errors 0`.
+
+```
+ 67 slots  irq=0  rep=0  mask=0     before any press
+  1 slot   irq=5  rep=4  mask=0
+ 22 slots  irq=9  rep=6  mask=0
+```
+
+`pdc` climbs `0x20013` to `0x20ddb`, so the thread polled throughout.
+
+### What this proves
+
+`irq` goes 0 to 9 and `rep` 0 to 6: **presses reached the driver, produced interrupts, and
+were published as HID reports.** Combined with bt4's `mask=0` at rest, the button path works
+end to end.
+
+### What it does not prove, and why that is a sampling limit
+
+`mask` is 0 in all 90 slots even though `rep` moved 6 times. `mask` is the value at the instant
+the log snapshots, once per slot, and a slot is about 2 s; a press shorter than that leaves no
+trace in `mask` even though the thread saw it. The `rep` counter is the record of those
+transitions, and it is the one that moved.
+
+So the four-value test (`0`, `4`, `8`, `c`) is not satisfied by this round, and it is not a
+fault: it needs presses held across a slot boundary, and the presses here were short. **`rep`
+0 to 6 with `irq` 0 to 9 is the positive evidence**; `mask` would only name which key.
