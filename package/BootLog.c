@@ -186,26 +186,7 @@ static char boot_log_reset_probe_text[240], boot_log_reset_result[200], boot_log
 struct boot_log_msgbuf {int msg_magic, msg_size, msg_bufx, msg_bufr; char *msg_bufc;};
 extern struct boot_log_msgbuf *msgbufp;
 
-/* The message-buffer region is a RING of LogMsgRing snapshots, not one fixed block.
- *
- * Each 2 s round copies the kernel's msgbuf tail (copy_msgbuf) into one snapshot slot and rewrites
- * the header so msg_first points at the snapshot it just wrote. The reader follows msg_first
- * (read-sheng-log.py locates by h['msg_first']), so it needs no change.
- *
- * Why the ring: the kernel msgbuf is CONFIG_MSG_BSIZE_DEV = 131072 bytes (config/MASTER:286) and
- * this board's console emits about 996 B/s, so one snapshot holds only the last ~132 s. IOLog does
- * reach msgbuf (IOLib.cpp:1581 -> os/log.c:789 -> subr_prf.c:391), so the loss is not the path but
- * the window: a fixed destination block means every round overwrites the same 128 KiB, and a run
- * longer than ~132 s has already wrapped past the boot-time IOLog that a failed kext probe emits.
- *
- * Cost and effect: LogMsgRing snapshots x LogMsgBlocks x LogBlock = 4 x 32 x 4096 = 512 KiB, which
- * takes the region from 32 blocks to 128 and the retained window from ~132 s to ~8.8 min
- * (4 x 132 s). Blocks 33..128 were unused tail of the window, so no other consumer moves.
- * h.slots_written is uint32_t, so (slots_written % LogMsgRing) cannot wrap or overflow.
- */
-enum {LogBlock = 4096, LogMsgFirst = 1, LogMsgBlocks = 32, LogMsgRing = 4,
-      LogSlotFirst = LogMsgFirst + LogMsgBlocks * LogMsgRing,   /* 1 + 128 = 129 */
-      LogSlotBlocks = 16, LogPeriodMs = 2000, LogMaxErrors = 3,
+enum {LogBlock = 4096, LogMsgFirst = 1, LogMsgBlocks = 32, LogSlotFirst = 33, LogSlotBlocks = 16, LogPeriodMs = 2000, LogMaxErrors = 3,
       LogExportStage = 64};   // export bytes staged per write: 256 KiB
 struct boot_log_header {
   char magic[8];                 // "SHLOG001"
@@ -1213,11 +1194,7 @@ static void writer(void *arg, wait_result_t result) {
     log_phase = 2;
     h.msg_bytes = copy_msgbuf(boot_log_buffer);
     log_phase = 3;
-    /* Rotate the snapshot block and publish its index in msg_first before the header write, so a
-     * reader always finds the newest complete snapshot. LogMsgRing is a power of two and
-     * slots_written is uint32_t, so the modulo is a plain mask over a value that cannot overflow. */
-    h.msg_first = LogMsgFirst + (h.slots_written % LogMsgRing) * LogMsgBlocks;
-    ok &= native_ufs_log_write(h.msg_first, LogMsgBlocks, boot_log_buffer);
+    ok &= native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
     log_phase = 4;
     if (ok) ++h.slots_written;
     else ++h.write_errors;
