@@ -562,7 +562,7 @@ kernel_args = [
   #                 alioth-bl-level sets the level; mode 2 and 3 add readback and sweep.
   # Both are read-only probes until a mode above 1 is asked for.
   "alioth-bt=1",
-  "alioth-bl=2",
+  "alioth-bl=1",
   # sheng-data-persist=2 opens the Data store read-write. Without it the seed is what the kernel
   # calls a big volume (3 GiB) and the ram-block driver has no volatile mode for one: it serves
   # reads from the seed and does not complete writes until a store is attached, and the store
