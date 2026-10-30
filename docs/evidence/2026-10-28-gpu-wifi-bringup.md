@@ -226,3 +226,59 @@ step 8 读 `0`，step 9 之后仍读 `0`。本文件从不写 `PARF_LTSSM` bit 8
 2. 写 `PARF_LTSSM` bit 8 打开训练，然后才有 `parf_ltssm` 可读。
 3. step 10 的挂死仍无解释；现在已排除「时钟投票」与「DBI base 清零错位」两条。
    剩下的候选是 IATU 页自身的访问许可，或 conf 窗口映射（我们 `0x1000`、vendor `0x100000`）。
+
+## 2026-10-31 00:20：wifi2 轮，两块端点 pad 第一次被驱动
+
+tag `wifi2`，`pcie=10 pcie_skip=32`，kernel `d9faf2fa…`。**这一轮被污染，见文末。**
+
+### 一、两个 pad 在 bootloader 之后的状态（事实）
+
+```
+PCIE 10: tlmm gpio20 cfg (wlan-en) = 0x1      io = 0x0
+PCIE 10: tlmm gpio79 cfg (perst)   = 0x1      io = 0x0
+```
+
+`io = 0` 表示 out 位为 0 且 in 位读回 0：**WLAN_EN 低（未使能）、PERST# 低（复位被按住）**。
+这就是「端点一直没上电、一直在复位」的直接证据，此前只是推断。
+
+### 二、step 10 写入后回读全部正确（事实）
+
+```
+gpio20 cfg = 0x3c3  (pull-up | func gpio | drive16 | OE)   io = 0x3  → WLAN_EN HIGH
+gpio79 cfg = 0x201  (pull-down | func gpio | drive2 | OE)   io = 0x3  → PERST# RELEASED
+```
+
+两块 pad 都接受写入，且 `io = 0x3` 说明 out 位已置、in 位也读回 1（pad 真的被拉高）。
+
+### 三、`parf_ltssm` 仍是 0（事实）
+
+```
+PCIE 10: parf parf_ltssm after the endpoint enable = 0
+```
+
+【推断】这是预期结果，不是失败：本文件从不写 `PARF_LTSSM` bit 8，而 vendor 正是写它才开始训练
+（`pci-msm.c:4409`）。GPIO 让端点有电、出复位，训练的开关还没打开。
+下一单变量应当是 `PARF_LTSSM` bit 8。
+
+### 四、这一轮被污染（事实，必须记）
+
+镜像里多了两个不属于本轮的参数，来自另一个会话 00:16 的提交 `6e32f37`：
+
+```
+alioth-bt=1
+alioth-bl=1
+```
+
+wifi1 的镜像没有它们（逐字节核对过）。后果：本轮 `GPUROW` 与 `WALLPAPER` 行数为 0
+（wifi1 分别是 323 与 19），`BLPHASE` 心跳停在 t=3s（wifi1 到 t=173s）。
+`BLPHASE` 由 `boot_log_tick` 打印，而 autoreset 就住在同一个函数里
+（`BootLog.c:1278-1305`），所以它停 = autoreset 从未武装 = 板子不会自己回 fastboot。
+内核仍活着（串口持续有 `TOUCHREG polls=`），需要断电重启。
+
+**不能据此归因**：两个变量同时变了。GPIO 那三行读数在显示路径出问题之前就已完成，
+所以 §1–§3 的数据仍然有效；但「为什么 `BLPHASE` 停了」这一条，本轮无法回答。
+
+### 五、下一轮（wifi3）
+
+1. 构建前确认 `board.toml` 不含 `alioth-bt` / `alioth-bl`，否则又是两变量。
+2. 单变量 = `PARF_LTSSM` bit 8，然后读 `parf_ltssm`。
