@@ -976,3 +976,97 @@ if ((pa) & pt_attr_leaf_offmask(pt_attr)) {
 | **「只是某段地址」** | **排除（wifi10：conf 也挂）** |
 
 剩下的是**这片 DWC 地址空间在总线上没有应答**——即 AP 侧到 DWC slave 端口之间有一个我们没打开的门。
+
+## 2026-10-31 05:00：vendor 在读 dm_core 之前使能了两路 PMIC 稳压器，我们从未做过
+
+离线核对（不用板子）。这条给出条件表上第 9 条，而且它有具体的机制，不是「也许某条件」。
+
+### 一、地址常量与真机 DTB 逐项一致（事实，先排除「地址抄错」）
+
+| 项 | `blocks[]` 常量 | 启动 DTB 的 `reg` |
+| --- | --- | --- |
+| parf | `0x01c00000` + `0x3000` | `0x1c00000 0x3000` |
+| phy | `0x01c06000` + `0x1000` | `0x1c06000 0x1000` |
+| dm_core | `0x60000000` + `0x1000` | `0x60000000 0xf1d` |
+| elbi | `0x60000f20` + `0xa8` | `0x60000f20 0xa8` |
+| iatu | `0x60001000` + `0x1000` | `0x60001000 0x1000` |
+| conf | `0x60100000` + `0x1000` | `0x60100000 0x100000` |
+
+**逐项对上**（`dm_core` 我们映射 4 KiB、vendor 声明 `0xf1d`，不影响基址）。
+所以「常量抄错」这条排除。
+
+### 二、vendor 在第一次碰 dm_core 之前做了什么（事实）
+
+`msm_pcie_enable`（`pci-msm.c:4477`）里，顺序是：
+
+```
+4477  gpio_set_value(PERST, assert)
+4483  msm_pcie_vreg_init(dev)          <-- PMIC 稳压器
+4489  msm_pcie_clk_init(dev)           <-- GCC 时钟
+4499  write_reg(parf, DEVICE_TYPE, 4)
+4508  write_mask(parf, PHY_CTRL, BIT(0), 0)
+4511  write_reg(parf, DBI_BASE_ADDR, 0)
+4513  write_reg(parf, SYS_CTRL, 0x365E)
+4516  write_mask(parf, MHI_CLOCK_RESET_CTRL, 0, BIT(4))
+...
+4558  write_reg(parf, SLV_ADDR_SPACE_SIZE, ...)
+4561  write_reg(parf, AXI_MSTR_WR_ADDR_HALT, BIT(31)|val)
+4574  pcie_phy_init(dev)
+...
+4611  readl(dev->conf)                 <-- 第一次碰 0x60100000
+```
+
+**除了 parf，vendor 还做了两件我们没做的事**：
+1. `msm_pcie_vreg_init`（4483）—— PMIC 稳压器
+2. `msm_pcie_clk_init`（4489）—— 我们做了时钟，见下
+
+### 三、`msm_pcie_vreg_init` 的两路必开轨（事实）
+
+`pci-msm.c:930-935`：
+```c
+{NULL, "vreg-3p3", 0,       0,       0,     false},
+{NULL, "vreg-1p8", 1800000, 1800000, 14000, true},   <-- required
+{NULL, "vreg-0p9", 1000000, 1000000, 40000, true},   <-- required
+{NULL, "vreg-cx",  0,       0,       0,     false},
+```
+
+`kona-pcie.dtsi:47-49`：
+```
+vreg-1p8-supply = <&pm8150_l9>;      /* 1.8 V */
+vreg-0p9-supply = <&pm8150_l5>;      /* 0.9 V */
+vreg-cx-supply  = <&VDD_CX_LEVEL>;
+```
+
+**这两路是 `required = true`**，vendor 在碰任何 `0x60000000` 之前就把它们打开了。
+
+### 四、我们从未开过任何轨（事实）
+
+`grep pm8150|l9|l5|vreg|regulator|rpmh` 在 `alioth_pcie.c` 全文 → **0 命中**。
+`NEW/UniXNU/drivers/` 里也**没有任何 SPMI/RPMh 稳压器驱动**
+（只有 Adreno、ArmCpu、GopFramebuffer、QcomGeniSpi、RamBlock 等）。
+
+**所以本树根本没有「打开 PMIC 轨」的能力。** 这是 9 条里唯一一条**我们完全不具备机制**的。
+
+### 五、为什么这能解释「DWC 全挂、parf 可读」
+
+- `0x01c00000`（parf/phy）在 **CX 域**，CX 已由 GPU 那条线证明可上电；
+- `0x60000000`（DWC 的 dm_core/elbi/iatu/conf）需要 **1.8 V + 0.9 V 两路 PMIC 轨**。
+  轨没开 → DWC 的 slave 端口没有供电 → **AXI 访问不返回**，正是我们测到的形状。
+
+**这与「parf 可读、DWC 全挂」完全一致，而且它不需要「某片地址特别」这种说法。**
+
+### 六、条件表（第 9 条）
+
+| # | 解释 | 状态 |
+| --- | --- | --- |
+| 1 | SMMU SID | 排除 |
+| 2 | VA 记账错 | 排除 |
+| 3 | 映射属性错 | 排除 |
+| 4 | 映射未建立/静默失败 | 排除 |
+| 5 | 没上电（控制器 GDSC） | 排除（wifi7） |
+| 6 | 没投票（GCC 时钟） | 排除（wifi5/7） |
+| 7 | 漏了 vendor 的 dm_core 写 | 排除（wifi9） |
+| 8 | 「只是某段地址」 | 排除（wifi10：conf 也挂） |
+| 9 | **PMIC 稳压器未开（1.8 V / 0.9 V）** | **未测，且本树无此机制** |
+
+**注意措辞**：这 9 条是「已想到的解释」的列表，不是「全部解释」。第 9 条本身就不在原 8 条里。
