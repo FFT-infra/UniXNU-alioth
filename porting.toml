@@ -4,7 +4,7 @@ schema_version = 1
 name = "alioth"
 soc = "SM8250"
 os_profile = "ipados-17.7.11-21H461"
-summary = "UFS root, launchd, touch and a published GPU device with the staged Metal accelerator; the desktop does not draw yet and there is no Wi-Fi."
+summary = "UFS root with launchd, a stable lock screen, touch input and a published GPU device driving the staged Metal accelerator; the desktop draws on the parity pin but SpringBoard loses its Metal device at the client IOVA window, and there is no Wi-Fi."
 
 [[area]]
 id = "configuration"
@@ -231,7 +231,7 @@ evidence = [{ kind = "device", command = "sh scripts/run-sheng-unattended.sh <bo
 
 [[area]]
 id = "network"
-status = "implemented"
+status = "planned"
 components = []
 paths = ["package/alioth_pcie.c", "drivers/Ath12kWifi", "package/*Wifi*", "package/MhiBoot*", "scripts/*wifi*", "scripts/*mhi*"]
 inputs = [

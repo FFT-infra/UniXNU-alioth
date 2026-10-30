@@ -10,6 +10,7 @@ Read this README and the following UniXNU documentation before changing the port
 | Task | Required reading |
 | --- | --- |
 | Every port | [Porting](https://unixnu.com/porting/), [device repository](https://unixnu.com/porting/device-repository), [component catalog](https://unixnu.com/reference/components), UniXNU `components.toml` |
+| This board | [Device page](https://unixnu.com/zh/devices/alioth), [`porting.toml`](porting.toml) and [record levels](https://unixnu.com/zh/porting/records) |
 | Hardware | [Device tree](https://unixnu.com/porting/device-tree), [matching](https://unixnu.com/drivers/device-tree-matching), selected SoC README, AGENTS, soc.toml and DTSI |
 | Component | Its site page, README, catalog build command, dependencies and source |
 | Kernel | [Source and patches](https://unixnu.com/xnu/source-and-patches), [patch reference](https://unixnu.com/xnu/patch-reference), selected OS profile |
