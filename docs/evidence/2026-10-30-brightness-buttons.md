@@ -646,3 +646,48 @@ first one being fixed made the second visible: with `irq=0` nothing could distin
 
 bt4 carries the `0xc5` correction. Its test is whether `mask` ever shows `0` or `8`; a round
 that still shows only `4` and `c` means the address was not the fault.
+
+## 2026-10-31 bt4: the GPIO address was the fault - `mask` reaches 0
+
+Image `tmp/boot-bt4.img`, kernel
+`ec19e7632ae41c2a4113a92ca0abec2d76f9932a5644fd374d827d4a95a1146b`, carrying `alioth-bl=1` and
+`alioth-bt=1` with `BT_GPIO_PPID = 0x0c5`. Log `build/sheng-logs/bt4-00000001d6232c52`, tag
+`bt4`, an early snapshot (uptime 4 s, 3 slots) - enough for the idle reading, which is what the
+test asks for.
+
+```
+B st=3 irq=0 rep=0 mask=0 apid=13/25 off=65536 pdc=20013..20062 err=25 spur=65536
+```
+
+### The idle mask is 0
+
+bt3 never produced `mask=0` in 90 slots; it was `4` (volume up) or `c` (volume up and down),
+because bit 2 was set in every slot. bt4 reads **`mask=0` with nothing pressed**, which is the
+GPIO's released state under `GPIO_ACTIVE_LOW` with the pull-up.
+
+The APID moved with it: `apid=13/25` where bt3 read `13/26`, and `err=25` (the last matched
+APID) agrees. `0xc5` is GPIO 6 and `0xc6` was GPIO 7.
+
+`pdc` climbs `0x20013` to `0x20062` in the snapshot, so the thread is polling, and `rep=0` with
+no press is correct - it counted no changes because there were none.
+
+### Why 0xc5 is right, from three independent sources
+
+| source | what it says |
+| --- | --- |
+| `alioth.dts:4257-4262` | `qcom,gpios-disallowed = <2 4 5 8>` and the names `pm8150_gpio1/3/6/7/9/10` name peripherals `0xc0/0xc2/0xc5/0xc6/0xc8/0xc9`, so `pm8150_gpio6` is `0xc5` |
+| `pinctrl-spmi-gpio.c:102,1108` | `PMIC_GPIO_PHYSICAL_OFFSET = 1`, `pad->gpio_idx = i + 1` |
+| `pinctrl-spmi-gpio.c:751-772` | `of_xlate` compares the devicetree's number directly against `pad->gpio_idx`, so `gpios = <... 6 ...>` means `gpio_idx 6`, `i = 5`, `pad->base = 0xc500` |
+
+The devicetree's `interrupts` list had been read as if pad addresses were 0-based, which put
+GPIO 6 at `0xc600` - one pad too high.
+
+### What this establishes
+
+The GPIO level is now read correctly: released when nothing is pressed. Combined with bt3, the
+three layers are each confirmed separately - the thread polls (`pdc`), the SPMI interrupt path
+works (`irq` 0 to 42 on the PON), and the pad level is right (`mask=0` at rest).
+
+**Not yet shown:** that pressing volume-up moves `mask` to `4`, and that volume-down moves it
+to `8` independently. bt4's snapshot was too early for a press. That is the next round's
+single question, and it needs one press per key.
