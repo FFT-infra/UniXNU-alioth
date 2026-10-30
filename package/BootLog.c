@@ -186,7 +186,35 @@ static char boot_log_reset_probe_text[240], boot_log_reset_result[200], boot_log
 struct boot_log_msgbuf {int msg_magic, msg_size, msg_bufx, msg_bufr; char *msg_bufc;};
 extern struct boot_log_msgbuf *msgbufp;
 
-enum {LogBlock = 4096, LogMsgFirst = 1, LogMsgBlocks = 32, LogSlotFirst = 33, LogSlotBlocks = 16, LogPeriodMs = 2000, LogMaxErrors = 3,
+/* Two message-buffer snapshots, not one, and the second is frozen.
+ *
+ * copy_msgbuf (below) copies the newest LogMsgBlocks*LogBlock bytes of the kernel msgbuf. The
+ * kernel msgbuf is CONFIG_MSG_BSIZE_DEV = 131072 (config/MASTER:286) and the region is the same
+ * 131072 bytes, so keep == size and the copy is the WHOLE ring: every round stores the same
+ * ~132 s window with ~2 s of new content. Rotating that copy across several blocks would only
+ * stack overlapping windows a few seconds apart. It cannot lengthen the window, because the
+ * bytes that have already fallen out of the kernel ring no longer exist to copy.
+ *
+ * What a failed kext probe needs is the opposite of a longer window: one snapshot taken while
+ * the boot-time IOLog is still inside the ring, kept where later rounds cannot overwrite it.
+ * IOLog does reach msgbuf (IOLib.cpp:1581 -> os/log.c:789 -> subr_prf.c:391); the loss was that
+ * a fixed destination block is rewritten every round, so after ~132 s the boot-time probe text
+ * was gone from the only copy on disk.
+ *
+ * So: the working snapshot stays at LogMsgFirst and keeps rotating content as before, and a
+ * second snapshot is written ONCE at round LogFrozenAt into LogFrozenFirst and never touched
+ * again. At 2 s per round round 60 is about t=120 s, which is inside the first ring pass, so
+ * that frozen copy holds t=0..120 s: the whole boot-time probe window. Its block number goes
+ * into the header (frozen_first, 0 = not taken) so a reader finds it without guessing.
+ *
+ * Cost: LogFrozenBlocks = 32 blocks = 128 KiB, the same as the working copy. LogSlotFirst moves
+ * from 33 to 65, and slot_count from 509 to 507 in the 8192-block window. Blocks 33..64 were
+ * unused tail before, so no other consumer moves.
+ */
+enum {LogBlock = 4096, LogMsgFirst = 1, LogMsgBlocks = 32,
+      LogFrozenFirst = 33, LogFrozenBlocks = 32, LogFrozenAt = 60,
+      LogSlotFirst = LogFrozenFirst + LogFrozenBlocks,          /* 33 + 32 = 65 */
+      LogSlotBlocks = 16, LogPeriodMs = 2000, LogMaxErrors = 3,
       LogExportStage = 64};   // export bytes staged per write: 256 KiB
 struct boot_log_header {
   char magic[8];                 // "SHLOG001"
@@ -202,6 +230,9 @@ struct boot_log_header {
   uint32_t export_below;
   // version 4: the diagnostic file export (BootDiagExport.c) at block diag_first of the export region, diag_bytes long (0 = none)
   uint32_t diag_first, diag_bytes;
+  // version 5: the frozen early-boot msgbuf snapshot at block frozen_first (LogFrozenBlocks long), taken once at
+  // round LogFrozenAt and never rewritten; 0 = not taken yet. msg_first still names the live working snapshot.
+  uint32_t frozen_first, frozen_round;
 };
 // Writer state for the board page: 0 off, 1 waiting for the window, 2 writing, 3 stopped after errors, 4 stopped (GPT changed).
 volatile uint32_t boot_log_state, boot_log_rounds, boot_log_errors;
@@ -1167,7 +1198,7 @@ static void writer(void *arg, wait_result_t result) {
   struct boot_log_header h;
   memset(&h, 0, sizeof h);
   memcpy(h.magic, "SHLOG001", 8);
-  h.version = 4; h.header_bytes = sizeof h;
+  h.version = 5; h.header_bytes = sizeof h;
   h.export_blocks = export_region; h.export_below = export_region; h.boot_id = log_ticks(); h.first_lba = first; h.window_blocks = (uint32_t)blocks;
   h.msg_first = LogMsgFirst; h.msg_blocks = LogMsgBlocks; h.slot_first = LogSlotFirst; h.slot_blocks = LogSlotBlocks; h.slot_count = slot_count;
   h.gpt_open = h.gpt_last = &native_ufs_store_gpt_check ? native_ufs_store_gpt_check() : 0xff;
@@ -1195,6 +1226,22 @@ static void writer(void *arg, wait_result_t result) {
     h.msg_bytes = copy_msgbuf(boot_log_buffer);
     log_phase = 3;
     ok &= native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
+    /* Take the frozen early-boot snapshot exactly once, while the boot-time IOLog is still inside
+     * the kernel ring. copy_msgbuf always returns the newest 131072 bytes, so at round LogFrozenAt
+     * that copy covers about t=0..120 s. Writing it to LogFrozenFirst and never touching that block
+     * again is what survives a long run; rotating the working block cannot, because the bytes that
+     * fall out of the kernel ring are gone. frozen_first is published only after the block landed,
+     * so a reader never sees a block number for a write that failed. */
+    if (!h.frozen_first && h.slots_written >= LogFrozenAt) {
+      log_phase = 11;
+      memset(boot_log_buffer, 0, LogFrozenBlocks * LogBlock);
+      (void)copy_msgbuf(boot_log_buffer);
+      if (native_ufs_log_write(LogFrozenFirst, LogFrozenBlocks, boot_log_buffer)) {
+        h.frozen_first = LogFrozenFirst;
+        h.frozen_round = h.slots_written;
+      }
+      log_phase = 3;
+    }
     log_phase = 4;
     if (ok) ++h.slots_written;
     else ++h.write_errors;
