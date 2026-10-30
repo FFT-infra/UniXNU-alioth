@@ -537,3 +537,47 @@ alioth_pcie.c:670-671  value = get(1, "parf_mhi_clock_reset_ctrl", 0x174);
 
 **下一步单变量**：给这两处各加一次回读，确认值真的落地。这是零风险（只加读），而且能把「写了但没生效」
 与「生效了仍不通」分开 —— 后者才是那一段窗口的问题。
+
+## 2026-10-31 04:18：DT 核对——地址是对的，不是从别的板抄的
+
+在动板子之前先排掉「地址本身错了」这个根本假设。
+
+### 一、真机 DTB 里的 pcie0 节点（事实）
+
+从**启动用的那份** `uefi-alioth/Resources/DTBs/alioth.dtb`（933,795 字节）反编译：
+
+```
+pcie0: qcom,pcie@1c00000 {
+    compatible = "qcom,pci-msm";
+    reg = <0x1c00000 0x3000  0x1c06000 0x1000  0x60000000 0xf1d
+           0x60000f20 0xa8  0x60001000 0x1000  0x60100000 0x100000>;
+    reg-names = "parf", "phy", "dm_core", "elbi", "iatu", "conf";
+    perst-gpio = <0x65 0x4f 0x00>;     /* TLMM 79 */
+    wake-gpio  = <0x65 0x51 0x00>;     /* TLMM 81 */
+```
+
+`0x60000000` 这一段**确实在这块板的 DWC 窗口**里，且 `perst-gpio` 的 0x4f(79) 与代码一致。
+
+### 二、为什么这是「这块板」而不是「参考板」（事实）
+
+`reference/k40-kernel/.../qcom/Makefile:19`：
+
+```
+alioth-sm8250-overlay.dtbo-base := kona.dtb kona-v2.dtb kona-v2.1.dtb
+```
+
+**alioth 的 DT 就是 `kona.dtb` 加 overlay**，而 `kona.dtb` 由 `kona.dtsi` 编译，
+`kona.dtsi:5167` include 了 `kona-pcie.dtsi`。所以源码与真机 DTB 两条独立路径都指向同一组地址。
+
+`alioth-sm8250.dtsi` / `xiaomi-sm8250-common.dtsi` **没有覆盖 pcie0**（`grep pcie` 空），
+即这块板用的是 `kona-pcie.dtsi` 的原值，没有改过。
+
+### 三、结论
+
+**地址假设成立，可以继续。** 下一步是把 ELBI 的那一次读挪到 step 2（控制器上电之后、任何时钟投票之前），
+二分出「这一段是从来就不可访问，还是被我们某一步关掉的」。
+
+**注意我们自己的 DTS 里没有 pcie 节点**（`NEW/UniXNU-alioth/dts/alioth.dts` 与
+`NEW/UniXNU-sm8250-common/dts/*.dtsi` 的 `grep pcie` 全空）——所有地址只存在于
+`package/alioth_pcie.c` 的常量里。所以「DT 对不对」这个问题，对本轮的代码路径**不构成输入**；
+上面核对的是「这些常量抄得对不对」，答案是对。
