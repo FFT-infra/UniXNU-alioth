@@ -131,6 +131,50 @@ archives = [
   "component:ShengHidInput",
 ]
 
+# The iOS USB device stack, so the host can reach usbmuxd/AFC instead of only the CDC-ACM
+# console. roots is a whole-list override (scripts/unixnu/profiles.py merge() replaces a non-dict
+# value), so the profile's 31 entries are repeated here and the four USB bundles appended.
+# AppleSynopsysOTGDevice is the DWC3 device-side driver (AppleNubSynopsysOTGDevice); nothing
+# selects it, so it is a root rather than a dependency of IOUSBDeviceFamily.
+# No ADT node is declared yet, so AppleEmbeddedUSBArbitrator and AppleNubSynopsysOTGDevice
+# match nothing and do not probe. That is deliberate: this image proves the extra 12 prelinked
+# components do not disturb a boot before anything is allowed to touch the DWC3 controller.
+# docs/evidence/2026-10-30-usb-stack-architecture.md
+[kernel.prelink]
+roots = [
+  "com.apple.AppleFSCompression.AppleFSCompressionTypeZlib",
+  "com.apple.driver.AppleARMPlatform",
+  "com.apple.driver.AppleARMWatchdogTimer",
+  "com.apple.driver.AppleAudioClockLibs",
+  "com.apple.driver.AppleEffaceableStorage",
+  "com.apple.driver.AppleIISController",
+  "com.apple.driver.AppleM2ScalerCSCDriver",
+  "com.apple.driver.AppleMobileFileIntegrity",
+  "com.apple.driver.ApplePMGR",
+  "com.apple.driver.IODARTFamily",
+  "com.apple.filesystems.apfs",
+  "com.apple.iokit.CoreAnalyticsFamily",
+  "com.apple.iokit.IOAVFamily",
+  "com.apple.iokit.IOAudio2Family",
+  "com.apple.iokit.IOCECFamily",
+  "com.apple.iokit.IOCryptoAcceleratorFamily",
+  "com.apple.iokit.IOGPUFamily",
+  "com.apple.iokit.IOHDCPFamily",
+  "com.apple.iokit.IOMobileGraphicsFamily",
+  "com.apple.iokit.IOReportFamily",
+  "com.apple.iokit.IOSlowAdaptiveClockingFamily",
+  "com.apple.iokit.IOStorageFamily",
+  "com.apple.iokit.IOSurface",
+  "com.apple.kec.Libm",
+  "com.apple.kec.corecrypto",
+  "com.apple.kext.AppleMatch",
+  "com.apple.kext.CoreTrust",
+  "com.apple.security.AppleImage4",
+  "com.apple.security.sandbox",
+  "com.apple.iokit.IOHIDFamily",
+  "com.apple.iokit.IOHIDEventDriver",
+]
+
 [firmware]
 config = "alioth"
 dsc = "Platforms/Xiaomi/aliothPkg/alioth.dsc"
