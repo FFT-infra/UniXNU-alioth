@@ -86,6 +86,7 @@ struct Window {IOMemoryMap *map; volatile uint32_t *va;};
 Window gCore, gCnfg, gObs, gChn, gIntr, gPdc;
 int gPon = -1, gGpio = -1;
 uint32_t gApids;
+uint32_t gConfigWord;
 uint32_t gVersion;
 // The channel page size and the in-channel offsets, chosen from the arbiter's version.
 struct bt_layout gLayout;
@@ -128,14 +129,33 @@ int read8(int apid, uint8_t addr, uint8_t *value) {return transfer(apid, addr, v
 int write8(int apid, uint8_t addr, uint8_t value) {return transfer(apid, addr, &value, true);}
 
 // The APID that serves ppid with its interrupts owned by this EE; -1 when there is none.
+//
+// The two filters below are stricter than the vendor's. spmi-pmic-arb.c:926-929 (v5) accepts
+// an APID when ppid_to_apid says it is valid and its write_ee is this EE; it does not require
+// the IRQ-owner bit or an unowned cnfg entry. When the lookup fails there are two very
+// different causes -- the PPID is absent from the map, or it is present and filtered out --
+// and they need different fixes. gPpidMatches records how many APIDs matched the PPID, so a
+// reading of 0 means absent and a nonzero reading means filtered out.
+static int gPpidMatches;
 int findApid(uint32_t ppid) {
     int found = -1;
+    int matched = 0;
     for (uint32_t i = 0; i < gApids; ++i) {
         const uint32_t map = gCore.va[(gApidMap + 4 * i) / 4];
-        if (!map || ((map >> 8) & 0xfff) != ppid) continue;
-        const bool irqOwner = (map >> 24) & 1;
-        if (irqOwner && (gCnfg.va[(0x00 + 4 * i) / 4] & 7u) == 0) found = (int)i;
+        if (!map || bt_entry_ppid(map) != ppid) continue;
+        ++matched;
+        // The ownership table sits at cnfg + 0x700 + 4 * apid (SPMI_OWNERSHIP_TABLE_REG,
+        // spmi-pmic-arb.c:50), not at cnfg + 4 * apid. Reading the wrong register is what
+        // rejected the PON in u279, where off=1 proved the map entry existed.
+        const uint32_t owner = gCnfg.va[bt_ownership_offset(i) / 4];
+        if (matched == 1) {
+            // One sample of what the rejection saw, for the next round: the entry's IRQ-owner
+            // bit and this APID's owner EE both land in [6].
+            native_buttons_stats[6] = (int32_t)((bt_entry_irq_owner(map) ? 1 : 0) << 16 | bt_owner_ee(owner));
+        }
+        if (bt_entry_irq_owner(map) && bt_owner_ee(owner) == 0) found = (int)i;
     }
+    gPpidMatches = matched;
     return found;
 }
 
@@ -211,8 +231,15 @@ bool setup() {
     if (!mapWindow(gCore, kCore, 0x3000) || !mapWindow(gCnfg, kCnfg, 0x4000) || !mapWindow(gIntr, kIntr, 0x1000) ||
         !mapWindow(gPdc, kPdc, 0x2000)) {fail(1, -12); return false;}
     gVersion = gCore.va[0];
-    gApids = gCore.va[0x04 / 4] & 0x7ffu;
+    // core[0x04] is PMIC_ARB_CONFIG (spmi-pmic-arb.c:28), NOT an APID count. It was read as one
+    // in u278 and gave 26, which bounded the map scan to 26 entries and missed the PON; the
+    // GPIO happened to sit below it, which is why the two APIDs read -1 and 26. The vendor
+    // bounds the scan by the core window instead (`offset >= core_size`, spmi-pmic-arb.c:909-911),
+    // so the count is derived from the window the devicetree declares. The register is still
+    // recorded in [7]'s neighbour below so a round can show what it actually held.
+    gConfigWord = gCore.va[0x04 / 4];
     native_buttons_stats[7] = (int32_t)gPdc.va[kPdcVersion / 4];
+    native_buttons_stats[8] = (int32_t)gPdc.va[kPdcVersion / 4];
     // The layout follows the version, as the vendor driver's ops table does. Only the v5 layout
     // is implemented: it keeps every channel register inside the 0x10000 * apid page, which is
     // what this board's 32 MiB chnls window implies. A version this code does not know is
@@ -222,13 +249,26 @@ bool setup() {
     if (!gLayout.apid_stride) {fail(2, (int)gVersion); return false;}
     gApidStride = gLayout.apid_stride; gAccEnable = gLayout.acc_enable; gIrqStatus = gLayout.irq_status;
     gIrqClear = gLayout.irq_clear; gApidMap = gLayout.apid_map; gObsStride = gLayout.obs_stride;
+    gApids = bt_map_capacity(&gLayout);
     if (!gApids || gApids > 1024) {fail(2, (int)gVersion); return false;}
     if (!mapWindow(gObs, kObsrvr, ((uint64_t)gObsStride * gApids + 0xfff) & ~0xfffull) ||
         !mapWindow(gChn, kChnls, (uint64_t)gApidStride * gApids)) {fail(3, -12); return false;}
     native_buttons_stats[0] = 1;
     gPon = findApid(kPonPpid); gGpio = findApid(kGpioPpid);
     native_buttons_stats[4] = gPon; native_buttons_stats[5] = gGpio;
-    if (gPon < 0) {fail(4, -2); return false;}
+    // [9] carries core[0x04] on the healthy path: BootLog calls it "spur", which only matters
+    // once interrupts are armed. This is what the field held when it was mistaken for a count.
+    native_buttons_stats[9] = (int32_t)(gConfigWord & 0x7ffu);
+    if (gPon < 0) {
+        // off carries the PPID match count on this failure path, where no interrupt has been
+        // cleared yet: 0 means 0x008 is absent from the APID map, nonzero means it is present
+        // and the filters above rejected it. The sample findApid put in [6] is left alone so a
+        // round can still read the entry's IRQ-owner bit and its owner EE.
+        native_buttons_stats[7] = (int32_t)gPpidMatches;
+        native_buttons_stats[9] = (int32_t)gApids;   // the bound the scan used
+        fail(4, -2);
+        return false;
+    }
     native_buttons_stats[0] = 2;
     if (gMode == 2) return true;      // read-only: no arming, no interrupt
     int rc = armPeripheral(gPon, kPowerBit | kResinBit);

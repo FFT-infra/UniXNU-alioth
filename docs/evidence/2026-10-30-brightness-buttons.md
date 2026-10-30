@@ -93,3 +93,133 @@ the command line was 5 bytes over the 1000-byte limit with the full pair; board.
 already carries 965 bytes of arguments.
 
 Only one of the two fits on the command line at a time, so a round carries one.
+
+## 2026-10-31 btn1: the first round that produced readings
+
+Image `tmp/boot-btn1.img`, sha256 `c9e031b879b9051278e25fe3948d3eed11167a4b8c5d33c74e08fdc3a924d8b6`,
+kernel `5cb276025b32f3baad4f1e4cbfc1f06967f8b1364f893985e9370733662beeaa`, tag `btn1`,
+carrying `alioth-bl=1` and `alioth-bt=1`. The board left the bootloader, ran, and returned to
+fastboot on its own at about 200 s - not the 93 s early stop the earlier attempt showed, so
+that stop did not reproduce.
+
+The log came back through TWRP as `build/sheng-logs/btn1-0000000040d23402`: uptime 4 s,
+3 slots, `write_errors 0`, `state 2`, `tag btn1`. An early snapshot, but the diagnostic rows
+are complete.
+
+```
+B st=-4 irq=0 rep=0 mask=0 apid=-1/26 off=1 pdc=20000 err=-2 spur=512
+L st=2 req=0 lvl=0 a=-1 b=0 xerr=1 irq=0 ea=1f5 eb=5 err=0 goal=0 fade=0
+L path runs=0 fades=0 irq=1/1 mode=87396 tmo=537133056 done=335544320
+```
+
+### Buttons: the PPID was right, the ownership register was wrong
+
+`off=1` says PPID `0x008` matched exactly one APID map entry, so the PON is present and the
+`findApid` filters threw it away. The filters read the ownership table at `cnfg + 4 * apid`;
+the vendor reads it at `cnfg + 0x700 + 4 * apid` (`SPMI_OWNERSHIP_TABLE_REG`,
+`spmi-pmic-arb.c:50`). Those are different registers, and the value at the wrong one almost
+never equals this EE.
+
+`spur=512` confirms the scan bound now comes from the core window (512 entries from the v5
+map offset 0x900 in a 0x1100-byte window), not from `core[0x04]`, which is `PMIC_ARB_CONFIG`
+and read as 26 in u278.
+
+### Brightness: the trigger source was never set
+
+`irq=1/1` is `stats[10]=1` sent and `stats[11]=1` timed out, with `a=-1` and no read-back. At
+boot `ea=1f5` already had `CMD_MODE_EN` (bit 2) set and `eb=5` already had
+`CMD_MODE_MDP_BUSY` (bit 2) set, so the command engine was on and its MDP side was busy.
+
+`TRIG_CTRL` (0x084) was never written. The device-verified asteroids port writes
+`(rd(kTrigCtrl) & ~((1u << 16) | 0xfu)) | 0x4u` on every packet - DMA_TRG_MUX 0 in bits 3:0
+and DMA_TRIGGER_SEL 4 (software) in bits 19:16. Without a trigger source the software trigger
+has nothing to start.
+
+`mode=87396` is `stats[12]`, the last command's time in microseconds: 87 ms, which is the
+50 ms deadline plus the polling step. `done=335544320` is `stats[15]`, a `COMMAND_MODE_DMA_CTRL`
+snapshot, not a count - BootLog's wording for that field is sheng's and does not describe
+this board.
+
+### The backlight read-only mode now reads
+
+Mode 1 returned before any DCS read in the merged code, so the earlier `ea`/`eb` values were
+`DSI_CTRL` and `DSI_STATUS`, never a brightness reading. btn1 makes mode 1 send the
+`SET_MAXIMUM_RETURN_PACKET_SIZE` and DCS 0x52 packets, which is why this round's `L st=2` and
+`a=-1` describe an actual attempt rather than a register snapshot.
+
+## 2026-10-31 btn2: the buttons work; brightness still gets no answer
+
+Image `tmp/boot-btn2.img`, sha256 `20b2cf30585a09dc4d504f0a8d9c97729202c92eb668aca06aadddb1e4e2cb90`,
+tag `btn2`. Full round this time: `uptime 178 s`, `rounds 90`, `slots 90/509`,
+`write_errors 0`, `state 2`. Log at `build/sheng-logs/btn2-000000014652207f`.
+
+```
+B st=3 irq=0 rep=1 mask=4 apid=13/26 off=65536 pdc=20000 err=131072 spur=512
+L st=2 req=0 lvl=0 a=-1 b=0 xerr=1 irq=0 ea=1f5 eb=0 err=4 goal=0 fade=0
+L path runs=0 fades=0 irq=1/1 mode=85949 tmo=537133056 done=335544320
+```
+
+### Buttons: armed, and a press reached the HID device
+
+`st=3` is the armed stage, so `setup()` ran to the end. `apid=13/26` is the PON at APID 13
+(it was -1 in btn1) and the GPIO at 26. `rep=1 mask=4` is one report sent carrying report 2
+bit 2, volume up - the volume-up key was pressed during the round and the HID device received
+it. `off=65536` is `0x10000`: the `findApid` sample for the PON, IRQ-owner bit 1 and owner
+EE 0, which is why it was accepted. `err=131072` is `0x20000`: the same sample for the GPIO,
+whose owner EE reads 2 - the GPIO entry is not owned by this EE, and `armPeripheral` for it
+therefore may not have taken.
+
+The fix was the ownership table's offset: `cnfg + 0x700 + 4 * apid`
+(`SPMI_OWNERSHIP_TABLE_REG`, `spmi-pmic-arb.c:50`), not `cnfg + 4 * apid`.
+
+### Brightness: the trigger was right, the done could not be seen
+
+`irq=1/1` again - one packet sent, one timed out - but `eb=0` now, so `DSI_STATUS` was clean
+and the command-mode MDP was not busy. `err=4` is the TRIG_CTRL snapshot, exactly what the
+write set (bits 3:0 = 4), so the trigger source was correct.
+
+The remaining fault is the DMA-done status: `INT_CTRL` carries a status bit per event and an
+**unmask** bit one above it. `dsi_ctrl_hw_cmn.c:975-976` sets `BIT(1)` to enable
+`DSI_CMD_MODE_DMA_DONE`, while `clear_interrupt_status` writes `BIT(0)`. The driver only ever
+wrote bit 0, so it cleared a status that was never allowed to set.
+
+### What this does not establish
+
+The GPIO entry's owner EE is 2, not 0, so volume-up's interrupt was probably not armed even
+though its APID was found. The `mask=4` report came from the volume-up key, which suggests the
+press was read through the thread's level poll rather than the interrupt. Whether volume-down
+and power produce reports, and whether the interrupt path works at all, is still open.
+
+## 2026-10-31 btn3: unmasking the DMA-done status hangs the boot
+
+Image `tmp/boot-btn3.img`, sha256 `a86c32c8dc156a7a0d55232bfc0dddc5dbc2048426ad078d139b156d178f2699`,
+tag `btn3`. It booted, the kernel came up (`Qualcomm XNU Debug` enumerated, a fresh
+`/dev/tty.usbmodem14101` at 01:05), and the panel kept the firmware frame - but the board
+**never returned to the bootloader**, where btn1 and btn2 both returned at about 200 s. The
+board had to be power-cycled by hand; no log was read back.
+
+### The cause
+
+btn3's only functional change was setting `INT_CTRL` bit 1 as well as bit 0. `INT_CTRL` pairs
+a status bit with an unmask bit above it, and `dsi_ctrl_hw_cmn.c:975-976` sets `BIT(1)` when
+enabling `DSI_CMD_MODE_DMA_DONE`, while `clear_interrupt_status` writes `BIT(0)`
+(`dsi_ctrl_hw_cmn.c:929`). Setting only bit 0, as btn2 did, cleared a status that was never
+allowed to set.
+
+Setting bit 1 is what hung it. DSI0's interrupt is routed - `interrupt-parent = <0x24d>`,
+`interrupts = <0x04 0x00>` (`alioth.dts:30921-30922`) - and nothing in this kernel attaches a
+handler to that SPI. A status that re-arms with no handler holds the CPU, and the in-kernel
+`autoreset` thread stops running, which is exactly the observed state: the kernel alive, the
+screen frozen, the timed reset never firing.
+
+### What this says about the transfer itself
+
+The vendor only takes the TPG FIFO path in `secure_mode`: `dsi_message_setup_tx_mode` sets
+`DSI_CTRL_CMD_FIFO_STORE` there and nowhere else (`dsi_ctrl.c:1170-1180`), while the normal
+path writes a command packet into a DMA buffer. Its completion is reported through an interrupt
+this kernel does not attach. So the done poll in this driver may never succeed regardless of
+the packet being correct, and the packet's arrival has to be judged some other way - by the
+panel's own DCS 0x52 read-back.
+
+Bit 1 therefore stays clear. Unmasking it is only valid together with attaching a handler to
+that SPI, which is a separate change.

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // alioth (Redmi K40, SM8250-AC) panel brightness through DSI0's command FIFO.
 // Boot argument alioth-bl=<n>:
-//   1  read-only: map DSI0 and record its registers. No write of any kind.
+//   1  read-only: map DSI0, record its registers, and read the panel's DCS 0x52 brightness.
+//      No brightness level is written.
 //   2  mode 1, then the visible test: maximum, low, then alioth-bl-level=<1..0x7ff>
 //      (default 0x218), two seconds apart, and a read-back of the panel's brightness after each
 //   3  mode 1, then the iOS brightness service (AliothBacklight): iOS sets the level
@@ -80,8 +81,19 @@ namespace {
 constexpr uint64_t kDsi0 = 0xae94000, kDsiBytes = 0x400;
 constexpr uint32_t kHwVersion = 0x000, kCtrl = 0x004, kStatus = 0x008, kRdbkData0 = 0x06c,
                    kDmaCtrl = 0x03c, kDmaLength = 0x04c, kIntCtrl = 0x110, kTpgCtrl = 0x15c,
-                   kTpgInit = 0x17c, kRdbkDataCtrl = 0x1d4, kTpgFifoReset = 0x1ec, kSwTrigger = 0x090;
-constexpr uint32_t kStatusMdpBusy = 1u << 2, kIntDmaDone = 1u << 0;
+                   kTpgInit = 0x17c, kRdbkDataCtrl = 0x1d4, kTpgFifoReset = 0x1ec, kSwTrigger = 0x090,
+                   kTrigCtrl = 0x084;
+constexpr uint32_t kStatusMdpBusy = 1u << 2;
+// INT_CTRL bit 0 is the command-DMA-done status, write-1-to-clear (dsi_ctrl_hw_cmn.c:929).
+//
+// Bit 1 is that status's UNMASK (dsi_ctrl_hw_cmn.c:975-976 sets BIT(1) to enable
+// DSI_CMD_MODE_DMA_DONE), and it must NOT be set here. btn3 set it and the board never returned
+// to the bootloader: DSI0's interrupt is routed (alioth.dts:30921-30922, interrupt-parent
+// 0x24d, interrupts <4 0>), nothing in this kernel attaches a handler to it, and the status
+// re-arms, so an unmasked line holds the CPU and the in-kernel autoreset thread never runs.
+// The line is a status flag to poll, not an interrupt source to enable: only unmask it
+// together with armcpu_spi_attach on that SPI, which is a separate change.
+constexpr uint32_t kIntDmaDone = 1u << 0;
 // The level range, the DCS commands and the packet words live in BacklightCore.h, where a host
 // test checks them. These aliases keep the driver's own names.
 constexpr uint32_t kMaxLevel = BL_MAX_LEVEL, kMinLevel = BL_MIN_LEVEL, kDefaultLevel = BL_DEFAULT_LEVEL;
@@ -111,7 +123,8 @@ int sendPacket(const uint32_t *words, unsigned count, bool lp) {
         IODelay(2);
     }
     if (!idle) {bump(5); native_backlight_stats[6] = (int32_t)rd(kStatus); return -1;}
-    wr(kIntCtrl, (rd(kIntCtrl) & ~((1u << 24) | (1u << 28))) | kIntDmaDone);   // clear a stale done
+    // Clear a stale done (bit 0 is write-1-to-clear). Bit 1 stays clear: see the note above.
+    wr(kIntCtrl, (rd(kIntCtrl) & ~((1u << 24) | (1u << 28))) | kIntDmaDone);
     wr(kTpgCtrl, (1u << 1) | (1u << 2) | (3u << 16));                          // TPG enable, FIFO mode, custom pattern
     for (unsigned i = 0; i < count; ++i) wr(kTpgInit, words[i]);
     if (count & 1) wr(kTpgInit, 0);                                            // the extra DWORD the hardware wants
@@ -119,6 +132,11 @@ int sendPacket(const uint32_t *words, unsigned count, bool lp) {
     dma = lp ? (dma | (1u << 26)) : (dma & ~(1u << 26));
     wr(kDmaCtrl, dma | (1u << 28));                                            // embedded mode
     wr(kDmaLength, count * 4);
+    // The command DMA's trigger source, which must be set before the software trigger will
+    // start anything: DMA_TRG_MUX 0 in bits 3:0, DMA_TRIGGER_SEL 4 (software) in bits 19:16.
+    // The reference port writes this on every packet; leaving it alone is why btn1's first
+    // packet went out with stats[10]=1 / stats[11]=1 - one sent, one timed out, no answer.
+    wr(kTrigCtrl, (rd(kTrigCtrl) & ~((1u << 16) | 0xfu)) | 0x4u);
     wr(kSwTrigger, 1);
     bool done = false;
     for (uint32_t waited = 0; waited < kTimeoutUs; waited += 20) {
@@ -131,6 +149,7 @@ int sendPacket(const uint32_t *words, unsigned count, bool lp) {
     wr(kTpgFifoReset, 1);
     IODelay(1);
     wr(kTpgFifoReset, 0);
+    wr(kTrigCtrl, (rd(kTrigCtrl) & ~((1u << 16) | 0xfu)) | 0x4u);
     bump(10);
     uint64_t ns = 0;
     absolutetime_to_nanoseconds(mach_absolute_time() - began, &ns);
@@ -159,6 +178,10 @@ int panelPower(bool on) {
 // no separate enable line, so its own sleep-in sequence is the way to go dark, and the next
 // level above 0 wakes it again. Any non-zero level below the declared minimum becomes that
 // minimum, so a fade cannot step through levels the panel rejects.
+// A brightness write. The done poll's result is recorded but does not decide the verdict: this
+// kernel cannot observe the command DMA's completion (see readBrightness), so a timeout here
+// says nothing about whether the level reached the panel. The read-back afterwards is what
+// says that.
 int writeBrightness(uint32_t level) {
     static bool lit = true;
     level = bl_clamp_level(level);
@@ -183,11 +206,17 @@ int32_t readBrightness() {
     __asm__ volatile("dsb sy" ::: "memory");
     wr(kRdbkDataCtrl, 0x0);
     __asm__ volatile("dsb sy" ::: "memory");
+    // Both packets are sent even when the done poll times out, because a timeout only means this
+    // kernel cannot see the completion status - the vendor's own FIFO path only runs in
+    // secure_mode, and its normal path completes on an interrupt this kernel does not attach.
+    // What the panel actually received is what RDBK_DATA_CTRL reports next, so the readback
+    // count is the real verdict and the transfer results are only diagnostics.
     const uint32_t size[2] = {bl_max_return_header(2), bl_max_return_payload(2)};
-    if (sendPacket(size, 2, false)) return -1;
+    const int sizeRc = sendPacket(size, 2, false);
     const uint32_t read[1] = {bl_read_header(kDcsBrightnessGet)};
-    if (sendPacket(read, 1, false)) return -1;
-    IOSleep(2);
+    const int readRc = sendPacket(read, 1, false);
+    native_backlight_stats[6] = (int32_t)((sizeRc ? 1 : 0) | (readRc ? 2 : 0));
+    IOSleep(5);
     const uint32_t count = rd(kRdbkDataCtrl) >> 16;
     native_backlight_request[5] = (int32_t)count;
     if (!count) {bump(4); return -1;}
@@ -201,7 +230,13 @@ int32_t readBrightness() {
 void snapshot() {
     native_backlight_stats[13] = (int32_t)rd(kHwVersion);
     native_backlight_stats[7] = (int32_t)rd(kCtrl);
+    // [8] carries DSI_STATUS and [9] INT_CTRL: status bit 2 says the command-mode MDP is busy,
+    // and INT_CTRL's bit 0 / bit 1 are the DMA-done status and its unmask. Together they say
+    // whether the engine is busy and whether a done could ever have been observed.
     native_backlight_stats[8] = (int32_t)rd(kStatus);
+    // [9] carries INT_CTRL rather than TRIG_CTRL now: bit 0 is the DMA-done status and bit 1
+    // its unmask, which is the pair that decides whether a done can ever be observed.
+    native_backlight_stats[9] = (int32_t)rd(kIntCtrl);
     native_backlight_stats[14] = (int32_t)rd(kTpgCtrl);
     native_backlight_stats[15] = (int32_t)rd(kDmaCtrl);
 }
@@ -354,22 +389,35 @@ uint32_t gLevel = kDefaultLevel;
 
 void panelThread(void *, wait_result_t) {
     thread_set_thread_name(current_thread(), "alioth-bl");
-    // Mode 1 is read-only: snapshot is the whole job, and the thread returns without writing.
-    if (gMode == 1) return;
-    // The visible test, then a read-back of what the panel now holds.
+    // Mode 1 is read-only: snapshot is already done, and the one thing it adds is the panel's
+    // own DCS 0x52 read. Without it mode 1 says nothing about the panel at all - the earlier
+    // round's `ea`/`eb` were DSI_CTRL and DSI_STATUS, controller registers, not brightness. The
+    // read sends two packets but writes no brightness level.
+    if (gMode == 1) {
+        IOLockLock(gLock);
+        const int32_t read = readBrightness();
+        IOLockUnlock(gLock);
+        native_backlight_stats[3] = read;
+        native_backlight_stats[0] = 2;
+        return;
+    }
+    // The visible test, then a read-back after each level. Each step is recorded separately
+    // because the transfer result cannot decide success: [4] is the read-back after the
+    // maximum, [5] after the low level, and [6] after the configured one.
     IOLockLock(gLock);
     writeBrightness(kMaxLevel);
+    native_backlight_stats[4] = readBrightness();
     IOLockUnlock(gLock);
     IOSleep(2000);
     IOLockLock(gLock);
     writeBrightness(0x40);
+    native_backlight_stats[5] = readBrightness();
     IOLockUnlock(gLock);
     IOSleep(2000);
     IOLockLock(gLock);
     writeBrightness(gLevel);
-    const int32_t back = readBrightness();
+    native_backlight_stats[6] = readBrightness();
     IOLockUnlock(gLock);
-    native_backlight_stats[4] = back;
     native_backlight_stats[0] = 2;
     if (gMode == 2) return;
     // The service.

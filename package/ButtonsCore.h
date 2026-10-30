@@ -29,6 +29,19 @@ enum {
 enum {BT_LAYOUT_NONE, BT_LAYOUT_V2, BT_LAYOUT_V5};
 struct bt_layout {uint32_t apid_stride, acc_enable, irq_status, irq_clear, apid_map, obs_stride;};
 
+// The core window is reg = <0xc440000 0x1100> (alioth.dts:4174), so this is all the APID map
+// that window can hold. The vendor driver bounds its scan by exactly this arithmetic --
+// `if (offset >= pmic_arb->core_size) break`, core_size being the mapped length
+// (spmi-pmic-arb.c:909-911) -- and never by a count read from a register.
+enum {BT_CORE_BYTES = 0x1100};
+
+// How many APID map entries fit in the core window at this layout's map offset. A driver that
+// reads a count from core[0x04] instead is reading PMIC_ARB_CONFIG (spmi-pmic-arb.c:28), which
+// is not an APID count; scanning only that many entries misses every APID above it.
+static inline uint32_t bt_map_capacity(const struct bt_layout *l) {
+  return l->apid_map >= (uint32_t)BT_CORE_BYTES ? 0u : ((uint32_t)BT_CORE_BYTES - l->apid_map) / 4u;
+}
+
 // The layout for a version, or {0} for one this code does not know. v5 keeps every channel
 // register inside the 0x10000 * apid page; v2/v3/v4 use 0x1000 * apid and put the interrupt
 // registers in the "intr" window instead, which this driver does not implement, so those are
@@ -71,6 +84,13 @@ static inline uint32_t bt_entry_ppid(uint32_t entry) {return (entry >> 8) & 0xff
 static inline int bt_entry_irq_owner(uint32_t entry) {return (int)((entry >> 24) & 1u);}
 // The ownership entry names the EE allowed to write the APID in bits 2:0.
 static inline uint32_t bt_owner_ee(uint32_t entry) {return entry & 7u;}
+
+// The ownership table's offset inside the cnfg window: 0x0700 + 4 * apid
+// (SPMI_OWNERSHIP_TABLE_REG, spmi-pmic-arb.c:50). Reading cnfg + 4 * apid instead lands on a
+// different register entirely, which is what made the first version reject the PON: u279
+// measured off=1, so PPID 0x008 was in the map and the ownership test threw it away.
+enum {BT_OWNERSHIP_BASE = 0x700};
+static inline uint32_t bt_ownership_offset(uint32_t apid) {return BT_OWNERSHIP_BASE + 4u * apid;}
 
 // The pressed set as the HID device's report 2 bits. All three keys are active low: the PON's
 // RT_STS bits 0 and 1 are kpdpwr and resin (qpnp-power-on.c:113-114), and the SPMI GPIO's

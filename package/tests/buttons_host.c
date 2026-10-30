@@ -50,6 +50,22 @@ int main(void) {
   assert(bt_layout_for(0x00000000u).apid_stride == 0);
   assert(bt_layout_for(0x70000000u).apid_stride == 0);
 
+  // The APID scan bound comes from the core window, not from a register. core[0x04] is
+  // PMIC_ARB_CONFIG, and reading it as a count is what made u278 scan only 26 entries and miss
+  // the PON. The window is 0x1100 bytes and the v5 map starts at 0x900, so 512 entries fit.
+  assert(BT_CORE_BYTES == 0x1100);
+  assert(bt_map_capacity(&v5) == 512);
+  assert(bt_map_capacity(&v5) == (0x1100 - 0x900) / 4);
+  // A map offset at or past the window end yields no entries, which the driver treats as a
+  // refusal rather than a zero-length scan.
+  struct bt_layout past = {0x10000, 0x100, 0x104, 0x108, 0x1100, 0x80};
+  assert(bt_map_capacity(&past) == 0);
+  struct bt_layout beyond = {0x10000, 0x100, 0x104, 0x108, 0x2000, 0x80};
+  assert(bt_map_capacity(&beyond) == 0);
+  // 512 entries reach the window end exactly, not past it.
+  assert(bt_map_offset(&v5, 511) == 0x10fc);
+  assert(bt_map_offset(&v5, 511) + 4 == BT_CORE_BYTES);
+
   // Channel and observer offsets for the two APIDs this board uses.
   assert(bt_channel_offset(&v5, 0) == 0);
   assert(bt_channel_offset(&v5, 3) == 0x30000);
