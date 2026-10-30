@@ -1394,3 +1394,83 @@ apps_rsc: rsc@18200000 {
 
 **所以：机制（RPMh + RSC 布局）适配；数据（轨名、数组语义）不适配。**
 这个区分比笼统的「sheng 的东西不能抄」精确——**要抄的是机制，要重查的是数据。**
+
+## 2026-10-31 05:35：PMIC 的实际输出电压在 APSS 侧读不到——只能实验验证
+
+离线核对。这条改变了判据的性质。
+
+### 一、`get_voltage` 读的是软件缓存，不是硬件（事实）
+
+`rpmh-regulator.c:1021-1030`：
+```c
+static int rpmh_regulator_vrm_get_voltage(struct regulator_dev *rdev)
+{
+	struct rpmh_vreg *vreg = rdev_get_drvdata(rdev);
+	uv = vreg->req.reg[RPMH_REGULATOR_REG_VRM_VOLTAGE] * 1000;
+	if (uv == 0) uv = VOLTAGE_UNKNOWN;
+	return uv;
+}
+```
+
+`req.reg[]` 是**内核在 `set_voltage` 时写进去的缓存**（`:842-843`：
+`old_value = vreg->req.reg[reg_index]; vreg->req.reg[reg_index] = value;`）。
+
+`is_enabled` 同样（`:891`：`return !!vreg->req.reg[RPMH_REGULATOR_REG_ENABLE];`）。
+
+**所以 Linux 自己也读不到 PMIC 的实际输出——它只知道「我请求过什么」。**
+
+### 二、`cmd_db_read_aux_data` 读的是等级表，不是状态（事实）
+
+`rpmh_regulator_load_arc_level_mapping`（`:1277-1310`）用它读 **ARC level mapping**
+（电压等级 ↔ ARC 编码的常量映射表），**只在驱动初始化时调一次**，与「当前开没开」无关。
+
+### 三、PM8150 的 LDO 在 SPMI 上不存在（事实）
+
+`pm8150.dtsi` 的 `qcom,pm8150@0`（`compatible = "qcom,spmi-pmic"`, SID 0）子节点只有：
+
+```
+qcom,power-on@800      (qpnp-power-on)
+                       (spmi-temp-alarm)
+                       (spmi-clkdiv)
+                       (spmi-sdam)
+                       (spmi-gpio)
+                       (pm8941-rtc)
+                       (spmi-adc5)
+                       (adc-tm5)
+```
+
+**没有 `qcom,spmi-regulator` 节点，也没有 LDO peripheral。**
+L5/L9 只作为 `rpmh-regulator-ldoa5/9` 存在，走 RPMh。
+
+**所以「绕开 RPMh、用 SPMI 直接读 PMIC」这条路不存在**——那两个 LDO 在 SPMI 上没有暴露。
+
+### 四、结论：这一条的性质与前八条不同
+
+| 前八条 | 第九条 |
+| --- | --- |
+| 「某个条件没满足」——可以查、可以读 | **「无法观测，只能实验」** |
+
+**APSS 侧没有任何路径能读到「这两路轨现在实际输出了多少伏」或「开没开」。**
+能做的只有：
+
+1. **投一票，然后看 `0x60000000` 能不能读** —— 用结果验证，不是用状态验证。
+2. 或者先查「bootloader 有没有投过」——但那只在 bootloader 自己的日志里，
+   `fastboot getvar` 被禁用，这条路也断了。
+
+### 五、所以下一步的现实形状
+
+**判据必须从「先确认再动手」改成「投一票，看窗口是否变得可读」。**
+
+这是一个**有明确因果假设的实验**（轨没开 → DWC 无电 → AXI 不返回），不是盲投：
+- 若投后 `0x60000000` 可读 → **根因确定**，且整条 PCIe 路线打开
+- 若投后仍挂 → 轨不是原因，回到「更上游」或「地址/门控」
+
+**风险**：投 RPMh 是**写**操作。它作用于 PMIC 的稳压器，不是 PCIe 寄存器。
+GpuProbe 的 `rpmhVoteDdr()` 已经在这块板上投过 DDR 相关的 BCM，**机制本身验证过**。
+但投 LDO 会**改变供电状态**——如果电压值写错，可能损坏硬件。
+
+**所以投之前必须：**
+1. 用 cmd-db 拿到 `ldoa5`/`ldoa9` 的地址（**不猜地址**）
+2. 用 `cmd_db_read_aux_data` 读到它们的**等级表**，确认要写的值是表里的合法项
+3. 电压按 DT：`pm8150_l5 = 880000 µV`、`pm8150_l9 = 1200000 µV`
+4. 先投**一路**（`ldoa5` 0.9 V），看窗口有没有变化——单变量
