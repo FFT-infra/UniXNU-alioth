@@ -1474,3 +1474,80 @@ GpuProbe 的 `rpmhVoteDdr()` 已经在这块板上投过 DDR 相关的 BCM，**�
 2. 用 `cmd_db_read_aux_data` 读到它们的**等级表**，确认要写的值是表里的合法项
 3. 电压按 DT：`pm8150_l5 = 880000 µV`、`pm8150_l9 = 1200000 µV`
 4. 先投**一路**（`ldoa5` 0.9 V），看窗口有没有变化——单变量
+
+## 2026-10-31 05:42：两路轨都在 cmd-db 里，地址拿到
+
+镜像 `boot-wifi12.img` sha256 `b828a934…`，内核 `682d8a9a…`，`pcie=12 pcie_skip=32`，
+无 bt/bl/screenshot/mobile-graphics-load。248 行 PCIE（`tmp/console-wifi12r1.log`）。
+
+### 一、结果（事实）
+
+```
+PCIE 12: the command database at 0x80860000: version 0x1 magic 0xc0330db (expected magic 0xc0330db)
+PCIE 12: ldoa5: address 0x41800, aux 4 bytes (1 levels of 4)
+PCIE 12: ldoa5: aux 1
+PCIE 12: ldoa9: address 0x41b00, aux 4 bytes (1 levels of 4)
+PCIE 12: ldoa9: aux 1
+PCIE 12: step 13 is read only; no rail has been voted
+```
+
+- **cmd-db magic 正确**（`0xc0330db`），version `0x1` —— 库是好的
+- **`ldoa5` 地址 `0x41800`**，aux 1 个 32 位值 = `1`
+- **`ldoa9` 地址 `0x41b00`**，aux 1 个 32 位值 = `1`
+
+### 二、判据落点
+
+| 判据 | 结果 |
+| --- | --- |
+| 两路不在 cmd-db | 否 —— **两路都在** |
+| aux 长度 = 0 | 否 —— **各 1 个等级** |
+| aux 长度 > 0 | **是** —— 地址与等级表都有 |
+
+**所以「RPMh 不认识这两路」这条排除。** 地址拿到了，这是投票的前提。
+
+### 三、aux = 1 的含义（要看清，别读错）
+
+`QcomRpmh.c:43-51`：
+```c
+int qcom_rpmh_level_index(const QcomRpmhResource *r, uint32_t level, uint32_t *index)
+{
+    if (!r->level_count) return QcomRpmhNoLevel;
+    if (!level) {*index = 0; return QcomRpmhOk;}
+    for (unsigned i = 0; i < r->level_count; ++i)
+        if (r->levels[i] >= level) {*index = i; return QcomRpmhOk;}
+    *index = r->level_count - 1;
+    return QcomRpmhOk;
+}
+```
+
+`aux = 1` 意味着**只有一个等级项**，其值 `levels[0] = 1`。
+
+- `level = 0` → index 0（关）
+- `level >= 1` → index 0（因为 `levels[0] = 1 >= level`）
+
+**所以对这个 rail，投票只有「0 = 关」与「1 = 开」两档**——它不是一个可调电压的 VRM，
+而是一个**开关式的 ARC 资源**。
+
+**这与 `pm8150_l5`/`l9` 是固定电压（880000 / 1200000 µV，DT 里 min = max）完全一致**：
+电压由 DT 定死，RPMh 这一侧只管「开/关」和 ARC 等级，不管具体伏数。
+
+### 四、这对投票意味着什么
+
+投票时写的是 `(index, 地址)` 这一对，**不是电压**：
+
+```
+qcom_rpmh_active_request(layout, tcs, {0x41800, 0x41b00}, {1, 1}, 2, writes, cap)
+```
+
+`values` 是 **ARC 等级索引**，不是 µV。**`aux` 表告诉我合法索引只有 0 和 1，所以写 1 是表里有的值。**
+
+**这正是那道「防写错」的闸**：如果 aux 表里有 5 档而写 7，就越界；这里只有 1 档，写 1 是唯一合法值。
+
+### 五、下一步
+
+1. **投 `ldoa5` 与 `ldoa9`**（地址已定，值 = 1，机制已有 `QcomRpmh.c` + GpuProbe 验证的 RSC 布局）
+2. 投完立刻读 `0x60000000`（dm_core 的第一个访问）—— **这一读就是判据**
+3. 若可读 → 第 9 条成立，整条 PCIe 打开；若仍挂 → 轨不是原因
+
+**风险说明**：这是第一次对 PMIC 轨投票。值 = 1 是 aux 表唯一合法项，电压由 DT 固定（不是我们选的），
+所以「写坏电压」的风险很低——**我们投的是「开」，不是「设为某个伏数」。**
