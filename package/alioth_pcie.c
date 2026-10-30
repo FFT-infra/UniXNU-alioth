@@ -29,8 +29,15 @@
  *   2  writes  the controller's power and clocks on and its two resets out, then reads it back
  *   3  writes  the PHY's own sequence (the device tree's qcom,phy-sequence) and asks it for the
  *              "ready" bit
- *   4  writes  the endpoint's reset line out (TLMM gpio 79) and waits for the link to come up
- *   5  reads   the configuration space: the root complex's and the QCA6390's vendor and device
+ *   4  writes  the PHY's auxiliary clock and its power-down word, then waits for "ready"
+ *   5  writes  the PHY's own sequence, then waits for "ready" again
+ *   6  reads   the whole PCIe0 corner of the clock controller
+ *   7  switches the auxiliary clock's own source generator on
+ *   8  reads   the controller's own registers (PARF)
+ *   9  writes  the vendor driver's init sequence into PARF
+ *  10  drives  the endpoint's two pads: WLAN_EN (TLMM 20) high, then PERST# (TLMM 79) released,
+ *              and reads the link state. This is the step that first powers the endpoint.
+ *  11  reads   the configuration space: the root complex's and the QCA6390's vendor and device
  *
  * Boot-arg pcie=N performs steps 1 to N and stops; pcie_pause=MS is how long a step waits after
  * announcing a group of accesses (default 2200, as the loader notes the log every two seconds).
@@ -81,7 +88,7 @@ pause_group(void)
 	}
 }
 
-#define BLOCK_NAMES 7
+#define BLOCK_NAMES 8
 static struct {
 	const char *name;
 	uint64_t base;
@@ -95,6 +102,14 @@ static struct {
 	{ "iatu", 0x60001000, 0x1000 },
 	{ "conf", 0x60100000, 0x1000 },      /* bus 0 device 0 function 0 only */
 	{ "dbi", 0x60000000, 0x1000 },   /* the core's own 4 KB: DBI at its start, ELBI at 0xf20 */
+	/*
+	 * The TLMM tile the pads this file needs live in. The pads are split into tiles
+	 * (pinctrl-kona.c:20-22: NORTH 0x00900000, SOUTH 0x00500000) at a 0x1000 stride, from the
+	 * TLMM base 0x0f000000 (kona-pinctrl.dtsi:2), so NORTH starts at 0x0f900000. gpio 20, 79
+	 * and 124 are all NORTH (pinctrl-kona.c:1461, :1576, :1580). The size covers pin 124 at
+	 * +0x7c000; the touch driver maps the same tile (FocalTouchBoard.h:56-59).
+	 */
+	{ "tlmm", 0x0f900000, 0x80000 },
 };
 
 static uint64_t
@@ -244,6 +259,26 @@ map_all(void)
 #define GDSC_POWER_ON           (1u << 31)
 #define GDSC_SW_COLLAPSE        (1u << 0)
 #define GDSC_RETAIN_FF_ENABLE   (1u << 11)
+
+/* TLMM pad layout: [1:0] pull, [5:2] function, [8:6] drive, [9] output enable
+ * (pinctrl-kona.c:32-38). REG_SIZE 0x1000, io register at +0x4, out bit 1, in bit 0
+ * (pinctrl-kona.c:29-38, pinctrl-msm.c:373-378, :299-300). */
+#define TLMM_CFG(pin)           ((pin) * 0x1000u)
+#define TLMM_IO(pin)            ((pin) * 0x1000u + 4u)
+#define TLMM_PULL_DOWN          1u
+#define TLMM_PULL_UP            3u
+#define TLMM_FUNC_GPIO          0u
+#define TLMM_DRIVE(d)           ((((d) / 2u) - 1u) << 6)
+#define TLMM_OE                 (1u << 9)
+#define TLMM_OUT                0x2u           /* bit 1 of the io register */
+#define TLMM_IN                 0x1u           /* bit 0 of the io register */
+
+/* The three pads this file drives, from the vendor device tree:
+ *   gpio 79  perst-gpio, active low   (kona-pcie.dtsi:36, pci-msm.c:939 on=0)
+ *   gpio 20  wlan-en-gpio, active high (kona.dtsi:4894, output-high in cnss_wlan_en_active)
+ *   gpio124  qcom,sw-ctrl-gpio         (kona.dtsi:4896) */
+#define GPIO_PERST              79u
+#define GPIO_WLAN_EN            20u
 
 #define PHY_STATUS              0x814           /* dt: qcom,phy-status-offset; bit 6: ready */
 #define PHY_POWER_DOWN          0x840           /* dt: qcom,phy-power-down-offset */
@@ -637,6 +672,72 @@ step_dbi(void)
 	return true;
 }
 
+/*
+ * Step 10: the endpoint's own enable sequence, which this file has never done.
+ *
+ * Until now every write went to the controller or to the PHY. The two pads that decide whether
+ * the QCA6390 is powered and out of reset were never driven, so the link could not have trained
+ * no matter what the controller was doing: PERST# (gpio 79) is active low and the vendor driver
+ * writes its "assert" value, 0 (pci-msm.c:939), so the endpoint has been held in reset since the
+ * bootloader let go; WLAN_EN (gpio 20) is cnss2's, active high, and nothing in this tree raises it.
+ *
+ * The order is the vendor's: cnss2/power.c:748-770 raises WLAN_EN and waits WLAN_ENABLE_DELAY;
+ * pci-msm.c:4569-4583 waits ep_latency, releases PERST and waits perst_delay. The pads take the
+ * device tree's own values: gpio 20 pull-up drive 16 output-high (kona-pinctrl.dtsi:1041-1052),
+ * gpio 79 pull-down drive 2 (kona-pinctrl.dtsi:905-916).
+ *
+ * The TLMM is a different block from the controller, so a wrong value here cannot wedge the PCIe
+ * bus the way a wrong address inside 0x1c00000 can. Every register is read before it is written
+ * and read back after, so a pad that does not take its value says so.
+ */
+static bool
+step_endpoint(void)
+{
+	uint32_t cfg, io, wlan, perst;
+
+	announce("drive the two endpoint pads this file has never touched: WLAN_EN (TLMM 20) high, then PERST# "
+	    "(TLMM 79) released, in the vendor's order and with the device tree's pad settings");
+
+	/* What the bootloader left on both pads, before any write. */
+	get(7, "tlmm gpio20 cfg (wlan-en)", TLMM_CFG(GPIO_WLAN_EN));
+	wlan = get(7, "tlmm gpio20 io (wlan-en)", TLMM_IO(GPIO_WLAN_EN));
+	get(7, "tlmm gpio79 cfg (perst)", TLMM_CFG(GPIO_PERST));
+	perst = get(7, "tlmm gpio79 io (perst)", TLMM_IO(GPIO_PERST));
+	line("before: wlan-en io %#x (out %u), perst io %#x (out %u)", wlan,
+	    (wlan & TLMM_OUT) ? 1u : 0u, perst, (perst & TLMM_OUT) ? 1u : 0u);
+
+	/* WLAN_EN: function gpio, pull-up, drive 16 mA, output enabled, driven high. */
+	cfg = TLMM_FUNC_GPIO | TLMM_PULL_UP | TLMM_DRIVE(16) | TLMM_OE;
+	put(7, "tlmm gpio20 cfg (func gpio, pull-up, drive 16, output)", TLMM_CFG(GPIO_WLAN_EN), cfg);
+	put(7, "tlmm gpio20 io (drive high)", TLMM_IO(GPIO_WLAN_EN),
+	    rd(reg(7, TLMM_IO(GPIO_WLAN_EN))) | TLMM_OUT);
+	sleep_ms(1);                    /* cnss2: WLAN_ENABLE_DELAY, 1000 us */
+	get(7, "tlmm gpio20 cfg after", TLMM_CFG(GPIO_WLAN_EN));
+	io = get(7, "tlmm gpio20 io after", TLMM_IO(GPIO_WLAN_EN));
+	line("WLAN_EN is %s (io %#x)", (io & TLMM_OUT) ? "HIGH" : "STILL LOW", io);
+
+	/* PERST#: function gpio, pull-down, drive 2 mA, output enabled, released (bit 1 set). */
+	cfg = TLMM_FUNC_GPIO | TLMM_PULL_DOWN | TLMM_DRIVE(2) | TLMM_OE;
+	put(7, "tlmm gpio79 cfg (func gpio, pull-down, drive 2, output)", TLMM_CFG(GPIO_PERST), cfg);
+	put(7, "tlmm gpio79 io (release the endpoint from reset)", TLMM_IO(GPIO_PERST),
+	    rd(reg(7, TLMM_IO(GPIO_PERST))) | TLMM_OUT);
+	sleep_ms(2);                    /* vendor waits perst_delay_us, 1000..1005 us */
+	get(7, "tlmm gpio79 cfg after", TLMM_CFG(GPIO_PERST));
+	io = get(7, "tlmm gpio79 io after", TLMM_IO(GPIO_PERST));
+	line("PERST# is %s (io %#x)", (io & TLMM_OUT) ? "RELEASED" : "STILL ASSERTED", io);
+
+	/*
+	 * The link's own state with the endpoint now powered and out of reset. This is the criterion:
+	 * it read 0 (LTSSM_DETECT_QUIET) at step 8 and after step 9, and it can only leave detect if
+	 * the endpoint is answering. Read, not written: PARF_LTSSM bit 8, which the vendor sets to
+	 * start training (pci-msm.c:4409), is deliberately left alone, so a change here is
+	 * attributable to the pads. If it stays 0, that bit is the next single variable.
+	 */
+	pause_group();
+	get(1, "parf_ltssm after the endpoint enable", 0x1b0);
+	return true;
+}
+
 /* ---- what runs ------------------------------------------------------------------------------ */
 
 static bool (*const steps[])(void) = {
@@ -649,6 +750,7 @@ static bool (*const steps[])(void) = {
 	step_aux_src,
 	step_parf,
 	step_parf_init,
+	step_endpoint,
 	step_dbi,
 };
 
