@@ -432,3 +432,26 @@ could not answer.
 Not established: the brightness value the panel ends at, whether a read-back works (it does
 not - `xerr=-1` and `a=0` on the last row), the fade behaviour, or the iOS service in mode 3.
 Those need an interrupt handler on DSI0's SPI, which nothing here attaches.
+
+### The 21 launched / 8 timed out, accounted for
+
+`stats[10]` counts every packet `sendPacket` launches; `stats[11]` counts only those that
+polled for the done status and did not get it. The round's 21 splits exactly:
+
+| group | packets | waits for done? |
+| --- | --- | --- |
+| three blinks (`0x28`, `0x10`, `0x11`, `0x29` each) | 12 | no - `panelBlink` passes `waitForDone = false` |
+| three level writes (`writeBrightness`) | 3 | yes |
+| three read-backs (`readBrightness` = max-return + DCS 0x52) | 6 | yes |
+| **total** | **21** | 9 wait |
+
+So 9 packets waited and 8 timed out: **every packet that waits times out, except one.** That is
+not a fault rate to be read as "mostly works" - it is the expected shape on this board, because
+the command DMA's done status is an interrupt nothing attaches (`alioth.dts:30921-30922`) and
+the vendor only takes the FIFO path in `secure_mode` (`dsi_ctrl.c:1170-1180`). The single
+success is the part that is still unexplained and should not be generalised from.
+
+**What it means for the result:** the 12 blink packets are the ones that changed the panel, and
+none of them depended on a done. The blink working is therefore independent of the timeout
+behaviour - the packets were launched and the panel acted on them, which is what the screen
+showed.
