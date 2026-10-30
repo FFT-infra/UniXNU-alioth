@@ -165,3 +165,64 @@ pcie_tbu_clk, pcie_phy_refgen_clk, pcie_ddrss_sf_tbu_clk
 这把方向从「映射错」移到「IATU 这一侧的时钟或复位」。下一步仍是纯代码：读
 `pcie_0_cfg_ahb_clk` / `pcie_0_slv_axi_clk` 的 branch 使能与 halt 状态（`step_clocks`
 已读过一部分，属安全区），确认 IATU 所在的 AXI slave 分支有没有真的跑起来。
+
+## 2026-10-30 夜：wifi1 轮，`pcie_0_ldo` 确实是关着的；DBI base 两种布局都是 0
+
+`pcie=9 pcie_skip=32`，tag `wifi1`，kernel `dd657510…`，payload `fa1adb3e…`。
+持久日志 `build/sheng-logs/wifi1-000000005fa365d6`（`header.txt` 的 `tag=wifi1` 把这次启动钉在这一版）。
+桌面正常：`WALLPAPER stage=5 status=0`。
+
+### 一、`pcie_0_ldo` 从来没被投过，投票后生效
+
+| 读数 | 地址 | 值 |
+| --- | --- | --- |
+| step 1（本文件未写任何东西） | GCC `0x8c004` | **`0x80000000`** |
+| step 3 投票后 | 同上 | **`0x1`** |
+
+`0x80000000` 是 bit31 置位、bit0 清零：这个 branch **是关的**。
+`gcc-kona.c:2521` 的 `gcc_pcie_wifi_clkref_en` 只有 `BIT(0)`，所以投票前它确实没跑。
+这是本轮唯一一个新写入，并且它生效了。
+
+**这条同时说明：`porting.toml` 里「LDO 决定 core 与 PHY 是否有电有钟」的判断，之前
+从未被验证过**——现在可以验证了：投了之后 step 8/9 的 PARF 读数与之前完全一致
+（`sys_ctrl 0x2000361c`、`phy_ctrl 0x900`、`ltssm 0`），所以 CLKREF 不影响 root complex
+自己的寄存器访问。它影响的是端点侧的参考时钟，即链路训练。
+
+### 二、`pcie_phy_refgen_clk` 不是缺失项
+
+`GCC 0x6f02c` 在 step 1、6、9 全部读作 `0x1`，任何写入之前就是开的。
+brief 与 `porting.toml` 把它列为「缺两个」之一，与读数不符。
+
+### 三、DBI base：0x168 与 0x350 都是 0，布局问题不解释 step 10
+
+| 偏移 | 出处 | step 8 | step 9 之后 |
+| --- | --- | --- | --- |
+| `0x168` | mainline v2.3.2 | `0` | （step 9 写 0） |
+| `0x350` | vendor `pci-msm.c:43` | `0` | `0` |
+
+v3 布局的旁证仍在（`0x358 = 0x1000000`、`0x16c = 0`），但**两个候选偏移上的 DBI base 都是 0**，
+所以「清零写错了寄存器」这条解释不了 step 10 的挂死。
+
+### 四、`parf_ltssm` 仍是 0，init 没有启动训练
+
+step 8 读 `0`，step 9 之后仍读 `0`。本文件从不写 `PARF_LTSSM` bit 8
+（vendor 在 `pci-msm.c:4409` 写它才开始训练），所以「训练从未被启动」是事实而非推断。
+
+### 五、`step_look` 的 PARF/PHY/ELBI 读取是死代码——推翻证据文档上一条结论
+
+`step_look` 在 `alioth_pcie.c:272` 早退：`gdscr = 0x22f001`（bit31 清零）、
+`misc = 0x4100040`（低 6 位 = 0，不是 `0x3f`），两个条件都满足早退。
+该早退自 `71331fc`（第一版）就在。
+
+所以本文档 §「`elbi` 与 `dbi` 的映射重叠不解释挂死」里那句
+「**`step_look`（第 1 步）就成功读了 `elbi_sys_ctrl`**」是**错的**：
+全部 `console-*.log` / `serial-*.log` 里 `elbi` 的值行数为 **0**。
+`elbi`（`0x60000f20`）那一页**从未被读过**，不能拿它证明「同一页可读」。
+
+### 六、下一步
+
+1. 补 `PERST#`（TLMM 79）与 `WLAN_EN`（TLMM 20）的驱动 —— 两个从未做过的写入，各一轮。
+   `alioth_pcie.c` 全文没有 GPIO 写入，文件头注释 `:32` 说 step 4 会释放 gpio 79，与代码不符。
+2. 写 `PARF_LTSSM` bit 8 打开训练，然后才有 `parf_ltssm` 可读。
+3. step 10 的挂死仍无解释；现在已排除「时钟投票」与「DBI base 清零错位」两条。
+   剩下的候选是 IATU 页自身的访问许可，或 conf 窗口映射（我们 `0x1000`、vendor `0x100000`）。
