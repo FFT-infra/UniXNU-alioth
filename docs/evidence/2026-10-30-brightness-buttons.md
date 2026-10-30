@@ -305,12 +305,17 @@ Mode 2 leads with three off/on blinks before the level sweep, and `stats[7]` cou
 packets were launched. The two together separate three outcomes, not two - and the third is
 the one that decides what to do next.
 
-| Screen | `stats[7]` | Meaning | Next |
+| Screen | `stats[10]` | Meaning | Next |
 | --- | --- | --- | --- |
-| blinks three times | 3 | the packets reach the panel | brightness works; continue with the sweep and the iOS service |
-| no blink, **observed** | 3 | the packets were launched but the panel did not act | the TPG FIFO path does not hold on this command-mode panel; implement the vendor's DMA-buffer path instead |
-| no blink, **observed** | < 3 | the controller never launched the packet | the launch sequence itself is wrong; check DMA_CTRL, DMA_LENGTH and the trigger |
-| **not observed** | 3 | packets launched; visibility unknown | nothing is concluded about the panel - this is not a negative result |
+| blinks three times | >= 12 | the packets reach the panel | brightness works; continue with the sweep and the iOS service |
+| no blink, **observed** | >= 12 | the packets were launched but the panel did not act | the TPG FIFO path does not hold on this command-mode panel; implement the vendor's DMA-buffer path instead |
+| no blink, **observed** | < 12 | the controller never launched the packet | the launch sequence itself is wrong; check DMA_CTRL, DMA_LENGTH and the trigger |
+| **not observed** | >= 12 | packets launched; visibility unknown | nothing is concluded about the panel - this is not a negative result |
+
+The counter is `stats[10]` (packets launched, bumped by `sendPacket`), not `stats[7]`: btn6
+showed `stats[7]` was written as a literal after the blink loop, so it could not fail and proved
+nothing. Three blinks cost four packets each (`0x28`, `0x10`, `0x11`, `0x29`), so a complete
+blink pass is at least twelve launches before the sweep adds more.
 
 **"Not observed" is not "negative".** A round nobody watched the screen through says only that
 the driver issued the packets. Recording it as "the panel did not blink" would send the next
