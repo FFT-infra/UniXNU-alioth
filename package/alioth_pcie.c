@@ -38,7 +38,8 @@
  *  10  drives  the endpoint's two pads: WLAN_EN (TLMM 20) high, then PERST# (TLMM 79) released,
  *              and reads the link state. This is the step that first powers the endpoint.
  *  11  writes  PARF_LTSSM bit 8 to start link training, then reads the link state
- *  12  reads   the configuration space: the root complex's and the QCA6390's vendor and device
+ *  12  reads   the link control block's status word (ELBI), the signal the vendor polls
+ *  13  reads   the configuration space: the root complex's and the QCA6390's vendor and device
  *
  * Boot-arg pcie=N performs steps 1 to N and stops; pcie_pause=MS is how long a step waits after
  * announcing a group of accesses (default 2200, as the loader notes the log every two seconds).
@@ -795,6 +796,41 @@ step_train(void)
 	return true;
 }
 
+/*
+ * Step 12: read the link control block, which is the only place the link state can be seen once
+ * LTSSM_EN does not stick.
+ *
+ * Step 11 wrote PARF_LTSSM bit 8 and read back 0, so PARF's own state field cannot be the
+ * criterion. The vendor does not read it either: after setting that bit it polls ELBI
+ * (pci-msm.c:4416-4424, readl_relaxed(dev->elbi + PCIE20_ELBI_SYS_STTS) until XMLH_LINK_UP),
+ * and reports the state as (val >> 12) & 0x3f. ELBI_SYS_STTS is offset 0x08 (pci-msm.c:91) in
+ * the elbi window at 0x60000f20, so its status word is at 0x60000f28.
+ *
+ * WHY THIS IS THE RISKY STEP, AND WHY IT IS ONLY A READ: ELBI (0x60000f20) and DBI
+ * (0x60000000) are in the same 4 KB page (0x60000000), while iATU (0x60001000) is in the next
+ * one. Step 13 -- the DBI step that has never run -- hangs the board on its FIRST access, and
+ * that access is iATU, not this page. So reading here does not touch the page step 13 dies on,
+ * and if this read also hangs, the fault is not "the DBI page" but something both pages share
+ * (the master's write-address halt, or the slave address space size).
+ *
+ * One access only. If it hangs, the last line before it is already on the medium (risky()).
+ */
+static bool
+step_elbi(void)
+{
+	uint32_t status;
+
+	announce("read the link control block's status word, the signal the vendor polls after it sets LTSSM_EN; "
+	    "this page (0x60000f28) is not the page the DBI step hangs on");
+
+	get(3, "elbi_sys_ctrl", 0x04);
+	status = get(3, "elbi_sys_stts (XMLH_LINK_UP is bit 10, state is bits 12-17)", 0x08);
+	line("the link control block says: link %s, state %#x (%s)",
+	    (status & 0x400) ? "UP" : "DOWN", (status >> 12) & 0x3f,
+	    (status & 0x400) ? "XMLH_LINK_UP set" : "XMLH_LINK_UP clear, the link never came up");
+	return true;
+}
+
 /* ---- what runs ------------------------------------------------------------------------------ */
 
 static bool (*const steps[])(void) = {
@@ -809,6 +845,7 @@ static bool (*const steps[])(void) = {
 	step_parf_init,
 	step_endpoint,
 	step_train,
+	step_elbi,
 	step_dbi,
 };
 
