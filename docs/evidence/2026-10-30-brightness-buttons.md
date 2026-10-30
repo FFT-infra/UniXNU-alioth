@@ -305,11 +305,22 @@ Mode 2 leads with three off/on blinks before the level sweep, and `stats[7]` cou
 packets were launched. The two together separate three outcomes, not two - and the third is
 the one that decides what to do next.
 
-| Screen | `stats[7]` | Meaning | Next |
+| Screen | `stats[10]` | Meaning | Next |
 | --- | --- | --- | --- |
-| blinks three times | 3 | the packets reach the panel | brightness works; continue with the sweep and the iOS service |
-| no blink | 3 | the packets were launched but the panel did not act | the TPG FIFO path does not hold on this command-mode panel; implement the vendor's DMA-buffer path instead |
-| no blink | < 3 | the controller never launched the packet | the launch sequence itself is wrong; check DMA_CTRL, DMA_LENGTH and the trigger |
+| blinks three times | >= 12 | the packets reach the panel | brightness works; continue with the sweep and the iOS service |
+| no blink, **observed** | >= 12 | the packets were launched but the panel did not act | the TPG FIFO path does not hold on this command-mode panel; implement the vendor's DMA-buffer path instead |
+| no blink, **observed** | < 12 | the controller never launched the packet | the launch sequence itself is wrong; check DMA_CTRL, DMA_LENGTH and the trigger |
+| **not observed** | >= 12 | packets launched; visibility unknown | nothing is concluded about the panel - this is not a negative result |
+
+The counter is `stats[10]` (packets launched, bumped by `sendPacket`), not `stats[7]`: btn6
+showed `stats[7]` was written as a literal after the blink loop, so it could not fail and proved
+nothing. Three blinks cost four packets each (`0x28`, `0x10`, `0x11`, `0x29`), so a complete
+blink pass is at least twelve launches before the sweep adds more.
+
+**"Not observed" is not "negative".** A round nobody watched the screen through says only that
+the driver issued the packets. Recording it as "the panel did not blink" would send the next
+round into rewriting the transport on evidence that does not exist. The two are separate rows
+above for that reason.
 
 `stats[7]` alone cannot tell "the panel received it" from "the packet never left", so a
 reading of 3 with no blink is not evidence that anything reached the panel - it is evidence
@@ -360,3 +371,87 @@ The image is proven to carry this round's kernel rather than assumed to: `build 
 Acceptance is the three-outcome table above. The screen is read by a person; `stats[7]` says
 how many packets the driver launched, and the two together separate "reached the panel",
 "launched but the panel ignored it" and "never launched".
+
+## 2026-10-31 btn6: the panel blinks, and the brightness path is live
+
+Image `tmp/boot-btn6.img`, sha256
+`da8e4528d71cdf8a4821ed4e9a7d2e6e4c8528762a69683dfa5f856e23ea6710`, kernel
+`1b1c729f60682f78ac162cd0e9c4d037b5ea1029936d05f4b2c2509b9c952363`. The image's command line
+carries `alioth-bl=2`, `alioth-bt=1` and `sheng-build-tag=btn6`, and the payload's
+`kernel_sha256` equals the kernel this build produced - so this round ran this branch's own
+build, not the shared tree's.
+
+Timeline, all on the Mac's clock:
+
+```
+03:37:27  fastboot boot
+03:37:42  left the bootloader (5 s)
+03:39:35  serial still alive, BLPHASE t=107s phase=9
+03:41:07  returned to fastboot (195 s, against the 186-195 s baseline)
+```
+
+### The observation, recorded in two parts
+
+| Observation | Status |
+| --- | --- |
+| the panel's brightness changed | user-confirmed, 03:38, "这个亮度确实有变化" |
+| three off/on cycles | user-confirmed, 03:39, "对滴对滴" |
+
+They are kept apart because the first alone was not enough to pass: a brightness change could
+be anything, while three one-second dark periods in a row is the blink the code asks for.
+
+### What the log says, and what it does not
+
+`build/sheng-logs/btn6-00000003b4b2eed4`, tag `btn6`, uptime 178 s, 90 slots, `write_errors 0`.
+
+```
+B st=3 irq=0 rep=1 mask=4 apid=13/26 off=65536 pdc=20000 err=131072 spur=512
+L st=2 req=0 lvl=2047 a=0 b=0 xerr=-1 irq=ffffffff ea=a eb=5 err=1280 goal=0 fade=0
+L path runs=0 fades=0 irq=21/8 mode=141137 tmo=537133056 done=335544320 empty=0 last=0
+```
+
+`L path irq=21/8` is `stats[10]`/`stats[11]`: 21 packets launched, 8 of them timed out waiting
+for a done this kernel cannot observe. So packets went out, and the panel acted on them - which
+is exactly the first row of the three-outcome table, reached by the screen rather than by a
+counter.
+
+### A correction: `stats[7]` was not a counter
+
+The acceptance table called for `stats[7] = 3` as the cross-check. That was wrong: the code
+wrote `native_backlight_stats[7] = 3` as a literal after the blink loop, so it recorded "the
+loop ran", not "three packets reached the panel". It is not evidence and must not be cited as
+such. The honest cross-check is `stats[10]`, the packets-launched counter, which is 21 here
+because the sweep's read-backs follow the blinks.
+
+### What this establishes, and what it does not
+
+Established: the DCS 0x51/0x28/0x29 packets written through DSI0's TPG FIFO reach this
+command-mode panel and change it. The transport works, which is the question btn1 through btn5
+could not answer.
+
+Not established: the brightness value the panel ends at, whether a read-back works (it does
+not - `xerr=-1` and `a=0` on the last row), the fade behaviour, or the iOS service in mode 3.
+Those need an interrupt handler on DSI0's SPI, which nothing here attaches.
+
+### The 21 launched / 8 timed out, accounted for
+
+`stats[10]` counts every packet `sendPacket` launches; `stats[11]` counts only those that
+polled for the done status and did not get it. The round's 21 splits exactly:
+
+| group | packets | waits for done? |
+| --- | --- | --- |
+| three blinks (`0x28`, `0x10`, `0x11`, `0x29` each) | 12 | no - `panelBlink` passes `waitForDone = false` |
+| three level writes (`writeBrightness`) | 3 | yes |
+| three read-backs (`readBrightness` = max-return + DCS 0x52) | 6 | yes |
+| **total** | **21** | 9 wait |
+
+So 9 packets waited and 8 timed out: **every packet that waits times out, except one.** That is
+not a fault rate to be read as "mostly works" - it is the expected shape on this board, because
+the command DMA's done status is an interrupt nothing attaches (`alioth.dts:30921-30922`) and
+the vendor only takes the FIFO path in `secure_mode` (`dsi_ctrl.c:1170-1180`). The single
+success is the part that is still unexplained and should not be generalised from.
+
+**What it means for the result:** the 12 blink packets are the ones that changed the panel, and
+none of them depended on a done. The blink working is therefore independent of the timeout
+behaviour - the packets were launched and the panel acted on them, which is what the screen
+showed.
