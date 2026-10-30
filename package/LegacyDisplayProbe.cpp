@@ -944,6 +944,15 @@ void native_legacy_display_late_probe(void) {
 	extern void native_gpu_probe(void);
 	native_gpu_probe();
 
+	// The panel brightness service and the physical buttons. Both are board services the porting
+	// guide requires (display.md steps 3-4, input.md step 4), both opt-in through their own boot
+	// argument, and both live in this archive because it is the one the kernel link force-loads.
+	// Declared weak so a build without them still links.
+	extern void alioth_backlight_probe(void) __attribute__((weak_import));
+	if (&alioth_backlight_probe) alioth_backlight_probe();
+	extern void alioth_buttons_probe(void) __attribute__((weak_import));
+	if (&alioth_buttons_probe) alioth_buttons_probe();
+
 	// The Wi-Fi controller's power and clock steps. Opt-in through pcie=<n>; step 1 only reads.
 	extern void alioth_pcie_init(void);
 	alioth_pcie_init();

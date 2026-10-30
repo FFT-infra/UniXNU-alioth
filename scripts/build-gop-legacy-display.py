@@ -450,6 +450,46 @@ cpufreq_command += ['-mgeneral-regs-only', '-Wall', '-Wextra', '-Werror', '-Wno-
 cpufreq_command += suppressions2
 run(cpufreq_command, cwd=record['directory'])
 
+# Brightness and the physical buttons. Both are board services that the porting guide requires
+# (display.md steps 3-4 and input.md step 4) and that this archive is the only place to put:
+# it is the one the kernel link force-loads, so an object nothing references still arrives.
+# Each exports one entry point that LegacyDisplayProbe.cpp calls; each is opt-in through its
+# own boot argument, so the default boot is unchanged.
+#
+# Compiled with the same record as the CPU frequency probe above, so their flags match the
+# kernel's C++ recipe exactly.
+# These keep their own variable names. Reusing probe_obj here would overwrite the board
+# package's object and drop LegacyDisplayProbe.o from the archive, which is what the first
+# attempt did: the link then failed on every native_legacy_* symbol the hooks define.
+service_objects = []
+for service_name in ('BacklightProbe', 'ButtonProbe'):
+    _service = sorted(ROOT.glob('kits/*/' + service_name + '.cpp'))
+    require(_service, service_name + '.cpp missing: no kits/*/' + service_name + '.cpp')
+    service_source = _service[0]
+    service_obj = OUT / (service_name + '.o')
+    service_command, service_suppressions, i = [], [], 0
+    while i < len(arguments):
+        value = arguments[i]
+        if value == record['file']:
+            service_command.append(str(service_source))
+        elif value == '-o':
+            service_command += ['-o', str(service_obj)]
+            i += 1
+        elif value == '-Xclang' and arguments[i + 1].startswith('-W'):
+            i += 1
+        elif value.startswith('-Wno-'):
+            service_suppressions.append(value)
+        elif not value.startswith(('-W', '-DXNU_BOOT_PROGRESS=')):
+            service_command.append(value)
+        i += 1
+    service_command += ['-mgeneral-regs-only', '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
+                        '-Wno-c99-designator', '-Wno-reorder-init-list',
+                        '-Wno-deprecated-enum-enum-conversion', '-Wno-missing-designated-field-initializers',
+                        '-I', str(record['directory']), '-I', str(ROOT / '.cache/xnu-work/osfmk'), '-I', str(OUT)]
+    service_command += service_suppressions
+    run(service_command, cwd=record['directory'])
+    service_objects.append(service_obj)
+
 # The owned presenter, staged the same way.
 print(run(['python3', ROOT / 'scripts/build-arm-driver.py', 'NativeGOPPresenter'], text=True), end='')
 presenter = ROOT / 'build/native-gop-presenter/NativeGOPPresenter.o'
@@ -500,7 +540,7 @@ archive = OUT / 'libNativeLegacyDisplay.late.a'
 archive.unlink(missing_ok=True)
 run(['xcrun', 'ar', 'rcs', archive, late, OUT / 'original-bindings.o', probe_obj, hid_probe_obj, cpufreq_obj,
      presenter_late, hid_dir / 'NativeHidInput.late.o', hid_dir / 'hid-original-bindings.o',
-     keystore_probe_obj, keystore_late])
+     keystore_probe_obj, keystore_late, *service_objects])
 
 sources = [ROOT / 'drivers/GopFramebuffer/NativeLegacyDisplay.cpp',
            ROOT / 'drivers/GopFramebuffer/NativeLegacyRequest.h',
