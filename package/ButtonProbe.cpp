@@ -19,9 +19,15 @@
 //              Active low, so a clear bit is a press.
 //
 // The PPIDs the arbiter maps: ppid = sid << 8 | (peripheral address >> 8)
-// (spmi-pmic-arb.c:977,996), so PON is 0x008 and GPIO 6 is 0x18c - NOT sheng's 0x013/0x18d,
+// (spmi-pmic-arb.c:977,996), so PON is 0x008 and GPIO 6 is 0x0c6 - NOT sheng's 0x013/0x18d,
 // whose board has its PON and GPIO at different peripheral pages. Copying sheng's values would
 // ask the arbiter for a peripheral this phone does not have.
+//
+// GPIO 6's PPID is 0x0c6 because its own SPMI interrupt names the peripheral 0xc6, not the pad's
+// full address 0xc600: alioth.dts:4261 lists interrupts = <0x00 0xc6 0x00 0x00> named
+// "pm8150_gpio6", and the arbiter keys the peripheral page. Deriving it from the pad address
+// (0xc600 >> 8 = 0xc6, which happens to agree here) is the same number, but the interrupt is the
+// direct evidence; package/tests/buttons_host.c asserts both derivations meet at BT_GPIO_PPID.
 //
 // The arbiter itself also differs from sheng's board, and not only in its bases. This board is
 // qcom,spmi@c440000 with reg-names core/chnls/obsrvr/intr/cnfg =
@@ -46,6 +52,7 @@
 #include <IOKit/IOService.h>
 #include <kern/thread.h>
 #include <pexpert/pexpert.h>
+#include "ButtonsCore.h"
 
 extern "C" int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint32_t *, uint64_t *) __attribute__((weak_import));
 
@@ -60,23 +67,20 @@ extern "C" int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint3
 extern "C" {volatile int32_t native_buttons_stats[10];}
 
 namespace {
-// This board's arbiter, from alioth.dts:4172-4176 (reg-names core, chnls, obsrvr, intr, cnfg).
-constexpr uint64_t kCore = 0xc440000, kChnls = 0xc600000, kObsrvr = 0xe600000, kIntr = 0xe700000,
-                   kCnfg = 0xc40a000, kPdc = 0xb220000;
-// ppid = sid << 8 | (peripheral >> 8) with sid 0 on this board's PM8150.
-constexpr uint32_t kPonPpid = 0x008, kGpioPpid = 0x18c;
-// PON RT_STS bits (qpnp-power-on.c:113-114).
+// The window bases, the PPIDs, the report bits and the channel arithmetic live in ButtonsCore.h,
+// where a host test checks them. These aliases keep the driver's own names.
+constexpr uint64_t kCore = BT_CORE, kChnls = BT_CHNLS, kObsrvr = BT_OBSRVR, kIntr = BT_INTR,
+                   kCnfg = BT_CNFG, kPdc = BT_PDC;
+constexpr uint32_t kPonPpid = BT_PON_PPID, kGpioPpid = BT_GPIO_PPID;
 constexpr uint8_t kPowerBit = 1u << 0, kResinBit = 1u << 1;
-// SPMI GPIO: every pad is 0x100 bytes, RT_STS at +0x10, level in BIT(0) (pinctrl-spmi-gpio.c:23,38-39).
 constexpr uint8_t kGpioBit = 1u << 0;
+// The report bits are only used through bt_pressed_mask in ButtonsCore.h now; the aliases below
+// document which slot of native_buttons_stats[3] each value occupies.
 // Peripheral registers, addressed through a channel.
 constexpr uint8_t kRtSts = 0x10, kSetType = 0x11, kPolHigh = 0x12, kPolLow = 0x13, kLatchedClr = 0x14, kEnSet = 0x15;
-// Channel status: DONE bit 0, and bits 1..3 are failure/denied/dropped (spmi-pmic-arb.c:78-84).
-constexpr uint32_t kStatusDone = 1u << 0, kStatusErrors = 0xeu;
+// The status word is decoded by bt_status_result in ButtonsCore.h, not by bit tests here.
 // PDC: pin 1, SPI 481, IRQ_i_CFG at 0x110, enable bank at 0x10 (qcom-pdc.c:31-34).
-constexpr uint32_t kPdcPin = 1, kSpi = 481, kPdcCfg = 0x110, kPdcEnableBank = 0x10, kPdcVersion = 0x1000;
-// Report 2 bits as NativeHidInput expects them.
-constexpr uint32_t kReportPower = 1u << 1, kReportVolumeUp = 1u << 2, kReportVolumeDown = 1u << 3;
+constexpr uint32_t kPdcPin = BT_PDC_PIN, kSpi = BT_SPI, kPdcCfg = 0x110, kPdcEnableBank = 0x10, kPdcVersion = 0x1000;
 
 struct Window {IOMemoryMap *map; volatile uint32_t *va;};
 Window gCore, gCnfg, gObs, gChn, gIntr, gPdc;
@@ -84,6 +88,7 @@ int gPon = -1, gGpio = -1;
 uint32_t gApids;
 uint32_t gVersion;
 // The channel page size and the in-channel offsets, chosen from the arbiter's version.
+struct bt_layout gLayout;
 uint32_t gApidStride, gAccEnable, gIrqStatus, gIrqClear, gApidMap, gObsStride;
 volatile uint32_t gEvents;
 void (*volatile gSink)(void *, uint32_t);
@@ -107,15 +112,15 @@ volatile uint32_t *apidReg(int apid, uint32_t reg) {return gChn.va + (gApidStrid
 int transfer(int apid, uint8_t addr, uint8_t *value, bool write) {
     volatile uint32_t *ch = gChn.va + (gApidStride * (uint32_t)apid) / 4;
     if (write) ch[0x10 / 4] = *value;                       // WDATA0
-    ch[0x00 / 4] = ((write ? 0u : 1u) << 27) | ((uint32_t)addr << 4);
+    ch[0x00 / 4] = bt_command(write, addr);
     __asm__ volatile("dsb sy" ::: "memory");
     for (uint32_t n = 0; n < 100000; ++n) {
         const uint32_t s = ch[0x08 / 4];                    // STATUS
-        if (s & kStatusDone) {
-            if (s & kStatusErrors) return 2;
-            if (!write) *value = (uint8_t)ch[0x18 / 4];     // RDATA0
-            return 0;
-        }
+        const int result = bt_status_result(s);
+        if (result == BT_NOT_DONE) continue;
+        if (result != BT_OK) return result;                 // failed, denied or dropped
+        if (!write) *value = (uint8_t)ch[0x18 / 4];         // RDATA0
+        return 0;
     }
     return 1;
 }
@@ -192,14 +197,14 @@ void buttonsIrq(void *) {
 
 // The pressed set, read from the three levels. All three are active low.
 uint32_t pressed() {
-    uint8_t pon = 0, gpio = 0xff;
-    uint32_t mask = 0;
-    if (!read8(gPon, kRtSts, &pon)) {
-        if (pon & kPowerBit) mask |= kReportPower;
-        if (pon & kResinBit) mask |= kReportVolumeDown;
-    }
-    if (gGpio >= 0 && !read8(gGpio, kRtSts, &gpio) && !(gpio & kGpioBit)) mask |= kReportVolumeUp;
-    return mask;
+    uint8_t pon = 0, gpio = 0;
+    const int ponRead = read8(gPon, kRtSts, &pon);
+    const int gpioRead = gGpio >= 0 ? read8(gGpio, kRtSts, &gpio) : -1;
+    // A failed read must not read as "released" for the PON (which would drop a held key), and
+    // must not read as "pressed" for the GPIO (which is active low). bt_pressed_mask takes the
+    // GPIO only when it was read, so pass the read result as have_gpio.
+    if (ponRead) pon = 0;
+    return bt_pressed_mask(pon, gpio, gpioRead == 0);
 }
 
 bool setup() {
@@ -208,17 +213,15 @@ bool setup() {
     gVersion = gCore.va[0];
     gApids = gCore.va[0x04 / 4] & 0x7ffu;
     native_buttons_stats[7] = (int32_t)gPdc.va[kPdcVersion / 4];
-    // The layout follows the version, as the vendor driver's ops table does. v5 keeps every
-    // channel register inside the 0x10000 * apid page; v2/v3/v4 use a 0x1000 * apid page and put
-    // the interrupt registers in the "intr" window. Anything else is refused, not guessed at.
-    if (gVersion >= 0x50000000u && gVersion < 0x60000000u) {
-        gApidStride = 0x10000; gAccEnable = 0x100; gIrqStatus = 0x104; gIrqClear = 0x108;
-        gApidMap = 0x900; gObsStride = 0x80;
-    } else if (gVersion >= 0x20010000u && gVersion < 0x40000000u) {
-        gApidStride = 0x1000; gAccEnable = 0; gApidMap = 0x800; gObsStride = 0x80;
-    } else {
-        fail(2, (int)gVersion); return false;
-    }
+    // The layout follows the version, as the vendor driver's ops table does. Only the v5 layout
+    // is implemented: it keeps every channel register inside the 0x10000 * apid page, which is
+    // what this board's 32 MiB chnls window implies. A version this code does not know is
+    // refused rather than half-supported (the v2 layout puts the interrupt registers in the
+    // "intr" window, which this driver does not read).
+    gLayout = bt_layout_for(gVersion);
+    if (!gLayout.apid_stride) {fail(2, (int)gVersion); return false;}
+    gApidStride = gLayout.apid_stride; gAccEnable = gLayout.acc_enable; gIrqStatus = gLayout.irq_status;
+    gIrqClear = gLayout.irq_clear; gApidMap = gLayout.apid_map; gObsStride = gLayout.obs_stride;
     if (!gApids || gApids > 1024) {fail(2, (int)gVersion); return false;}
     if (!mapWindow(gObs, kObsrvr, ((uint64_t)gObsStride * gApids + 0xfff) & ~0xfffull) ||
         !mapWindow(gChn, kChnls, (uint64_t)gApidStride * gApids)) {fail(3, -12); return false;}

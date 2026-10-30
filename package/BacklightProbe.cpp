@@ -56,6 +56,7 @@
 #include <kern/clock.h>
 #include <mach/mach_time.h>
 #include <pexpert/pexpert.h>
+#include "BacklightCore.h"
 
 // BootLog.c already composes two rows from these, in sheng's wording. On this board the same
 // slots carry one DSI controller, documented here so the row can be read:
@@ -81,12 +82,13 @@ constexpr uint32_t kHwVersion = 0x000, kCtrl = 0x004, kStatus = 0x008, kRdbkData
                    kDmaCtrl = 0x03c, kDmaLength = 0x04c, kIntCtrl = 0x110, kTpgCtrl = 0x15c,
                    kTpgInit = 0x17c, kRdbkDataCtrl = 0x1d4, kTpgFifoReset = 0x1ec, kSwTrigger = 0x090;
 constexpr uint32_t kStatusMdpBusy = 1u << 2, kIntDmaDone = 1u << 0;
-constexpr uint32_t kMaxLevel = 0x7ff, kMinLevel = 1, kDefaultLevel = 0x218;
+// The level range, the DCS commands and the packet words live in BacklightCore.h, where a host
+// test checks them. These aliases keep the driver's own names.
+constexpr uint32_t kMaxLevel = BL_MAX_LEVEL, kMinLevel = BL_MIN_LEVEL, kDefaultLevel = BL_DEFAULT_LEVEL;
 constexpr uint32_t kTimeoutUs = 50000, kIdleTimeoutUs = 20000;
-constexpr uint8_t kDcsBrightness = 0x51, kDcsBrightnessGet = 0x52,
-                  kDcsDisplayOn = 0x29, kDcsDisplayOff = 0x28, kDcsSleepOut = 0x11, kDcsSleepIn = 0x10;
-// Flags byte bit 7. See the header comment: the vendor leaves it clear, asteroids sets it.
-constexpr uint32_t kLastCommand = 1u << 31;
+constexpr uint8_t kDcsBrightnessGet = BL_DCS_BRIGHTNESS_GET,
+                  kDcsDisplayOn = BL_DCS_DISPLAY_ON, kDcsDisplayOff = BL_DCS_DISPLAY_OFF,
+                  kDcsSleepOut = BL_DCS_SLEEP_OUT, kDcsSleepIn = BL_DCS_SLEEP_IN;
 
 IOMemoryMap *gMap;
 volatile uint32_t *gDsi;
@@ -137,7 +139,7 @@ int sendPacket(const uint32_t *words, unsigned count, bool lp) {
 }
 
 int shortWrite(uint8_t command) {
-    const uint32_t word = kLastCommand | 0x00050000u | command;
+    const uint32_t word = bl_short_write(command);
     return sendPacket(&word, 1, false);
 }
 
@@ -159,16 +161,14 @@ int panelPower(bool on) {
 // minimum, so a fade cannot step through levels the panel rejects.
 int writeBrightness(uint32_t level) {
     static bool lit = true;
-    if (level > kMaxLevel) level = kMaxLevel;
-    if (level && level < kMinLevel) level = kMinLevel;
+    level = bl_clamp_level(level);
     if (!level) {
         if (!lit) return 0;
         lit = false;
         return panelPower(false);
     }
     if (!lit) {lit = true; panelPower(true);}
-    const uint32_t words[2] = {kLastCommand | 0x00390000u | 3u,
-                               kDcsBrightness | ((level >> 8) & 0xffu) << 8 | (level & 0xffu) << 16 | 0xffu << 24};
+    const uint32_t words[2] = {bl_long_write_header(2), bl_brightness_payload(level)};
     const int rc = sendPacket(words, 2, false);
     if (!rc) native_backlight_stats[2] = (int32_t)level;
     return rc;
@@ -183,9 +183,9 @@ int32_t readBrightness() {
     __asm__ volatile("dsb sy" ::: "memory");
     wr(kRdbkDataCtrl, 0x0);
     __asm__ volatile("dsb sy" ::: "memory");
-    const uint32_t size[2] = {kLastCommand | 0x00150000u | 2u, 2u};
+    const uint32_t size[2] = {bl_max_return_header(2), bl_max_return_payload(2)};
     if (sendPacket(size, 2, false)) return -1;
-    const uint32_t read[1] = {kLastCommand | 0x00060000u | 0x20u | kDcsBrightnessGet};
+    const uint32_t read[1] = {bl_read_header(kDcsBrightnessGet)};
     if (sendPacket(read, 1, false)) return -1;
     IOSleep(2);
     const uint32_t count = rd(kRdbkDataCtrl) >> 16;
@@ -194,7 +194,7 @@ int32_t readBrightness() {
     // RDBK_DATA0..3 carry the returned packet, read highest word first and byte-swapped
     // (get_cmd_read_data, dsi_ctrl_hw_cmn.c:828-860). The payload is the two brightness bytes.
     const uint32_t word = __builtin_bswap32(rd(kRdbkData0));
-    return (int32_t)((word >> 8) & 0xffu) << 8 | (int32_t)(word & 0xffu);
+    return (int32_t)bl_decode_brightness(word);
 }
 
 // Reads only: what the boot loader left the controller in. Called from the read-only mode.
