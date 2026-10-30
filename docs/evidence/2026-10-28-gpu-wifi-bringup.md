@@ -1734,3 +1734,60 @@ ldoa9 (0x41b00):  +0 = 1200 (mV)  +4 = 1 (enable)   +8 = 7 (HPM)
 
 **为什么先 `ldoa5`**：0.9 V 是较低的电压，即使写错，后果比 1.2 V 轻。而且 DT 里它是 `vreg-0p9`，
 与 `vreg-1p8` 是两条独立轨——**先开一路，看窗口有没有变化，是最小实验。**
+
+## 2026-10-31 05:59：投票序列的 dry run —— 打印出来了，与实际核对一致，**没有写**
+
+镜像 `boot-wifi13.img` sha256 `9b52f1a2…`，内核 `06be6f31…`，`pcie=13 pcie_skip=32 pcie_rail=1`。
+253 行 PCIE（`tmp/console-wifi13r1.log`）。
+
+### 一、step 13 的 dry run 输出（事实）
+
+```
+PCIE 13: the first write this file makes to a power rail: ldoa5 (pm8150_l5, 0.9 V) through RPMh
+PCIE 13: command 1: address 0x41800, data 880 (voltage 880 mV)
+PCIE 13: command 2: address 0x41804, data 1 (enable 1)
+PCIE 13: command 3: address 0x41808, data 7 (mode 7 (pmic5-ldo HPM))
+PCIE 13: pcie_rail=1: dry run, no write made; pcie_rail=2 makes these three
+PCIE 13: step 13: done
+```
+
+**三条与实际核对表逐项一致：**
+
+| cmd | 地址 | 数据 | 表 |
+| --- | --- | --- | --- |
+| 1 | `0x41800` | 880 | 一致 |
+| 2 | `0x41804` | 1 | 一致 |
+| 3 | `0x41808` | 7 | 一致 |
+
+**`pcie_rail=1` 是 dry run 分支：打印后直接返回，**没有调用 `ml_io_map`、没有写任何寄存器**。
+`step 13: done` 是正常的，不是失败。
+
+### 二、门控设计（事实）
+
+```c
+PE_parse_boot_argn("pcie_rail", &mode, sizeof(mode));
+if (mode == 0) return true;          /* 没给参数：什么都不做，什么都不打印 */
+... 打印三条命令 ...
+if (mode != 2) { 打印 "dry run, no write"; return true; }   /* pcie_rail=1 走这里 */
+... 只有 pcie_rail=2 才 ml_io_map + 写 ...
+```
+
+**三重保险**：无参数不动作、`=1` 只打印、`=2` 才写。
+
+### 三、RSC 偏移已核对（离线计算）
+
+```
+TCS 0: control=0xd14  cmd_enable=0xd1c  status=0xd18
+       cmd0: msgid=0xd30  addr=0xd34  data=0xd38
+```
+
+与 GpuProbe 在本板实测跑通的 `kTcsBase=0xd00 + 0x14/0x1c/0x30/0x34/0x38` **逐项一致**。
+
+### 四、下一步（需要用户在场）
+
+**`pcie_rail=2` 才是真正的写。** 判据在写之后：
+
+- DWC 窗口（`0x60000000`）读得出 → **轨是原因**，整条 PCIe 打开
+- 仍挂 → **轨不是原因**（投完之后轨一定开着），第 9 条排除
+
+**无论哪种结果都排除一条解释。** 这不是「赌能不能通」。
