@@ -232,6 +232,10 @@ map_all(void)
 #define GCC_PCIE_PHY_AUX        0x6f004
 #define GCC_PCIE_0_PHY_REFGEN   0x6f02c
 #define GCC_PCIE_TBU            0x9000c
+/* The device tree's clock-names entry "pcie_0_ldo" is GCC_PCIE_WIFI_CLKREF_EN (gcc-kona.h:86,
+ * clock id 74), and gcc-kona.c:2521 puts its branch at 0x8c004 with mask BIT(0). It is the one
+ * entry of the vendor's eleven that this file never touches. */
+#define GCC_PCIE_WIFI_CLKREF    0x8c004
 #define GCC_PCIE_0_BCR          0x6b000
 #define GCC_PCIE_0_PHY_BCR      0x6c01c
 #define GCC_PCIE_PHY_BCR        0x6f000
@@ -265,6 +269,7 @@ step_look(void)
 	get(0, "pcie_phy_aux", GCC_PCIE_PHY_AUX);
 	get(0, "pcie0_phy_refgen", GCC_PCIE_0_PHY_REFGEN);
 	get(0, "aggre_noc_pcie_tbu", GCC_PCIE_TBU);
+	get(0, "pcie_wifi_clkref (the device tree's pcie_0_ldo)", GCC_PCIE_WIFI_CLKREF);
 	get(0, "pcie_0_bcr (core reset)", GCC_PCIE_0_BCR);
 	get(0, "pcie_0_phy_bcr (phy reset)", GCC_PCIE_0_PHY_BCR);
 	printf("pcie: %u: the controller is %s (gdscr %#x), its clock votes %#x\n", pcie_step,
@@ -317,9 +322,13 @@ step_gdsc(void)
 static bool
 step_clocks(void)
 {
-	announce("vote for its clocks (slv_axi, mstr_axi, cfg_ahb, aux, slv_q2a; the pipe clock comes with the PHY) and read "
-	    "the halt state of each");
+	announce("vote for its clocks (slv_axi, mstr_axi, cfg_ahb, aux, slv_q2a, and the WiFi clock reference the device "
+	    "tree calls pcie_0_ldo; the pipe clock comes with the PHY) and read the halt state of each");
 	put(0, "pcie_0_axi_misc (vote for its clocks)", GCC_PCIE_0_AXI_MISC, rd(GCC(GCC_PCIE_0_AXI_MISC)) | CLOCK_VOTES);
+	/* The WiFi clock reference, which the device tree calls "pcie_0_ldo": a branch of its own at
+	 * 0x8c004, not one of the six bits in the vote above. */
+	put(0, "pcie_wifi_clkref (vote for the device tree's pcie_0_ldo)", GCC_PCIE_WIFI_CLKREF,
+	    rd(GCC(GCC_PCIE_WIFI_CLKREF)) | 1u);
 	sleep_ms(1);
 	get(0, "pcie_0_axi_misc after", GCC_PCIE_0_AXI_MISC);
 	get(0, "pcie_0_slv_axi_halt", GCC_PCIE_0_SLV_AXI_HALT);
@@ -327,6 +336,7 @@ step_clocks(void)
 	get(0, "pcie_0_cfg_ahb_halt", GCC_PCIE_0_CFG_AHB_HALT);
 	get(0, "pcie_0_aux_halt", GCC_PCIE_0_AUX_HALT);
 	get(0, "pcie_0_slv_q2a_halt", GCC_PCIE_0_Q2A_AXI_HALT);
+	get(0, "pcie_wifi_clkref after", GCC_PCIE_WIFI_CLKREF);
 	return true;
 }
 
@@ -512,7 +522,11 @@ step_parf(void)
 	get(1, "parf_sys_ctrl", 0x00);
 	get(1, "parf_phy_ctrl", 0x40);
 	get(1, "parf_phy_refclk", 0x4c);
-	get(1, "parf_dbi_base", 0x168);
+	get(1, "parf_dbi_base (2.3.2, 0x168)", 0x168);
+	/* The vendor driver (pci-msm.c:43) puts the DBI base at 0x350, not 0x168, and this block
+	 * reads 0x358 non-zero while 0x16c reads zero. Which layout is live decides whether the
+	 * zero written at 0x168 in step 9 ever reached the register that matters. */
+	get(1, "parf_dbi_base (vendor, 0x350)", 0x350);
 	get(1, "parf_slv_addr_space_size (2.3.2, 0x16c)", 0x16c);
 	get(1, "parf_slv_addr_space_size (2.7.0, 0x358)", 0x358);
 	get(1, "parf_q2a_flush", 0x1ac);
@@ -563,6 +577,7 @@ step_parf_init(void)
 	value = get(1, "parf_phy_ctrl", 0x40);
 	put(1, "parf_phy_ctrl (bit 0 out)", 0x40, value & ~1u);
 	put(1, "parf_dbi_base (zero)", 0x168, 0);
+	get(1, "parf_dbi_base (vendor, 0x350) after", 0x350);
 	/*
 	 * The controller's system control word as a later vendor variant of this init writes it: the master's and
 	 * the slave's AXI clock gating off, and -- this one matters here -- the core clock's gating off too
@@ -597,6 +612,12 @@ step_parf_init(void)
 	 * branches are not clocked when step 10 touches the IATU window, and a bus that never returns is
 	 * what that predicts. Read only: nothing here changes a vote. */
 	get(0, "pcie_0_axi_misc after the PHY reference generator", GCC_PCIE_0_AXI_MISC);
+	/*
+	 * The link's own state, read last and read only: step 8 took this before any of the writes
+	 * above, so the two readings are what says whether the init moved it. 0 means the link never
+	 * left detect; L0 is 0x11.
+	 */
+	get(1, "parf_ltssm after the init", 0x1b0);
 	return true;
 }
 
