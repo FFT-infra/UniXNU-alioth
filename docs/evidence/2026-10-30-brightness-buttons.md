@@ -273,9 +273,13 @@ receives them, and what its DCS 0x52 would say.
 Image `tmp/boot-btn5.img`, sha256 `d7339d4b650976700c96e0c94ceb6fcdc46e13b7e06585bc3bf2eed60e863a85`,
 tag `btn5`, `alioth-bl=2` plus `alioth-bt=1`. It booted at 01:35 and was still running at
 01:44 - nine minutes, against btn4's ~200 s - with the kernel alive (`Qualcomm XNU Debug`
-enumerated, a fresh `/dev/tty.usbmodem14101`) and the screen frozen. The timed reset never
-fired. The board had to be power-cycled by hand and **no log was read back**: there is no
-`build/sheng-logs/btn5-*`, so this round produced no reading at all.
+enumerated, a fresh `/dev/tty.usbmodem14101`) and the screen frozen.
+
+**It never returned on its own.** The user power-cycled the board at 02:05. The timed reset
+did not fire in that state, so this is the fact to plan every later round around: once a
+round reaches this condition, waiting does not recover it and only a person can. **No log was
+read back** - there is no `build/sheng-logs/btn5-*` - so this round produced no reading at
+all.
 
 ### Why it held
 
@@ -315,3 +319,18 @@ The blink itself: `0x28` (display off), 120 ms, `0x10` (sleep in), 1000 ms dark,
 (sleep out), 80 ms, `0x29` (display on), three times with 800 ms between. A one-second dark
 screen is unmistakable, which is why this replaced judging a few levels of brightness on a
 lock screen.
+
+### Images that no longer exist
+
+The boot images for btn1, btn3 and btn5 were deleted on 2026-10-31 to free space, so those
+rounds cannot be reproduced byte for byte. Their readings and their sha256 are kept here:
+
+| round | sha256 | image |
+| --- | --- | --- |
+| btn1 | `c9e031b879b9051278e25fe3948d3eed11167a4b8c5d33c74e08fdc3a924d8b6` | deleted |
+| btn3 | `a86c32c8dc156a7a0d55232bfc0dddc5dbc2048426ad078d139b156d178f2699` | deleted (no reading; the round hung) |
+| btn5 | `d7339d4b650976700c96e0c94ceb6fcdc46e13b7e06585bc3bf2eed60e863a85` | deleted (no reading; the round hung) |
+
+btn2 (`20b2cf30585a09dc4d504f0a8d9c97729202c92eb668aca06aadddb1e4e2cb90`) and btn4
+(`74461b1c76bc27ad7caca2167d908807d609457f857fa801eb1d1960336a76d4`) are still on disk
+under `tmp/`, because each of them produced a reading.
