@@ -1080,8 +1080,17 @@ step_rails(void)
 		 * the entry exists but carries no mapping, which is the case a vote would have to be
 		 * checked against before writing any level.
 		 */
-		line("%s: address %#x, aux %u bytes (%u levels of 4)", rails[i], e.address, e.aux_bytes,
-		    e.aux_bytes / 4);
+		/*
+		 * The type is printed WITH the numbers on purpose. Reading "aux 1" without it invites
+		 * exactly the mistake this round made: aux was taken for a one-entry level table, when
+		 * these rails are VRM and rpmh-regulator.c only loads the aux level mapping for ARC
+		 * (:1926-1928). The type comes from the board's own DT --
+		 * kona-regulators.dtsi gives both nodes compatible "qcom,rpmh-vrm-regulator" and
+		 * qcom,regulator-type "pmic5-ldo" -- and is written here as a literal because this file
+		 * reads no device tree. A reading should carry the semantics that decide how to read it.
+		 */
+		line("%s: address %#x, type VRM (pmic5-ldo, DT), aux %u bytes -- aux is NOT a level table for VRM",
+		    rails[i], e.address, e.aux_bytes);
 		if (e.aux_bytes && e.aux) {
 			char row[96];
 			unsigned n = 0;
