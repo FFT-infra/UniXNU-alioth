@@ -311,6 +311,23 @@ step_look(void)
 	get(0, "pcie_0_phy_bcr (phy reset)", GCC_PCIE_0_PHY_BCR);
 	printf("pcie: %u: the controller is %s (gdscr %#x), its clock votes %#x\n", pcie_step,
 	    (gdscr & GDSC_POWER_ON) ? "on" : "off", gdscr, misc);
+	/*
+	 * THE WINDOW PROBE, and it runs before the early return on purpose.
+	 *
+	 * The ELBI read below, at the end of this function, has never executed: the early return
+	 * fires on every run so far (gdscr 0x22f001 has PWR_ON clear, axi_misc 0x4100040 has its
+	 * low six bits clear, not 0x3f), so nothing in this file has ever touched
+	 * 0x60000000..0x60002000 -- and that whole window hangs on its first access in steps 12.
+	 * This one read answers the question that has never been answered: is that window reachable
+	 * from the CPU at all, with the controller still collapsed and no clock voted for?
+	 *
+	 * Binary outcome, no guessing:
+	 *   hangs here      -> unreachable regardless of anything this file does; the address or
+	 *                      the way it is mapped is wrong, and every later step is wasted.
+	 *   reads here      -> reachable, so some later step shuts it; bisect by moving this probe
+	 *                      after steps 3, 4 and 6.
+	 */
+	get(3, "elbi_sys_ctrl (window probe, before the early return)", 0x04);
 	if ((gdscr & GDSC_POWER_ON) == 0 || (misc & 0x3f) != 0x3f) {
 		say("its clocks are not all voted for, so neither its PHY's nor its own registers are read here\n");
 		return true;
@@ -652,6 +669,7 @@ step_parf_init(void)
 	value = get(1, "parf_sys_ctrl", 0x00);
 	put(1, "parf_sys_ctrl (bit 29 out, core clock gating off)", 0x00,
 	    (value & ~(1u << 29)) | (1u << 6) | (1u << 1));
+	get(1, "parf_sys_ctrl read back", 0x00);
 	/*
 	 * The device tree's qcom,slv-addr-space-size is 0x4000000 (64 MiB), not the
 	 * 0x10000000 the reference wrote: 0x358 is the register's own offset here, and
@@ -669,6 +687,9 @@ step_parf_init(void)
 
 	value = get(1, "parf_mhi_clock_reset_ctrl", 0x174);
 	put(1, "parf_mhi_clock_reset_ctrl (bit 4 in)", 0x174, value | (1u << 4));
+	/* Written is not the same as took: read both back, so "did the write land" is a reading
+	 * rather than an assumption. This is a separate question from the window probe above. */
+	get(1, "parf_mhi_clock_reset_ctrl read back", 0x174);
 	value = get(1, "parf_axi_mstr_wr_addr_halt_v2", 0x1a8);
 	put(1, "parf_axi_mstr_wr_addr_halt_v2 (bit 31 in)", 0x1a8, value | (1u << 31));
 	/* Read the clock vote register once more now that the PHY reference generator is running. Step 3

@@ -581,3 +581,64 @@ alioth-sm8250-overlay.dtbo-base := kona.dtb kona-v2.dtb kona-v2.1.dtb
 `NEW/UniXNU-sm8250-common/dts/*.dtsi` 的 `grep pcie` 全空）——所有地址只存在于
 `package/alioth_pcie.c` 的常量里。所以「DT 对不对」这个问题，对本轮的代码路径**不构成输入**；
 上面核对的是「这些常量抄得对不对」，答案是对。
+
+## 2026-10-31 04:17：window probe 在控制器上电前就挂——这一段从 CPU 侧不可访问
+
+镜像 `boot-wifi6.img` sha256 `4f527114…`，内核 `6ad614ad…`（与 wifi5 的 `13c77bee…` 不同），
+`pcie=12 pcie_skip=32`，无 bt/bl。30 行 PCIE（`tmp/console-wifi6r1.log`）。
+
+### 一、`step_look` 末尾那行 ELBI 读从来没执行过（事实，本轮之前）
+
+`alioth_pcie.c` 的 `step_look` 末尾有 `get(3, "elbi_sys_ctrl", 0x04)`，但它被早退挡住：
+`gdscr = 0x22f001`（PWR_ON 清）、`misc = 0x4100040`（低 6 位为 0，不是 `0x3f`）→ 每轮都早退。
+**从第一版提交到现在，这一行一次都没跑过。** 所以「这一段可读吗」这个问题从未被测过。
+
+### 二、把那一读挪到早退之前，它挂了（事实）
+
+本轮把那行读到 `printf` 与早退**之前**，用控制器仍在塌陷、任何时钟都没投票的状态试：
+
+```
+PCIE 1: gcc pcie_0_bcr (core reset) = 0
+PCIE 1: gcc pcie_0_phy_bcr (phy reset) = 0
+   <- 日志到这里为止，没有 printf 那行，也没有 window probe 的 "about to read"
+```
+
+最后一行是 `phy_bcr` 的**成功读回**。之后 `printf("the controller is %s...")` **没有出现**
+（`grep -c "the controller is"` = 0），而 printf 不碰硬件。所以死在 **`get(3, elbi_sys_ctrl, 0x04)`
+这一读**上——它自己的 `line("about to read ...")` 也没来得及出现，因为 `risky()` 之后的访问不返回。
+
+板子 **39 s** 后回来（复位，非 180 s 定时）。
+
+### 三、判据落在二值的第一态
+
+| step 1 读 ELBI | 含义 |
+| --- | --- |
+| **就挂（本轮）** | 这一段在控制器**上电之前**就不可访问，与本文件做的任何初始化无关 |
+| 读得出 | 可读，是后面某步关掉的 |
+
+**所以：`0x60000000..0x60002000` 在控制器塌陷状态下就已经不可访问。**
+「某一步把它关掉了」这个解释被排除——那时还什么都没做。
+
+### 四、这否掉了什么，剩下什么
+
+否掉：
+- 「时钟投票漏了某一档」——那时一个投票都还没做
+- 「SYS_CTRL / MHI_CLOCK_RESET_CTRL 写错」——那时一个都还没写
+- 「`parf_dbi_base` 没设」——那时还没设，但 wifi5 证明设了也一样
+
+剩下（按代价）：
+1. **这段地址在 XNU 的 IO 映射里是否成立**。`ml_io_map` 走的是 `io_map` → `pmap_map`，
+   它对 `0x60000000` 这段物理地址建立的映射，可能因 IOMMU/SMMU 或 physmap 边界而无效。
+   **注意 parf (`0x01c00000`) 可读**，而两者走同一个 `ml_io_map`，所以不是「整个 io_map 坏了」，
+   是**这段物理地址**特别。
+2. 这段是否需要**上游供电/复位**（例如 `dm_core` 所在的某个 GDSC 或 NoC 端口）在访问前必须打开。
+   `gdscr` 是 PCIe 控制器自己的电源开关，但这段窗口属于 DWC，可能有独立的上游。
+3. 地址本身是否有一个偏移或别名（例如实际基址不是 `0x60000000`，而是经过某个 ATU 映射后的）。
+
+**下一步建议**：先在**不碰这段窗口**的前提下验证第 1 条——用一个已知可读的物理地址
+（例如 parf 的 `0x01c00000`）与这段一起做 `ml_io_map`，比较两者返回的 VA 与 pmap 结果。
+但那需要读 `pmap` 内部状态，本文件没有这个能力。
+
+更实际的做法：**查 vendor 在访问这段之前是否做过某个我们不做的映射**（`dma-coherent`、
+`iommu-map`、或 `iommu_dma` 配置）。本板 DT 里 pcie0 有 `dma-coherent` 与
+`qcom,smmu-sid-base = 0x1c00`，而**本树没有 SMMU 的 SID 配置**。
