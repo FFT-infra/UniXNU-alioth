@@ -454,3 +454,41 @@ PCIE 12: about to read elbi elbi_sys_ctrl at ...   <- 之后没有回读
 3. 这一段可能依赖 `conf` 窗口（`0x60100000`）先映射——从未读过，也从未验证。
 4. **最根本的**：我们从未验证过这一段在**任何**内核状态下可读。`elbi` 一次都没读过，
    `iatu` 只在会挂的那一轮被碰过。所以「它可读」这个前提本身从未成立过。
+
+## 2026-10-31 04:08：「我们自己 halt 了 AXI master」这条假设不成立
+
+有一条提议认为根因是 `parf_axi_mstr_wr_addr_halt_v2`（`0x1a8`）的 bit 31 —— 我们置了它、从没清过，
+所以 master 的写地址被 halt，`0x60000000..0x60002000` 那段访问不返回。**三条独立证据否掉它。**
+
+### 一、写入前读到的就已经是 `0x80000014`（事实）
+
+```
+console-wifi5r1.log:259  parf_axi_mstr_wr_addr_halt_v2 (...) = 0x80000014
+console-wifi5r1.log:260  about to write ... (bit 31 in) ... : 0x80000014
+```
+
+`step_parf_init` 是「读 → `value | (1u<<31)` → 写」。读到的 `0x80000014` 已经含 bit 31，
+所以那一写**写回的是同一个值，是空操作**。**不是我们置的位。**
+
+### 二、mainline 也置这一位，而且没人清（事实）
+
+- `pcie-qcom.c:656-658`（2.3.2）与 `:943-945`（2.4.0）：`val |= BIT(31); writel(val, ...)`
+- `pcie-qcom.c:513-521`（2.1.0）：同样，只是包在 `CONFIG_PCI_MSI` 里
+- 全部 `grep WR_ADDR_HALT | &=|clear|~` → **空**，vendor 与 mainline 都不清
+
+如果 bit 31 是「永久 halt」，这些 SoC 上 Linux 的 PCIe 全都不能用。**它实际是「启用写地址 halt 机制」的使能位**，
+不是「现在就 halt」——寄存器名 `AXI_MSTR_WR_ADDR_HALT` 是「halt 地址」寄存器，bit31 使能，低位是 halt 尺寸/地址。
+
+### 三、vendor 写的就是我们读到的值（事实）
+
+`pci-msm.c:4561-4564`：`val = dev->wr_halt_size ? wr_halt_size : readl(0x1a8); write(BIT(31)|val)`。
+本板 DT 没有 `wr-halt-size`，所以 vendor 也是「读回 `0x14`，写 `0x80000014`」。**我们与 vendor 逐位一致。**
+
+### 四、结论
+
+`0x1a8` bit 31 **不是**那一段窗口不可读的原因。回到原来的候选：这一段从未被证明可读
+（`elbi` 一次没读过，`iatu` 只在会挂的那轮被碰过），以及 `parf_slv_addr_space_size` /
+`conf` 窗口映射这两条尚未验证的前置。
+
+**教训**：一个「我们置了某位从没清」的机制听起来很像根因，但**读一遍写入前的值**就能判掉一半。
+本轮这一步只花了一次 grep。
