@@ -492,3 +492,48 @@ console-wifi5r1.log:260  about to write ... (bit 31 in) ... : 0x80000014
 
 **教训**：一个「我们置了某位从没清」的机制听起来很像根因，但**读一遍写入前的值**就能判掉一半。
 本轮这一步只花了一次 grep。
+
+## 2026-10-31 04:12：与 vendor 的差异表——两行需要更正，一行是真差异
+
+有一条提议说我们「从没写过 `SYS_CTRL`、也没写过 `MHI_CLOCK_RESET_CTRL` bit 4」。**这两行不对。**
+
+### 一、这两步我们都做了（事实）
+
+```
+alioth_pcie.c:652-653  value = get(1, "parf_sys_ctrl", 0x00);
+                       put(1, "parf_sys_ctrl (bit 29 out, core clock gating off)", 0x00, ...)
+alioth_pcie.c:670-671  value = get(1, "parf_mhi_clock_reset_ctrl", 0x174);
+                       put(1, "parf_mhi_clock_reset_ctrl (bit 4 in)", 0x174, value | (1u << 4))
+```
+
+`console-wifi5r1.log:245,246,256,257` 是本轮的实测行。
+
+### 二、但这两处**从未回读验证**（事实）
+
+全文只有 `about to write`，没有 `after`。所以「写了」是确定的，「生效了」不确定。
+
+### 三、真差异在 `SYS_CTRL` 的写法上
+
+| | 值 | 说明 |
+| --- | --- | --- |
+| bootloader 留下 | `0x2000361c` | bits 2,3,4,9,10,12,13,29 |
+| **vendor（pci-msm.c）** | 读改写，只清 bit29 | → `0x361c` |
+| **mainline 2.3.3（pcie-qcom.c:1096-1099）** | 硬编码 `0x3656` | bits 1,2,4,6,9,10,12,13 |
+| **我们** | 硬编码 `0x365e` | mainline 的值 **+ bit3** |
+
+我们比 mainline 多保留了 **bit 3**（bootloader 留下的），而 vendor 那条路径只清 bit 29、保留其它全部。
+`bit3` 在 `pcie-qcom.c:32-40` 里**没有定义**，所以它是什么、该不该保留，本树无法回答。
+
+### 四、`MHI_CLOCK_RESET_CTRL` 我们与 vendor 一致
+
+`0x3 → 0x13`（置 bit 4），`pci-msm.c:4560` 与 `pcie-qcom.c:653-655` 都是这个写法。**这一步没有差异。**
+
+### 五、结论
+
+与 vendor 的差异**不在「有没有写这两个寄存器」**（都写了），而在：
+
+1. `SYS_CTRL` 我们写的是 mainline 的硬编码值 + bit3，vendor 是「只清 bit29」的读改写；
+2. 这两处**都没有回读验证**，所以「写进去没有」未知。
+
+**下一步单变量**：给这两处各加一次回读，确认值真的落地。这是零风险（只加读），而且能把「写了但没生效」
+与「生效了仍不通」分开 —— 后者才是那一段窗口的问题。
