@@ -1227,3 +1227,63 @@ snprintf(line, ..., "[wifi-reg] ppid=%03x type=%x/%x before st=%02x en=%02x v=%0
 
 **所以要么新写一个 RPMh 版的写端（复用 `QcomRpmh.c` 与 `GpuProbe.cpp:482` 的映射），
 要么先不接这些行、用 `[PCIE]` 自己的行输出。**
+
+## 2026-10-31 05:25：这两路轨的 cmd-db 名字是 `ldoa5` 与 `ldoa9`
+
+离线核对。这是「查 cmd-db 地址」那一步的输入，现在确定了。
+
+### 一、名字怎么来的（事实）
+
+`kona-regulators.dtsi`（启动 DTB 里也一样）：
+
+```
+rpmh-regulator-ldoa5 {
+    compatible = "qcom,rpmh-vrm-regulator";
+    qcom,resource-name = "ldoa5";
+    qcom,regulator-type = "pmic5-ldo";
+    L5A: pm8150_l5: regulator-pm8150-l5 { regulator-name = "pm8150_l5"; ... }
+
+rpmh-regulator-ldoa9 {
+    compatible = "qcom,rpmh-vrm-regulator";
+    qcom,resource-name = "ldoa9";
+    ...
+    L9A: pm8150_l9: regulator-pm8150-l9 { regulator-name = "pm8150_l9"; ... }
+```
+
+**本板走的是 vendor 驱动 `drivers/regulator/rpmh-regulator.c`**（不是 mainline 的
+`qcom-rpmh-regulator.c`）。两者在名字来源上不同：
+
+| | mainline `qcom-rpmh-regulator.c` | vendor `rpmh-regulator.c` |
+| --- | --- | --- |
+| 名字来源 | `qcom,pmic-id` + 格式串（`ldo%s5`） | **直接用 `qcom,resource-name`** |
+| 是否要求 `pmic-id` | 是（`of_property_read_string` 失败即报错） | **不要求**（全文 `grep qcom,pmic-id` = 0） |
+
+启动 DTB 里 `qcom,pmic-id` **出现 0 次**——所以如果按 mainline 的读法会直接失败，
+而 vendor 的读法只用 `qcom,resource-name`，两个节点都给了。
+
+**所以 cmd-db 的查找名就是 `"ldoa5"` 与 `"ldoa9"`。**
+
+### 二、cmd-db 的查法本树已有（事实）
+
+`GpuProbe.cpp`：
+```
+:183  alignas(8) uint8_t gCmdDb[GPB_CMD_DB_BYTES];
+:184  gpb_cmd_db_entry gDbFound[8];
+:187  void commandDb() { ... gpb_cmd_db_find(gCmdDb, sizeof gCmdDb, names[i], &found[i]); ... }
+```
+它已经用 `gpb_cmd_db_find` 查过 `gfx.lvl`、`mx.lvl`、`SH0`、`MC0`、`ACV` 等八个名字，
+并把结果写进 `CMDDB ... name:address/aux` 行。
+
+**所以查 `ldoa5` / `ldoa9` 的地址，只需要在 `commandDb()` 的 `names[]` 里加两项**，
+或者在本文件里复用同一个 `gpb_cmd_db_find`。
+
+### 三、下一步
+
+1. **在 `alioth_pcie.c` 里复用 cmd-db 查找**（或读 `GpuProbe` 已打印的 `CMDDB` 行——
+   如果那两路已经在里面，直接看日志即可）。
+2. 拿到地址后，**用 RPMh TCS 读它的当前值**（`QcomRpmh.c` 的 `qcom_rpmh_active_request`
+   是「写」的形状；读要走 observer 或 `RPMH_REGULATOR_SET_ACTIVE` 的当前请求）。
+3. 若没投 → 用 `QcomRpmh.c` 的形状投。
+
+**注意第 2 步的一个细节**：RPMh 的「读当前电压」不是直接读 TCS——TCS 是请求队列。
+真正读要经过 RSC 的 observer 通道或 cmd-db 的 aux 数据。这一点在写读探针前要确认。
