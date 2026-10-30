@@ -223,3 +223,47 @@ panel's own DCS 0x52 read-back.
 
 Bit 1 therefore stays clear. Unmasking it is only valid together with attaching a handler to
 that SPI, which is a separate change.
+
+## 2026-10-31 btn4: a level is written, and the read-back is not a brightness value
+
+Image `tmp/boot-btn4.img`, sha256 `74461b1c76bc27ad7caca2167d908807d609457f857fa801eb1d1960336a76d4`,
+tag `btn4`, carrying `alioth-bl=2` (the three-level sweep) and `alioth-bt=1`. It returned to
+the bootloader on its own at about 200 s, so reverting the `INT_CTRL` unmask fixed btn3's
+hang. Full round: `uptime 178 s`, `rounds 90`, `slots 90/509`, `errors 0`. Log at
+`build/sheng-logs/btn4-00000001d8b52d83`.
+
+```
+B st=3 irq=0 rep=1 mask=4 apid=13/26 off=65536 pdc=20000 err=131072 spur=512
+L st=2 req=0 lvl=2047 a=0 b=1 xerr=2 irq=ffffffff ea=1f5 eb=5 err=1280 goal=0 fade=0
+L path runs=0 fades=0 irq=2/1 mode=84391 tmo=537133056 done=335544320 empty=0 last=0
+```
+
+### Buttons repeat
+
+`st=3`, PON at APID 13, one report with `mask=4`. Same as btn2, so that is reproducible.
+
+### Brightness: the write went out, the read-back is meaningless
+
+`lvl=2047` is `stats[2]`, set by `writeBrightness` when the transfer returned 0, and 2047 is
+the maximum the sweep writes last. So at least one level write reported success.
+
+`b=1` is `stats[4]`, the read-back after the *first* level (the maximum). A brightness of 1
+after setting 2047 is not a plausible answer - it is what the controller returns when nothing
+valid came back. `xerr=2` (two failed transfers) and `irq=ffffffff` (the `INT_CTRL` seen at a
+failure) agree that the transfers did not complete cleanly.
+
+`stats[5]` and `stats[6]` hold the other two read-backs but BootLog's row does not print them;
+the next round's row should.
+
+### Why the read-back cannot be trusted yet
+
+The panel answers DCS 0x52 only after the controller turns the lane around (BTA) and latches
+the response into `RDBK_DATA0..3`. This kernel never attaches a handler to DSI0's SPI
+(`alioth.dts:30921-30922`), and the vendor's FIFO path only runs in `secure_mode`
+(`dsi_ctrl.c:1170-1180`), so completion is not observable here. A read that returns 1 is
+therefore not evidence that the panel reported 1; it is evidence that the read path is not
+established.
+
+What is established: the packets are accepted by the controller (no fault, and the write
+returns 0), and the sweep runs to completion without hanging. What is not: whether the panel
+receives them, and what its DCS 0x52 would say.
