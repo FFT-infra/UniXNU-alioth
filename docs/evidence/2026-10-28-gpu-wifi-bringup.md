@@ -749,3 +749,51 @@ vendor 的时序里，**六次 GEN3 preset 写**是 ELBI 可读之前发生的�
 
 如果那六次写**也挂**，那才是「这段在我们这里真的不可访问」，要回去查映射；
 如果写得进、ELBI 仍读不出，那是 ELBI 那个偏移的事，不是整段。
+
+## 2026-10-31 04:35：映射属性也是对的——`VM_WIMG_IO` 在非 DRAM 上给 Device-nGnRnE
+
+离线核对（不用板子）。这条排掉「映射属性错，访问触发同步异常」这个解释。
+
+### 一、我们的调用路径（事实）
+
+`ml_io_map` → `io_map(phys, size, VM_WIMG_IO, VM_PROT_DEFAULT, false)`
+（`machine_routines.c:1621-1626`）。
+
+我们的驱动跑在 `native_legacy_display_late_probe` 里，`startup_phase >= STARTUP_SUB_KMEM`，
+所以走 `io_map.c:124-141` 的 else 分支：`kmem_alloc(io_submap, ...)` + `pmap_map(..., flags)`。
+**不是 `pmap_map_bd`。**
+
+### 二、`pmap_map` 把 flags 一路传到底（事实）
+
+`pmap_map` → `pmap_enter` → `pmap_enter_addr` → `wimg_to_pte(wimg, pa)`（`pmap.c:5351-5366`）：
+
+```c
+case VM_WIMG_IO:
+    if (is_dram_addr(pa)) {
+        pte = ARM_PTE_ATTRINDX(CACHE_ATTRINDX_POSTED_COMBINED_REORDERED);
+    } else {
+        pte = ARM_PTE_ATTRINDX(CACHE_ATTRINDX_DISABLE);      // Device-nGnRnE
+    }
+    pte |= ARM_PTE_NX | ARM_PTE_PNX;
+```
+
+`0x60000000` 不是 DRAM（本板 DRAM 从 `0x80000000` 起，`alioth.dts:14-17`），
+所以得到 **`CACHE_ATTRINDX_DISABLE` = Device-nGnRnE** —— 这正是访问 MMIO 寄存器该用的属性。
+
+### 三、`pmap_enter` 不校验物理范围（事实）
+
+`pmap_enter`（`pmap.c:5152`）只是 `pmap_enter_addr(pmap, v, (pmap_paddr_t)pn << PAGE_SHIFT, ...)`，
+**没有 `gPhysBase` / `real_phys_size` 的范围检查**（那些检查在 `phystokv`，`arm_vm_init.c:383,408`，
+是另一条路径）。所以这段地址能被建立映射，不会因为「不在 DRAM 内」被拒。
+
+### 四、结论
+
+**映射属性是对的，映射也确实建立了。** 所以「属性错导致同步异常」这条不成立。
+
+这与 `parf` 可读完全一致：两者走同一条路径、同一个属性。
+
+### 五、剩下唯一没查的一条
+
+vendor 在第一次读 ELBI 之前**先对 dm_core 写了六次**（`pci-msm.c:4379-4395`，见上一条记录），
+而我们**从未对 dm_core 做过任何读写**。这是唯一还站着的解释：
+**这段窗口在 vendor 的时序里是通的，我们只是从未到达那个状态。**
