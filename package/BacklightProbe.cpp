@@ -113,7 +113,7 @@ void bump(int index) {native_backlight_stats[index] = native_backlight_stats[ind
 
 // One packet through the TPG FIFO. words holds the header and payload words; count is how many.
 // Returns 0, or -1 when the DMA-done interrupt never came or the command path stayed busy.
-int sendPacket(const uint32_t *words, unsigned count, bool lp) {
+int sendPacket(const uint32_t *words, unsigned count, bool lp, bool waitForDone = true) {
     const uint64_t began = mach_absolute_time();
     // Take the FIFO only when the command path is idle, as the vendor driver does before every
     // transfer: a busy engine means an earlier packet is still in flight.
@@ -122,7 +122,12 @@ int sendPacket(const uint32_t *words, unsigned count, bool lp) {
         if (!(rd(kStatus) & kStatusMdpBusy)) {idle = true; break;}
         IODelay(2);
     }
-    if (!idle) {bump(5); native_backlight_stats[6] = (int32_t)rd(kStatus); return -1;}
+    if (!idle) {
+        // A busy bit that never clears is recorded, not fatal: the packet is still written and
+        // triggered, because the only way to learn whether the panel accepts it is to send it.
+        bump(7);
+        native_backlight_stats[6] = (int32_t)rd(kStatus);
+    }
     // Clear a stale done (bit 0 is write-1-to-clear). Bit 1 stays clear: see the note above.
     wr(kIntCtrl, (rd(kIntCtrl) & ~((1u << 24) | (1u << 28))) | kIntDmaDone);
     wr(kTpgCtrl, (1u << 1) | (1u << 2) | (3u << 16));                          // TPG enable, FIFO mode, custom pattern
@@ -138,10 +143,15 @@ int sendPacket(const uint32_t *words, unsigned count, bool lp) {
     // packet went out with stats[10]=1 / stats[11]=1 - one sent, one timed out, no answer.
     wr(kTrigCtrl, (rd(kTrigCtrl) & ~((1u << 16) | 0xfu)) | 0x4u);
     wr(kSwTrigger, 1);
-    bool done = false;
-    for (uint32_t waited = 0; waited < kTimeoutUs; waited += 20) {
-        if (rd(kIntCtrl) & kIntDmaDone) {done = true; break;}
-        IODelay(20);
+    // The done status is only observed when asked for. On this board it never sets (see the
+    // note on INT_CTRL), so a caller that only wants the packet launched passes false and the
+    // transfer is not held up by a poll that cannot succeed.
+    bool done = !waitForDone;
+    if (waitForDone) {
+        for (uint32_t waited = 0; waited < kTimeoutUs; waited += 20) {
+            if (rd(kIntCtrl) & kIntDmaDone) {done = true; break;}
+            IODelay(20);
+        }
     }
     if (!done) {bump(5); bump(11); native_backlight_stats[6] = (int32_t)rd(kIntCtrl);}
     wr(kIntCtrl, (rd(kIntCtrl) & ~((1u << 24) | (1u << 28))) | kIntDmaDone);
@@ -159,7 +169,7 @@ int sendPacket(const uint32_t *words, unsigned count, bool lp) {
 
 int shortWrite(uint8_t command) {
     const uint32_t word = bl_short_write(command);
-    return sendPacket(&word, 1, false);
+    return sendPacket(&word, 1, false, false);
 }
 
 // Display off (0x28 then 0x10) or on (0x11 then 0x29) with the panel's own waits. The waits sleep
@@ -172,6 +182,26 @@ int panelPower(bool on) {
     rc |= shortWrite(on ? kDcsDisplayOn : kDcsSleepIn);
     IOSleep(on ? 10 : 100);
     return rc;
+}
+
+// The same off/on sequence with each packet launched and not waited for. This is the test that
+// needs no read-back: if the panel receives the packets the screen goes dark and comes back,
+// which is visible and unambiguous, whereas a brightness change of a few levels on a lock
+// screen is not.
+int panelBlink(unsigned offMs) {
+    const uint32_t displayOff = bl_short_write(kDcsDisplayOff);
+    const uint32_t sleepIn = bl_short_write(kDcsSleepIn);
+    const uint32_t sleepOut = bl_short_write(kDcsSleepOut);
+    const uint32_t displayOn = bl_short_write(kDcsDisplayOn);
+    sendPacket(&displayOff, 1, false, false);
+    IOSleep(120);
+    sendPacket(&sleepIn, 1, false, false);
+    IOSleep(offMs);
+    sendPacket(&sleepOut, 1, false, false);
+    IOSleep(80);
+    sendPacket(&displayOn, 1, false, false);
+    IOSleep(10);
+    return 0;
 }
 
 // Sets the panel's brightness. Level 0 is display off, not a DCS level of zero: this panel has
@@ -401,23 +431,41 @@ void panelThread(void *, wait_result_t) {
         native_backlight_stats[0] = 2;
         return;
     }
-    // The visible test, then a read-back after each level. Each step is recorded separately
-    // because the transfer result cannot decide success: [4] is the read-back after the
-    // maximum, [5] after the low level, and [6] after the configured one.
+    // The visible test: maximum, low, then the configured level, two seconds apart. On this
+    // board the picture is the judge, because the command DMA's completion is not observable
+    // here (see readBrightness), so a read-back cannot confirm a write reached the panel.
+    //
+    // The three read-backs are still taken - they cost one packet each and the next round will
+    // want them - but packed into [4] as a 3-bit mask of "a value came back", with the first
+    // one's value in [5]. BootLog prints only [4] and [6] on this row, and the other session
+    // owns BootLog.c, so nothing here depends on a row it does not already draw.
+    // First the test that needs no read-back: three off/on blinks, one second each. If the
+    // screen does not blink, the packets are not reaching the panel and no read-back can be
+    // trusted either.
+    for (unsigned i = 0; i < 3; ++i) {
+        IOLockLock(gLock);
+        panelBlink(1000);
+        IOLockUnlock(gLock);
+        IOSleep(800);
+    }
+    native_backlight_stats[7] = 3;   // three blinks attempted
     IOLockLock(gLock);
     writeBrightness(kMaxLevel);
-    native_backlight_stats[4] = readBrightness();
+    const int32_t afterMax = readBrightness();
     IOLockUnlock(gLock);
     IOSleep(2000);
     IOLockLock(gLock);
     writeBrightness(0x40);
-    native_backlight_stats[5] = readBrightness();
+    const int32_t afterLow = readBrightness();
     IOLockUnlock(gLock);
     IOSleep(2000);
     IOLockLock(gLock);
     writeBrightness(gLevel);
-    native_backlight_stats[6] = readBrightness();
+    const int32_t afterSet = readBrightness();
     IOLockUnlock(gLock);
+    native_backlight_stats[4] = (int32_t)((afterMax > 0 ? 1 : 0) | (afterLow > 0 ? 2 : 0) | (afterSet > 0 ? 4 : 0));
+    native_backlight_stats[5] = afterMax;
+    native_backlight_stats[6] = afterSet;
     native_backlight_stats[0] = 2;
     if (gMode == 2) return;
     // The service.
