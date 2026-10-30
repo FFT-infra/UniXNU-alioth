@@ -698,3 +698,54 @@ PCIE 1: the clock votes are 0, all six are voted: NO -- none of slv_axi, mstr_ax
 2. **上游**：这段窗口属于 DWC，可能有一个 `gdscr` 之外的电源/复位域（例如 NoC 端口或 CX 域）。
 
 **建议先查第 1 条，零成本、不用板子。**
+
+## 2026-10-31 04:30：vendor 在第一次读 ELBI 之前，先对 dm_core 写了六次
+
+离线核对（不用板子）。这条把「这一段不可访问」的下一步指向了一个具体方向。
+
+### 一、vendor 的第一次 ELBI 读在 `msm_pcie_link_train` 里（事实）
+
+`pci-msm.c` 里对 elbi 的第一次访问是 **4419 行**，在 `msm_pcie_link_train`（从 4374 起）内部：
+
+```
+4416  do {
+4417      usleep_range(LINK_UP_TIMEOUT_US_MIN, LINK_UP_TIMEOUT_US_MAX);
+4419      val = readl_relaxed(dev->elbi + PCIE20_ELBI_SYS_STTS);
+```
+
+**它前面是六次 `dm_core` 写**（同函数 4379-4412）：
+
+```
+4379  msm_pcie_write_reg_field(dm_core, PCIE_GEN3_GEN2_CTRL, 0x1f00, 1);
+4382  msm_pcie_write_mask(dm_core, PCIE_GEN3_EQ_CONTROL, 0x20);
+4386  msm_pcie_write_mask(dm_core + PCIE_GEN3_RELATED, BIT(0), 0);
+4390  msm_pcie_write_reg_field(dm_core, PCIE_GEN3_MISC_CONTROL, BIT(0), 1);
+4393  msm_pcie_write_reg(dm_core, PCIE_GEN3_SPCIE_CAP, dev->core_preset);
+4395  msm_pcie_write_reg_field(dm_core, PCIE_GEN3_MISC_CONTROL, BIT(0), 0);
+4409  msm_pcie_write_mask(parf + PARF_LTSSM, 0, BIT(8));      <- 训练使能
+4419  readl(elbi + ELBI_SYS_STTS)                             <- 第一次读 ELBI
+```
+
+### 二、这意味着窗口在那时是**通的**（事实）
+
+vendor 能对 `dm_core`（`0x60000000`）连续写六次，然后才读 `elbi`（`0x60000f20`）。
+**写能进 = 那一段在 vendor 的时序里是通的。** 所以「这段物理上不可访问」这个结论不成立——
+它在某个状态下是可访问的，只是我们从未到达那个状态。
+
+### 三、我们从未对 dm_core 做过任何读写（事实）
+
+`grep` `alioth_pcie.c` 全文：`dm_core` / `dbi` 只出现在**注释**和 `blocks[]` 的映射表里，
+**没有任何一次 `get()` 或 `put()` 碰过它**。`step 13`（DBI）是唯一会碰的，而它从未跑过。
+
+### 四、所以下一步不是「再试一个寄存器」
+
+vendor 的时序里，**六次 GEN3 preset 写**是 ELBI 可读之前发生的事。我们的 `pcie=12` 在 step 12
+（读 ELBI）之前没有这些写。这与 wifi5/6/7 的结果完全吻合：
+**每一个我们能到达的状态，都还没做过 vendor 做的那六次写。**
+
+**下一步单变量**：在 step 12 之前补上这六次 `dm_core` 写（`PCIE_GEN3_*` 那组），再读 ELBI。
+这是**第一次写** `0x60000000` 这段窗口，风险比之前几轮高——但它正是 vendor 在同一个位置做的事，
+而且 vendor 的 `pcie_phy_init` 已在 step 4/5 完成。
+
+如果那六次写**也挂**，那才是「这段在我们这里真的不可访问」，要回去查映射；
+如果写得进、ELBI 仍读不出，那是 ELBI 那个偏移的事，不是整段。
