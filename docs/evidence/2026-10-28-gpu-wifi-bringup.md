@@ -282,3 +282,50 @@ wifi1 的镜像没有它们（逐字节核对过）。后果：本轮 `GPUROW` �
 
 1. 构建前确认 `board.toml` 不含 `alioth-bt` / `alioth-bl`，否则又是两变量。
 2. 单变量 = `PARF_LTSSM` bit 8，然后读 `parf_ltssm`。
+
+## 2026-10-31 03:21：wifi3 轮，LTSSM 使能写不进寄存器，但镜像能自回
+
+镜像 `boot-wifi3.img` sha256 `de0f7723…`，内核 `f80d9849…`，`pcie=11 pcie_skip=32`，
+镜像里没有 `alioth-bt=`/`alioth-bl=`。串口 233 行 `PCIE`（`tmp/console-wifi3r3.log`）。
+
+### 一、`parf_ltssm` 仍是 0，而写入本身没有生效（事实）
+
+```
+PCIE 11: about to write parf parf_ltssm (LTSSM_EN, bit 8 in) at 0xfffffff87bc231b0: 0x100
+PCIE 11: parf parf_ltssm after LTSSM_EN (0xfffffff87bc231b0) = 0
+```
+
+写 `0x100`，回读 `0x0`：**bit 8 没粘住**。同一轮 step 9 对其它 PARF 寄存器的写入是生效的
+（`device_type 0 → 0x4`、`slv_addr_space_size → 0x4000000`），所以不是 PARF 只读，
+而是 `0x1b0` 这个寄存器不接受这一位。
+
+【推断】最可能是这一位**写后自清**：vendor 写它之后只轮询 ELBI 的 `XMLH_LINK_UP`，
+从不回读这一位（`pci-msm.c:4409-4424`），所以 vendor 代码里看不到它粘住的样子。
+
+**判据要改**：不能再用 `parf_ltssm` 由 0 变非 0。应改用 vendor 的那个信号 ——
+ELBI `0x60000f28` 的 `XMLH_LINK_UP`(bit 10) 与 state(bits 12-17)（`pci-msm.c:4419`）。
+但那在 ELBI/DBI 页，即 step 12 会挂的块。
+
+### 二、两块 pad 仍正确（事实）
+
+```
+PCIE 10: WLAN_EN is HIGH (io 0x3)
+PCIE 10: PERST# is RELEASED (io 0x3)
+```
+
+端点有电、出复位是确定的；训练没起来卡在 LTSSM 使能这一层。
+
+### 三、镜像能自己回 fastboot（事实，两次）
+
+`SELF-RETURNED after 186s`（03:19）、`SELF-RETURNED after 195s`（03:24）。
+所以 wifi2 那次不自回**不是** `alioth-bt`/`alioth-bl` 造成的。
+
+### 四、串口抓取的两个真 bug（已修，`tmp/round-wifi3r2.sh`）
+
+1. `round.sh` 把 `fastboot boot` 的非零返回当失败。03:02 那轮实际 boot 了
+   （持久日志 `tag=wifi3`、`procs=202`、reset 路径执行完），脚本却 4 秒就 kill 抓取退出。
+   正确判据是「板子是否离开 bootloader」。
+2. `/dev/tty.usbmodem14101` **只在内核运行时存在**。`console-capture.py` 另有守卫：
+   端口 mtime 须 ≥ 它启动时刻 −1s，否则判 stale 一直等。所以正确顺序是
+   `fastboot boot` → 板子离开 bootloader → **立刻**起抓取，让守卫等新枚举。
+   先等端口出现再起抓取会晚约 1 秒，被守卫判 stale（03:16 实测）。
