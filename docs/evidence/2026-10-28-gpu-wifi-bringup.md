@@ -1179,3 +1179,51 @@ NEW/UniXNU-sheng/package/WifiProbe.cpp:325  qcom_rpmh_finish(&layout, tcs, write
    cmd-db 是 `/chosen` 或 smem 里的一张表，`BootLog.c:742` 的字段名说明设计者知道该查它。
 2. **读它们当前的投票状态**（RPMh TCS，复用 GpuProbe 的映射）。
 3. 若没投 → 用 `QcomRpmh.c` 的形状投这两路。
+
+### 九、`[472]` 那个尺寸解码：它是 sheng 的 **SPMI 扫描**布局，不是 RPMh
+
+有人提出「472 大到足够装一整套寄存器快照，说明设计者想到了完整方案」。**对，但那方案是 SPMI 的，不是 RPMh 的。**
+
+`sheng/package/WifiProbe.cpp:55`：
+```c
+volatile uint32_t native_wifi_pmic[24 + 2 * 2 * 112];      /* = 472 */
+```
+
+布局：
+```
+[0..23]     header（arb 版本、apids、扫描到的 reg 数、gpio3、before/after 头、cmd-db 地址…）
+[24..247]   before 扫描：112 个寄存器 × 2 个字（ppid/type + st/en/v）
+[248..471]  after  扫描：同样的 112 × 2
+```
+
+`BootLog.c:846-852` 的读法确认了这一点：
+```c
+const uint32_t k0 = native_wifi_pmic[24 + 2 * i], v0 = native_wifi_pmic[25 + 2 * i];
+if (i < na && native_wifi_pmic[248 + 2 * i] == k0) v1 = native_wifi_pmic[249 + 2 * i];
+snprintf(line, ..., "[wifi-reg] ppid=%03x type=%x/%x before st=%02x en=%02x v=%02x%02x after st=%02x en=%02x", ...);
+```
+
+**每个寄存器按 PPID 定位、读 status/enable/voltage** —— 这是 SPMI 的读法
+（`ppid = sid << 8 | (peripheral >> 8)`，见 `ButtonProbe.cpp:21-22` 的注释）。
+
+### 十、所以这整套空壳是 sheng 的 SPMI 方案，不是本板要用的
+
+- `[wifi-rails] cmd-db addresses ldob15 smpg6 smpg4 smpe4 smpg5 smpg2` 那六个名字是
+  **sheng 的 PMK8550 轨**（`WifiProbe.cpp:290` 的 `kRails`），不是本板 PM8150 的。
+- `[wifi-reg] ppid=...` 是 SPMI 的 per-register 读法。
+- `[wifi-pcie] pipe-halt=... perst=...` 是 sheng 的 PCIe 探针（SM8550 的）。
+
+**结论：这些行是 sheng 整套 WiFi 探针的输出接口，随 BootLog.c 一起搬过来，
+本板没有对应的写入端，也不该照抄它们的语义。**
+
+### 十一、对本板的实际意义
+
+好消息：**BootLog 已经有地方放本板自己的 WiFi 读数**（`[wifi-pmic]` 等行格式已定），
+只要写端填 `native_wifi_pmic[]` 即可。
+
+但**不能沿用 sheng 的 SPMI 语义**：
+- 本板这两路轨是 **RPMh**（`rpmh-regulator-ldoa5/9`），不是 SPMI peripheral；
+- 本板要的 cmd-db 地址是 **PM8150 的 L5/L9**，不是 `ldob15/smpg5/...`。
+
+**所以要么新写一个 RPMh 版的写端（复用 `QcomRpmh.c` 与 `GpuProbe.cpp:482` 的映射），
+要么先不接这些行、用 `[PCIE]` 自己的行输出。**
