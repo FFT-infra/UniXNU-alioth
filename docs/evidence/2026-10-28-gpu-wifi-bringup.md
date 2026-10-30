@@ -1070,3 +1070,72 @@ vreg-cx-supply  = <&VDD_CX_LEVEL>;
 | 9 | **PMIC 稳压器未开（1.8 V / 0.9 V）** | **未测，且本树无此机制** |
 
 **注意措辞**：这 9 条是「已想到的解释」的列表，不是「全部解释」。第 9 条本身就不在原 8 条里。
+
+## 2026-10-31 05:05：这两路轨是 **RPMh** 稳压器，不是 SPMI LDO
+
+离线核对。这条纠正了一个正要采用的错误方法。
+
+### 一、`pm8150_l5` / `pm8150_l9` 是 RPMh 节点（事实）
+
+`kona-regulators.dtsi`：
+
+```
+186  rpmh-regulator-ldoa5 {
+195      L5A: pm8150_l5: regulator-pm8150-l5 {
+             qcom,set = <RPMH_REGULATOR_SET_ALL>;
+             regulator-min-microvolt = <880000>;
+             ...
+262  rpmh-regulator-ldoa9 {
+271      L9A: pm8150_l9: regulator-pm8150-l9 {
+             qcom,set = <RPMH_REGULATOR_SET_ALL>;
+             regulator-min-microvolt = <1200000>;
+             qcom,proxy-consumer-enable;
+```
+
+**节点名是 `rpmh-regulator-ldoa5` / `ldoa9`，`qcom,set = RPMH_REGULATOR_SET_ALL`。**
+它们是 **RPMh 稳压器**（RSC 命令通道），**不是 SPMI LDO**。
+
+### 二、所以「用 ButtonProbe 的 SPMI read8 读 LDO 状态」这条方法不适用
+
+SPMI LDO（`qcom_spmi-regulator.c`）是另一套机制：每个 LDO 是 SPMI 的一个 peripheral，
+用 APID + 寄存器偏移读写。**`pm8150_l5`/`l9` 不走那条路。**
+用 SPMI 去读它们会读到一个不存在的 peripheral。
+
+### 三、本树已有的 RPMh 能力（事实）
+
+- `GpuProbe.cpp:482`：`ml_io_map(0x18220000, 0x10000)` —— **已经映射了 RPMh 的 DRV TCS**，
+  并在 `:467` 的注释里写明「through active TCS 0 of DRV 2（apps_rsc drv-2 at 0x18220000）」。
+- 启动日志每轮都打印 `rsc=0x18220000 tcs=0x18220d00 DRV=2 ...`，说明这条通道在内核里可读。
+
+**所以「给 RPMh 投一票」这件事，本树有可复用的基础**（GpuProbe 做过）。
+
+### 四、`BootLog.c` 里已经有 `[wifi-pmic]` / `[wifi-rails]` / `[wifi-1v8]` 的**读取端**
+
+```
+BootLog.c:736-750
+  if (&native_wifi_pmic && native_wifi_pmic[0]) {
+      "[wifi-pmic] arb=%x apids=%u regs=%u/%u gpio3=%x before=... write=%x after=..."
+      "[wifi-rails] cmd-db addresses ldob15 smpg6 smpg4 smpe4 smpg5 smpg2: ..."
+      "[wifi-rails] enabled-by-pmic-read=%x looked-at=%x last-wait-ms=%u total-ms=%u"
+  if (&native_wifi_ldo && ...) {
+      "[wifi-1v8] before: ..."
+```
+
+**但 `native_wifi_pmic[472]` 与 `native_wifi_ldo` 全树只有读取端，没有任何写入端**
+（`grep` 除了 `BootLog.c` 的读和 `BootProgressStubs.c` 的弱定义，零命中）。
+它来自提交 `4fd6373`（14:32，早期 stage1.5）。
+
+**所以这些行是别人留下的空壳：基础设施的接口定义好了，实现从未写。**
+这对本轮是好消息——**输出的形状已经定了**（`enabled-by-pmic-read`、`cmd-db addresses`
+这些字段名说明设计者已经想过要读什么）。
+
+### 五、下一步的正确形状
+
+不是「用 SPMI 读 LDO」，而是：
+
+1. **用 RPMh 的 cmd-db 查这两路轨的地址**（`[wifi-rails]` 那行要打印的正是
+   `cmd-db addresses ldob15 smpg6 ...`——设计者已经知道要查 cmd-db）。
+2. **读 RPMh 的 TCS 状态**判断它们当前有没有被投票（GpuProbe 的 DRV 2 TCS 0 通道可复用）。
+3. 若没投 → 才谈怎么投。
+
+**这三步都不需要新写 SPMI 驱动，而且第 2 步可以直接复用 GpuProbe 已经验证过的映射。**
