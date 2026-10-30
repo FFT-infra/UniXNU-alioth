@@ -327,6 +327,11 @@ void buttonsThread(void *, wait_result_t) {
         if (gEvents != seen) clear_wait(current_thread(), THREAD_AWAKENED);
         else thread_block(THREAD_CONTINUE_NULL);
         seen = gEvents;
+        // rep alone cannot tell "the thread is blocked" from "the thread polls but the level
+        // never changes": both leave rep at 1. This counts every pass through the loop, so a
+        // round can separate them - [7] climbing means the thread is alive, and rep staying
+        // at 1 then means the levels themselves are constant.
+        native_buttons_stats[7] = native_buttons_stats[7] + 1;
     }
 }
 }  // namespace
