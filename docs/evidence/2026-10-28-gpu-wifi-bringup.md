@@ -1620,3 +1620,82 @@ the command database at 0x80860000: version 0x1 magic 0xc0330db (expected magic 
 - **而且查到了 `ldoa5` / `ldoa9`** —— 如果读的是错的表，这两个名字不可能在里面
 
 **所以「读到错的表」这条排除。** 实测比源码推断更硬：表是对的，因为它答出了两个只有 RPMh 的 cmd-db 才有的名字。
+
+### 十、这两路是 **VRM** 类型，寄存器是「电压/使能/模式」——aux 表对它们无意义（重要更正）
+
+上一节写「aux = 1 意味着只有一档，投票只能 0 或 1」。**那个解读错了。** 查源码后更正：
+
+`kona-regulators.dtsi` / 启动 DTB：
+```
+rpmh-regulator-ldoa5 {
+    compatible = "qcom,rpmh-vrm-regulator";     <-- VRM，不是 ARC
+    qcom,resource-name = "ldoa5";
+    qcom,regulator-type = "pmic5-ldo";
+```
+
+而 `rpmh-regulator.c:1926-1928`：
+```c
+if (aggr_vreg->regulator_type == RPMH_REGULATOR_TYPE_ARC) {
+    rc = rpmh_regulator_load_arc_level_mapping(aggr_vreg);    /* 只有 ARC 才读 aux 表 */
+```
+
+**`ldoa5`/`ldoa9` 是 VRM，所以 `load_arc_level_mapping` 对它们从不调用。**
+那个 `aux = 1` 的值对 VRM 不构成「等级表」——**它是别的语义，不能拿它当「合法档位」。**
+
+### 十一、VRM 的寄存器布局（事实）
+
+`rpmh-regulator.c:87-99`：
+```c
+enum rpmh_regulator_reg_index {
+    RPMH_REGULATOR_REG_VRM_VOLTAGE = 0,
+    RPMH_REGULATOR_REG_VRM_ENABLE  = 1,
+    RPMH_REGULATOR_REG_VRM_MODE    = 2,
+    RPMH_REGULATOR_REG_VRM_HEADROOM= 3,
+    RPMH_REGULATOR_REG_VRM_MAX     = 4,
+};
+```
+
+而写命令的构造（`:771-776`）：
+```c
+cmd[j].addr = aggr_vreg->addr + i * 4;    /* i 是上面的索引 */
+cmd[j].data = req_active.reg[i];
+```
+
+**所以对 `ldoa5`（地址 `0x41800`）：**
+
+| 偏移 | 寄存器 | 含义 |
+| --- | --- | --- |
+| `0x41800 + 0` = `0x41800` | VRM_VOLTAGE | **电压，单位 mV**（`get_voltage` 里 `* 1000` 得 µV） |
+| `0x41800 + 4` = `0x41804` | VRM_ENABLE | **使能** |
+| `0x41800 + 8` = `0x41808` | VRM_MODE | 模式（LPM/HPM） |
+| `0x41800 + 12` = `0x4180c` | VRM_HEADROOM | 余量 |
+
+`ldoa9` 同理，基址 `0x41b00`。
+
+### 十二、所以正确的投票形状
+
+**不是「ARC 等级索引」，而是分别写三个寄存器：**
+
+```
+电压：  addr 0x41800, data 880      (mV，DT 里 pm8150_l5 = 880000 µV)
+使能：  addr 0x41804, data 1
+模式：  addr 0x41808, data <HPM 索引>
+```
+
+`ldoa9`：`0x41b00` = 1200 mV（`pm8150_l9 = 1200000 µV`），`0x41b04` = 1（使能）。
+
+**这三个值分别写，不是像 GpuProbe 的 DDR 票那样写一个「BCM 位图」值。**
+**两种语义完全不同**——`GpuProbe` 的 `top = (1<<30)|(1<<29)|(0x3fff<<14)|0x3fff` 是 BCM 的编码，
+不能用在 VRM 上。
+
+### 十三、这对风险的影响
+
+**比上一节估的高。** 因为现在要写**具体电压值**（880 mV / 1200 mV），不是「开/关」。
+写错电压真的可能损坏硬件。
+
+**所以投票前必须再确认两件事：**
+1. **`req_active.reg[]` 的单位确实是 mV**（`get_voltage` 里 `* 1000` 暗示是 mV，
+   但 `set_voltage` 那边要再看一眼确认写入时是否也按 mV）
+2. **`mode` 的值**（HPM 在 RPMh 的编码是多少）——`qcom,init-mode = <RPMH_REGULATOR_MODE_HPM>` 在 DT 里有
+
+**这两条都是零成本的源码核对。在没核对前不投。**
