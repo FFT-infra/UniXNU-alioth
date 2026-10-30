@@ -366,3 +366,64 @@ The image is proven to carry this round's kernel rather than assumed to: `build 
 Acceptance is the three-outcome table above. The screen is read by a person; `stats[7]` says
 how many packets the driver launched, and the two together separate "reached the panel",
 "launched but the panel ignored it" and "never launched".
+
+## 2026-10-31 btn6: the panel blinks, and the brightness path is live
+
+Image `tmp/boot-btn6.img`, sha256
+`da8e4528d71cdf8a4821ed4e9a7d2e6e4c8528762a69683dfa5f856e23ea6710`, kernel
+`1b1c729f60682f78ac162cd0e9c4d037b5ea1029936d05f4b2c2509b9c952363`. The image's command line
+carries `alioth-bl=2`, `alioth-bt=1` and `sheng-build-tag=btn6`, and the payload's
+`kernel_sha256` equals the kernel this build produced - so this round ran this branch's own
+build, not the shared tree's.
+
+Timeline, all on the Mac's clock:
+
+```
+03:37:27  fastboot boot
+03:37:42  left the bootloader (5 s)
+03:39:35  serial still alive, BLPHASE t=107s phase=9
+03:41:07  returned to fastboot (195 s, against the 186-195 s baseline)
+```
+
+### The observation, recorded in two parts
+
+| Observation | Status |
+| --- | --- |
+| the panel's brightness changed | user-confirmed, 03:38, "这个亮度确实有变化" |
+| three off/on cycles | user-confirmed, 03:39, "对滴对滴" |
+
+They are kept apart because the first alone was not enough to pass: a brightness change could
+be anything, while three one-second dark periods in a row is the blink the code asks for.
+
+### What the log says, and what it does not
+
+`build/sheng-logs/btn6-00000003b4b2eed4`, tag `btn6`, uptime 178 s, 90 slots, `write_errors 0`.
+
+```
+B st=3 irq=0 rep=1 mask=4 apid=13/26 off=65536 pdc=20000 err=131072 spur=512
+L st=2 req=0 lvl=2047 a=0 b=0 xerr=-1 irq=ffffffff ea=a eb=5 err=1280 goal=0 fade=0
+L path runs=0 fades=0 irq=21/8 mode=141137 tmo=537133056 done=335544320 empty=0 last=0
+```
+
+`L path irq=21/8` is `stats[10]`/`stats[11]`: 21 packets launched, 8 of them timed out waiting
+for a done this kernel cannot observe. So packets went out, and the panel acted on them - which
+is exactly the first row of the three-outcome table, reached by the screen rather than by a
+counter.
+
+### A correction: `stats[7]` was not a counter
+
+The acceptance table called for `stats[7] = 3` as the cross-check. That was wrong: the code
+wrote `native_backlight_stats[7] = 3` as a literal after the blink loop, so it recorded "the
+loop ran", not "three packets reached the panel". It is not evidence and must not be cited as
+such. The honest cross-check is `stats[10]`, the packets-launched counter, which is 21 here
+because the sweep's read-backs follow the blinks.
+
+### What this establishes, and what it does not
+
+Established: the DCS 0x51/0x28/0x29 packets written through DSI0's TPG FIFO reach this
+command-mode panel and change it. The transport works, which is the question btn1 through btn5
+could not answer.
+
+Not established: the brightness value the panel ends at, whether a read-back works (it does
+not - `xerr=-1` and `a=0` on the last row), the fade behaviour, or the iOS service in mode 3.
+Those need an interrupt handler on DSI0's SPI, which nothing here attaches.
