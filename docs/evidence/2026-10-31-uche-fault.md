@@ -1,5 +1,33 @@
 # `GPUROW28` 的 UCHE OOB：第三次提交读到未映射的 IOVA
 
+> **2026-10-31 16:20 更正：标题与下文的「UCHE OOB」判据不成立。**
+>
+> `cb0 fsr 0x400` 不是故障。SMMU-500 的 `CBn_FSR` 里 bits 10:9 是 FORMAT（AArch64 stage-1 =
+> `0b10`），`FSR_FAULT = FSR_MULTI|FSR_SS|FSR_UUT|FSR_EF|FSR_PF|FSR_TF|FSR_IGN = 0xc00001fe`
+> （`reference/k40-kernel/drivers/iommu/arm-smmu-regs.h:253-258`），不含 bit 10。厂商的 fault
+> handler 正是用这个掩码判「非故障」：
+> `if (!(fsr & FSR_FAULT)) { ret = IRQ_NONE; ... }`（`arm-smmu.c:2058`）。
+> 我们自己的驱动也写了同一件事：`tmp/parity-src/NativeAdrenoGpuContext.cpp:204-205`
+> 在 `endFault` 里把 FSR 的 bits 10:9 掩掉（`out[0]&=~0x600`），注释写明「0x400: AArch64,
+> not a fault」。
+>
+> 因此 `far 0x5e09e75794f5` 是 **FAR 在 FSR 没有故障位时的未定义回读，不能当作 GPU 访问过
+> 94 TiB 的证据**。它跨四次启动几乎不变（后三字节恒为 `94f5`），也印证是陈旧/未定义值。
+>
+> 真正的信号是 `RBBM_INT_0_STATUS` 的 **bit 9 = CP_HW_ERROR**：失效轮读到
+> `irq115008 last200 seen900200`，`0x900200` = bit9 + bit20(CP_FENCE) + bit23(HANG)，
+> 而 `last200` 说明 CP 硬件错误是最后一次中断。`bit24 (UCHE_OOB_ACCESS)` 与
+> `bit25 (UCHE_TRAP)` 从未出现；探针里 `gpu regs oob` 的转储也从未打印。
+>
+> 另外，探针的 `gpuIrq`（`package/GpuProbe.cpp:1104`）只读/清 RBBM 状态并计数，**从不读
+> CP 的三个错误寄存器**；只有 `hangRows()` 会读，而它只在「fence 不动且 CP 的 RPTR/IB1/REM
+> 也不动」时才触发。失效轮里 CP 仍在动，所以 HANG 行没有出现——另外这两行（26/27）
+> 也不在 `BootProgress.c` 的打印列表里，即使写了也不会送到 console。
+>
+> 所以本文下面的「94 TiB 的 IOVA」「窗口内未映射地址」是**从 FORMAT 字段推出来的，
+> 全部撤回**；保留原文只作为历史。
+
+
 2026-10-31 的 `zap7`/`zap7b`/`zap7c` 三轮（同一镜像，三次一致）都停在同一个地方：
 
 ```
@@ -141,3 +169,70 @@ GPUROW28 FAULTS cr0 260406 gfsr 0 syn 0/0/0 | cb0 fsr 400 syn 40c0e far 5e09e557
 路径里记录每次提交的 IB 首地址与长度，看第三次的 IB 里有没有 94 TiB 的地址。
 
 **这是驱动侧改动，要改 `tmp/parity-src`、重新钉 `feeds.toml`、重建、上板**——完整一轮。
+
+---
+
+## 2026-10-31 16:20：换判据，读 CP 的错误寄存器
+
+### 已有的 `[gpu stall]` 两行（零改动，`ibread3`）
+
+`build/sheng-logs/ibread3-00000002041afeb6/latest.txt`：
+
+```
+[gpu stall] fence=5 n=22215 800005 0 0 0 0 0 8000430e 0 3d 3d 20004000 0 0 0 0 0 deafbead deadbead deadbead deadbead deadbead deadbead
+[gpu stall] smmu 400 e75794f5 5e09 10c0e
+[gpu stall] br ib1 @ffff0000: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+[gpu stall] bv ib1 @ffff0000: deadbeef ×16
+[gpu stall] bv ib2 @ffff0000: deadbeef ×16
+[gpu stall] handles job>=8 br=6 bv=0 bv2=0
+```
+
+- `smmu 400 e75794f5 5e09 10c0e` = FSR `0x400`（FORMAT，非故障）、FAR `0x5e09e75794f5`、
+  FSYNR0 `0x10c0e`（bit4 WNR / bit5 PNU / bit6 IND 全 0，也不是故障类别）。
+- **BR IB1 的 16 个字全是 0**，而 BV IB1/IB2 不可读（`deadbeef`）：CP 的 BR 取指落在
+  一块零填充的内存上。这比 FAR 更有信息量——它说明「CP 执行的是 0 字」，与
+  `CP_HW_ERROR` 同向。
+- `handles job>=8 br=6 bv=0 bv2=0`：BR IB1 落在 handle 6 的映射里；BV 的两个 IB 地址
+  没有对应 handle。
+
+### 探针改动（`cperr1`/`cperr2`）
+
+`package/GpuProbe.cpp`：
+
+- `gpuIrq` 在 `RBBM_INT_0_STATUS & (1<<9)` 时按 `a6xx_cp_hw_err_irq`
+  （`reference/k40-kernel/drivers/gpu/drm/msm/adreno/a6xx_gpu.c:533-583`）的顺序读并锁存
+  `0x823 CP_INTERRUPT_STATUS`、`0x821 CP_HW_FAULT`、`0x824 CP_PROTECT_STATUS`；若
+  `0x823` 的 bit0（opcode error）置位，再写 `0x908=1` 读 `0x909`（SQE stat）。
+- 新增 `GPUROW31`（`kRowCpErr`），由心跳每 2 秒从锁存值格式化：标志位按厂商顺序
+  `O U H P A V I`，寄存器保护状态带方向与地址。
+- `native_gpu_probe` 在解析后把 `arg/parsed/gMode` 写进同一行（`GPUPARSE`）；CP 错误发生时
+  该行被 `CPERR` 覆盖。
+
+`package/BootProgress.c`：三处打印列表加入 `31`。
+
+### 上板
+
+| 轮次 | 镜像 | 结果 |
+| --- | --- | --- |
+| `cperr1` | `tmp/boot-cperr1.img`，sha `cf39e50f…`，kernel `319146cb…` | 板子自回；但 console 捕获挂在**过期节点**上，得到的是上一轮缓存的旧内核输出（`GPU m7`、内核版本 10-28），不是本轮 |
+| `cperr2` | `tmp/boot-cperr2.img`，sha `c2ade3d4…` | 板子 240 秒未自回，`board-state` = `reader-or-userspace`；console 捕获未生成文件，进程随脚本退出 |
+
+`cperr2` 运行中直接读活着的 console 节点，得到：
+
+```
+GPUARG call 1 pipa-gpu=12 parsed=1 gMode=0
+```
+
+**所以本轮确实是 mode 12，`m7` 是过期 console 的伪读数。** 之后节点静默（用户态停住，
+与 `2026-10-31-userspace-stall.md` 同形），无法再取 `GPUROW31`。
+
+### 下一轮
+
+板子需要断电后重跑（锁已在 `tmp/board.lock` 标成 dead，重跑前要删）。判据：
+
+- `GPUROW31 CPERR irq … st … <flags> hw … prot … sqe …` 出现，且 `GPUROW23` 的 `uc b>0`；
+- flags 为 `O`/`I` → 命令流非法（0 字 IB 与 BR IB1 全 0 一致）；
+- flags 为 `P` → 寄存器保护，读 `prot` 的地址与方向；
+- flags 为 `A` → CP 的 AHB 访问被中止，才回到 SMMU；
+- flags 为 `H`/`U` → CP/ucode 硬件错误。
+
