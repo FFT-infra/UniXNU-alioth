@@ -1377,7 +1377,7 @@ bool selfTest() {
      * that is certainly right. What it answers: whether the 736-byte content is what stops the CP, or
      * whether only the client's context does. */
     gReplayResult = 0;
-    if (&native_adreno_ib_log_count && native_adreno_ib_log_count && int32_t(native_gpu_publish[9]) >= 3) {
+    if (native_adreno_ib_log_count && int32_t(native_gpu_publish[9]) >= 3) {
         const volatile uint32_t *r = native_adreno_ib_log[(native_adreno_ib_log_count - 1) & 3];
         const uint32_t bytes = r[3], words = bytes / 4;
         if (bytes > 48 && words <= 192) {
