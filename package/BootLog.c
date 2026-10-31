@@ -162,7 +162,7 @@ extern int (*native_adreno_dram_read32)(uint64_t, uint32_t *) __attribute__((wea
 extern int (*native_adreno_cached_read32)(uint64_t, uint32_t *) __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ring_log[4][4 + 112] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ring_log_count __attribute__((weak_import));
-extern volatile uint32_t native_adreno_ib_log[4][6 + 96 + 96 + 2 + 16] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_ib_log[4][6 + 96 + 96 + 2 + 16 + 80] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ib_log_count __attribute__((weak_import));
 /* The submission's coherence sample and the write-combined distrust count (NativeAdrenoSubmit.cpp:289-301): [0] samples taken,
  * [1..3] the cached and uncached reads of the first IB word, [4] submissions that found a dirty line and dropped write-combined,
@@ -583,6 +583,12 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       {
         int n = snprintf(row, sizeof row, "T%02x", 0);
         for (uint32_t k = 0; k < 16 && n > 0 && n < 110; ++k) n += snprintf(row + n, sizeof row - n, " %08x", r[200 + k]);
+        at = put(out, at, cap, row, sizeof row);
+      }
+      // Words 96..183: real packets at the head and zeros here would mean the client's write stopped.
+      for (uint32_t i = 0; i < 80; i += 8) {
+        int n = snprintf(row, sizeof row, "M%02x", 96 + i);
+        for (uint32_t k = i; k < i + 8 && k < 80 && n > 0 && n < 110; ++k) n += snprintf(row + n, sizeof row - n, " %08x", r[216 + k]);
         at = put(out, at, cap, row, sizeof row);
       }
     }
