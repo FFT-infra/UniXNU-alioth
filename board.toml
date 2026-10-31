@@ -135,9 +135,12 @@ archives = [
   # own kernelcache and the recipe refuses to archive a vtable that is not the 234-slot layout.
   # A-3 is in progress: only createIOBuffer does real work so far, the other pure slots are still
   # fixed values, and nothing enables it -- qcom-usb-debug keeps the controller until A-5.
-  # The step stays in the list regardless: build-xnu-4k-baseline.sh force-loads
-  # build/alioth-usb/libAliothUSBDevice.a unconditionally, so a tree without it fails at the
-  # kernel link with "ld: file not found".
+  # NOTE (2026-10-31): this previously said build-xnu-4k-baseline.sh force-loads the archive
+  # unconditionally. It does not -- grep finds no AliothUSBDevice in that script, and
+  # CONFIG_XNU_EXTRA_LD_ARCHIVES holds only libLinkStubs.a. **The archive is built and linked by
+  # nothing**, and the image carries no IOUSBDeviceController symbols (checked with strings on
+  # tmp/boot-plug1.img: 0). The step is kept because the recipe is the board's own source, but
+  # nothing reaches it until the archive is added to the link inputs.
   "build-alioth-usb.py",
   # IOUSBDeviceFamily is prelinked, so the kernel link (scripts/unixnu/kernel.py:204) runs
   # before the kexts merge (:207) and IOUSBDeviceController's vtable and methods exist in no
