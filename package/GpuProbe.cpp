@@ -118,7 +118,7 @@ enum {kRowSummary, kRowGcc, kRowGpucc, kRowSmmu, kRowClk, kRowClk2, kRowGmu, kRo
       kRowContext = kRowLevels + 3, kRowLoad, kRowHfi, kRowAfter, kRowGx, kRowGpuCtx, kRowCp, kRowCpState, kRowZap, kRowIrq,
       kRowPublish, kRowMetal, kRowLive, kRowHang, kRowHang2, kRowFaults, kRowUche, kRowTiling, kRowCpErr, kRows};
 extern "C" {
-char native_gpu_rows[kRows][160];
+char native_gpu_rows[kRows][200];
 volatile uint32_t native_gpu_changes;
 volatile uint32_t native_gpu_step;
 struct gpb_result native_gpu_result;
@@ -1161,14 +1161,14 @@ NativeAdrenoSubmit *gSubmit;
 NativeAdrenoTimer *gTimer;
 NativeAdrenoTimeIo gTimerIo{nullptr, naRead};
 extern "C" {
-uint32_t native_gpu_publish[16];   // submit attach, timer attach, publish, user-client rounds (see publishRow)
+uint32_t native_gpu_publish[20];   // submit attach, timer attach, publish, user-client rounds, target words (see publishRow)
 }
 void publishRow(const char *what) {
     const uint32_t *p = native_gpu_publish;
     snprintf(native_gpu_rows[kRowPublish], sizeof native_gpu_rows[0],
-             "PUBLISH %s submit %x timer %x publish %x | uc %u/%u first %x at %u cpumap %x | rounds %d %d | tgt %x %x %x %x",
+             "PUBLISH %s submit %x timer %x publish %x | uc %u/%u first %x at %u cpumap %x | rounds %d %d | tgt %x %x %x %x | tgt1 %x %x %x %x",
              what, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], int32_t(p[8]), int32_t(p[9]),
-             p[10], p[11], p[12], p[13]);
+             p[10], p[11], p[12], p[13], p[16], p[17], p[18], p[19]);
     changed();
 }
 
@@ -1291,14 +1291,13 @@ int ucRound(IOService *svc) {
                      * before the flush that sets the fence, so the target says whether the GPU executed the
                      * IB at all. Without this a timed-out wait cannot be told from a lost fence write. */
                     __asm__ volatile("dsb sy" ::: "memory");
+                    /* The four words go into the publish row whether the fence came back or not: matched
+                     * says how many agreed but not which one did not, and the difference between "the CP
+                     * wrote nothing" and "the CP wrote past the third marker" is the whole reading. */
+                    native_gpu_publish[10] = tw[0]; native_gpu_publish[11] = tw[1];
+                    native_gpu_publish[12] = tw[2]; native_gpu_publish[13] = tw[3];
                     if (completed)
                         matched = (tw[0] == values[0]) + (tw[1] == values[1]) + (tw[2] == values[2]) + (tw[3] == 0xdeadbeef);
-                    else {
-                        /* Into the publish row, which every later round prints: the teardown markers
-                         * write row 24 and would hide this one. */
-                        native_gpu_publish[10] = tw[0]; native_gpu_publish[11] = tw[1];
-                        native_gpu_publish[12] = tw[2]; native_gpu_publish[13] = tw[3];
-                    }
                 }
                 NativeAdrenoAbiTimestamp ts{};
                 step(ucCall(uc, NativeAdrenoMethodGetTimestamp, nullptr, &ts));
@@ -1336,6 +1335,9 @@ bool selfTest() {
     snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0], "SELFTEST enter");
     changed();
     native_gpu_publish[8] = uint32_t(ucRound(svc));
+    native_gpu_publish[14] = native_gpu_publish[4];   // steps attempted by round 1
+    native_gpu_publish[15] = native_gpu_publish[3];   // of which passed
+    for (unsigned i = 0; i < 4; ++i) native_gpu_publish[16 + i] = native_gpu_publish[10 + i];   // round 1's target words
     snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0], "SELFTEST round1 %d steps %u/%u first %x at %u",
              int32_t(native_gpu_publish[8]), native_gpu_publish[3], native_gpu_publish[4], native_gpu_publish[5], native_gpu_publish[6]);
     changed();
@@ -1345,8 +1347,9 @@ bool selfTest() {
     // case with no row at all. The verdict goes here so a uc 0/0 round says what this test saw:
     // the two round results, the first error and the step it happened at, and the step counters.
     snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0],
-             "SELFTEST rounds %d %d first %x at %u steps %u/%u", int32_t(native_gpu_publish[8]),
-             int32_t(native_gpu_publish[9]), native_gpu_publish[5], native_gpu_publish[6], native_gpu_publish[3], native_gpu_publish[4]);
+             "SELFTEST rounds %d %d first %x at %u steps %u/%u r1 %u/%u", int32_t(native_gpu_publish[8]),
+             int32_t(native_gpu_publish[9]), native_gpu_publish[5], native_gpu_publish[6], native_gpu_publish[3], native_gpu_publish[4],
+             native_gpu_publish[15], native_gpu_publish[14]);
     changed();
     const bool ok = native_gpu_publish[8] == 4 && native_gpu_publish[9] == 4;
     publishRow(ok ? "ok" : "self test failed");
