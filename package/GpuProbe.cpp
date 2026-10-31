@@ -1174,7 +1174,8 @@ uint32_t gReplayIb[192];
 uint32_t gReplayWords;
 int gReplayResult;
 uint32_t native_gpu_publish[20];
-uint32_t native_gpu_restart_count;   // submit attach, timer attach, publish, user-client rounds, target words (see publishRow)
+uint32_t native_gpu_restart_count;
+uint32_t native_gpu_restart_step;   // 1 ring restart failed, 2 past it, 3 CP init failed, 4 past it
 }
 void publishRow(const char *what) {
     const uint32_t *p = native_gpu_publish;
@@ -1733,11 +1734,14 @@ extern "C" IOReturn nativeGpuRestart(void *cookie, NativeAdrenoRing *ring, uint3
     gw64(0x830, gNb[0].iova);
     gw(0x808, 1);
     IOReturn status = ring->restart(completed);
+    native_gpu_restart_step = status ? 1u : 2u;
     if (status) return status;
     NativeAdrenoCpInitConfig config{gNb[0].iova, 0, 1};
     config.generation = 6;
     uint32_t fence = 0;
-    return gCpInit->run(&gRio, ring, &config, &fence);
+    status = gCpInit->run(&gRio, ring, &config, &fence);
+    native_gpu_restart_step = status ? 3u : 4u;   /* 1 ring restart, 2 past it, 3 CP init, 4 past it */
+    return status;
 }
 
 

@@ -86,6 +86,7 @@ extern volatile uint32_t native_adreno_ttbr0_tlb[3] __attribute__((weak_import))
 extern volatile uint32_t native_adreno_recovery[8] __attribute__((weak_import));
 /* Where the last recover() stopped: [0] the step (1 fence read, 2 restart hook, 3 table write, 4 nop encode, 5 replay vm, 6 replay submit), [1] the IOReturn or value there, [2] fence, [3] last submitted. */
 extern volatile uint32_t native_adreno_recover_trace[4] __attribute__((weak_import));
+extern uint32_t native_gpu_restart_step;
 extern volatile uint32_t native_adreno_wfi_dropped __attribute__((weak_import));
 extern volatile uint32_t native_adreno_wfi_try[5] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_trace_stage __attribute__((weak_import));
@@ -1099,6 +1100,9 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
                  native_adreno_recover_trace[0], native_adreno_recover_trace[1],
                  native_adreno_recover_trace[2], native_adreno_recover_trace[3]);
         at = put(out, at, cap, tr, sizeof tr);
+        char rs[48];
+        snprintf(rs, sizeof rs, "[gpu restart step] %u", native_gpu_restart_step);
+        at = put(out, at, cap, rs, sizeof rs);
       }
     }
     if (&native_adreno_ttbr0_tlb && native_adreno_ttbr0_tlb[0]) {
