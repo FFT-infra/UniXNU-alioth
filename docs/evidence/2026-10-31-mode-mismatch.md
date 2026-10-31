@@ -61,3 +61,53 @@ snprintf(native_gpu_rows[kRowSummary], sizeof native_gpu_rows[0],
 
 **判据**：`GPUROW13` 里出现 `arg=12 parsed=1` 而 `GPUROW0` 仍是 `m7`，说明 `gMode` 被别处
 改写；若 `arg=7`，说明命令行在这一轮确实不同（那就去核板子实际加载的镜像 sha256）。
+
+---
+
+## 第二轮：`m12` 与 `m7` 是两种真实结果，不是读数噪声
+
+| 镜像 | 命令行 | 运行时 `GPUROW0` | 最远行 |
+| --- | --- | --- | --- |
+| `a6xx2` | `pipa-gpu=12` | **m12** | 20 / **28** |
+| `zap3` | `pipa-gpu=12` | m7 | 15 |
+| `zap4` | `pipa-gpu=12` | m7 | 15 |
+| `zap5` | `pipa-gpu=12` | **m12** | **28** |
+
+`zap5` 这一轮：
+
+```
+GPUROW0 GPU m12 gcc=ok cc=ok smmu=ok gpu=skip io=0 cx1 clocks1 ahb0
+GPUROW17 GX on perf 7 phase 4 vote 0 oob 2 gx 000000c0>00000000 gdscr f8222800 rbbm 00000001 gbif halt 0/3
+GPUROW28 FAULTS cr0 260406 gfsr 0 syn 0/0/0 | cb0 fsr 400 syn 40c0e far 5e09e55794f5
+```
+
+`phase 4` 说明 `A650GmuPowerGx` 走完了（HFI 投票返回、OOB 确认收到）。
+
+**所以：`m12` 的轮次一定走到底，`m7` 的轮次一定停在 15。** 这两个不是随机的：
+同一个命令行、不同镜像，跑出两种模式。`m12` 是正确值，`m7` 是错的。
+
+### 排除记录（第二轮新增）
+
+| 假设 | 结论 |
+| --- | --- |
+| `pipa-gpu` 字符串在不同镜像里不同 | 四个镜像全是 `=12`（`strings` 逐个核过） |
+| 镜像内容不同导致行为不同 | 但 `a6xx2`（旧）与 `zap5`（新）都是 m12，`zap3`/`zap4`（新）是 m7——**与新旧无关** |
+| `BootProgress.c` 的扫描列表加 16 影响了 | `zap3`/`zap4` 没加 16 时也是 m7；`zap5` 加了 16 是 m12。**但 `a6xx2` 没加 16 也是 m12**，所以不是它 |
+
+### 剩下最强的假设
+
+`native_gpu_probe()` 是 `if (gMode || !parsed || !mode) return;`。若第一次调用时
+`PE_parse_boot_argn` 失败（`gMode` 保持 0），函数返回；**如果它被调用第二次**，第二次
+可能在 boot args 已被别的东西改写之后，读到别的值。
+
+`native_gpu_probe()` 只有一个调用者（`LegacyDisplayProbe.cpp:945`），在
+`native_legacy_display_late_probe()` 里，**那本身可能被调用多次**（late probe 每轮
+display 服务启动时跑）。查 `native_legacy_display_late_probe` 的调用次数。
+
+### 下一轮（板子断电后）
+
+1. 先数 `native_legacy_display_late_probe` 被调几次：console 里 `BAND` 行（
+   `native_legacy_paint_reached_band` 写的第一行）出现几次。
+2. 若多次 → `gMode` 的「只解析一次」保护有洞，改成「解析失败也置一个 sentinel」。
+3. 若一次 → `PE_parse_boot_argn` 在 m7 那几轮确实读到了 7，去核板子实际加载的镜像
+   sha256（`fastboot boot` 之后无法再查，只能核 `build/sheng-logs/*/header.txt` 的 tag）。
