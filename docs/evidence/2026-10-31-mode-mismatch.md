@@ -161,3 +161,45 @@ GPUROW0 GPU m12 gcc=ok cc=ok smmu=ok gpu=skip io=0 cx1 clocks1 ahb0
 | 有 `pipa-gpu=7` | 命令行真的不同，核板子实际加载的镜像 |
 
 **判据是 `GPUARG` 那一行，不是 `GPUROW0`。** 前者在解析点，后者在 15 秒扫描之后。
+
+---
+
+## 第四轮：同一镜像连跑三次，三次都相同
+
+`tmp/boot-zap7.img` 连续三轮（`zap7`、`zap7b`、`zap7c`）：
+
+| 轮次 | `GPUARG` | `GPUROW0` | 最远行 | `zap` 次数 |
+| --- | --- | --- | --- | --- |
+| `zap7` | `call 1 pipa-gpu=12 parsed=1 gMode=0` | m12 | 28 | 18 |
+| `zap7b` | `call 1 pipa-gpu=12 parsed=1 gMode=0` | m12 | 28 | 20 |
+| `zap7c` | `call 1 pipa-gpu=12 parsed=1 gMode=0` | m12 | 28 | 18 |
+
+**三次完全一致。** 解析对、调用一次、`gMode` 从 0 到 12、走到 `GPUROW28`。
+
+## 结案：`m7` 是旧镜像的问题，不是板子的
+
+`m7` 出现在 `zap3`、`zap4`、`zap6` 三个镜像上，**那三个镜像的 `GpuProbe.cpp` 里
+`GPUARG` 在 `return` 之后**，所以它们没有这一行可看。`a6xx2`（07:48）与 `zap5`、`zap7`、
+`zap7b`、`zap7c` 都是 m12。
+
+**能确立的**：`m12` 是这块板的正常状态，`zap7` 这一版镜像三次复现。
+**仍未解释的**：`m7` 那三次。它们与 m12 的差别只在 `GpuProbe.cpp` 的打印位置，
+但打印位置不可能改变 `PE_parse_boot_argn` 的返回值——**所以要么那三次板子加载的不是
+那两个镜像，要么 `m7` 是另一个尚未定位的路径。**
+
+## 现在真正要追的：`GPUROW28` 的 UCHE OOB
+
+三次 m12 的 `GPUROW28` 都是：
+
+```
+GPUROW28 FAULTS cr0 260406 gfsr 0 syn 0/0/0 | cb0 fsr 400 syn 40c0e far 5e09e55794f5 / 5e09e75794f5
+```
+
+`cb0 fsr 400` 是 UCHE 的 OOB（`a6xx.xml.h` 的 `UCHE_INVALID_OP` 类），`far` 在
+`0x5e09e*` 一带，三次只差低位 nibble。**这是同一个地址，不是三个。**
+
+`GPUROW25 LIVE` 的 `busy 1000`、`sub 3/2`、`t` 到 10^6 说明**栅栏等待超时、GPU 不前进**。
+所以真正的问题在 GPU 第一次提交之后：**UCHE 读到它不该读的地址，GPU 停在那一笔上。**
+
+这条与 `zapLoad` 无关（zap 三次都 `ok`）。**下一轮的目标是这个 `far` 地址**：
+`0x5e09e55794f5` 是 GPU 地址空间的什么，谁把它映射到那里。
