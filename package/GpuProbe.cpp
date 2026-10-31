@@ -121,7 +121,7 @@ enum {kRowSummary, kRowGcc, kRowGpucc, kRowSmmu, kRowClk, kRowClk2, kRowGmu, kRo
       kRowContext = kRowLevels + 3, kRowLoad, kRowHfi, kRowAfter, kRowGx, kRowGpuCtx, kRowCp, kRowCpState, kRowZap, kRowIrq,
       kRowPublish, kRowMetal, kRowLive, kRowHang, kRowHang2, kRowFaults, kRowUche, kRowTiling, kRowCpErr, kRows};
 extern "C" {
-char native_gpu_rows[kRows][200];
+char native_gpu_rows[kRows][256];
 volatile uint32_t native_gpu_changes;
 volatile uint32_t native_gpu_step;
 struct gpb_result native_gpu_result;
@@ -1594,10 +1594,15 @@ void cpErrorRow() {
         const uint32_t opened = native_adreno_publish_stats(&closed);
         char line[sizeof native_gpu_rows[0]];
         snprintf(line, sizeof line,
-            "LIVE irq%u last%x seen%x m%u | sub %u/%u t%u p%u | uc %u/%u | bo %u/%u r%u s%x | busy %u | cp %x/%x/%x | rbbm %08x | scr %x | rw %x/%x",
+            "LIVE irq%u last%x seen%x m%u | sub %u/%u t%u p%u | uc %u/%u | bo %u/%u r%u s%x | busy %u | cp %x/%x/%x"
+            " | rbbm %08x | scr %x | rw %x/%x | rb %x/%x cntl %x | me %x/%x | ahb %x/%x | aon %x | prot %x",
             gIrqCount, gIrqLast, gIrqSeen, gIrqMasked, st.submissions, st.completed, st.timeouts, st.poisoned_jobs, opened, closed,
             native_adreno_bo_memory[4], native_adreno_bo_memory[5], native_adreno_bo_memory[2], native_adreno_bo_memory[3],
-            permille, rptr, ib1, rem1, gpuRead(0x210), gpuRead(0x885), gpuRead(0x806), gpuRead(0x807));
+            permille, rptr, ib1, rem1, gpuRead(0x210), gpuRead(0x885), gpuRead(0x806), gpuRead(0x807),
+            /* The whole CP state at one instant: its ring base and control, ME status, AHB control, the always-on
+             * counter, and the protection control. Read together so one round answers every question at once. */
+            gpuRead(0x800), gpuRead(0x801), gpuRead(0x802), gpuRead(0x81e), gpuRead(0x81f),
+            gpuRead(0x838), gpuRead(0x98d), gpuRead(0x8e7), gpuRead(0x84f));
         // The idle counters move on every fence wait: refresh the row only when the work itself changed.
         static uint32_t lastSub = ~0u, lastOpened = ~0u, lastIrqMasked = ~0u;
         if (st.submissions != lastSub || opened != lastOpened || gIrqMasked != lastIrqMasked || t % 30 == 0) {

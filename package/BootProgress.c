@@ -173,7 +173,7 @@ extern volatile int native_hid_matching_load_status __attribute__((weak_import))
 extern volatile uint32_t native_hid_touch_status __attribute__((weak_import));
 // The A650 probe's rows. Row 0 is its verdict line ("GPU m1 gcc=... cc=... smmu=... gpu=...
 // io=..."); the board does not render these on the page, so the console carries the first one.
-extern char native_gpu_rows[][200] __attribute__((weak_import));   // must match GpuProbe's definition
+extern char native_gpu_rows[][256] __attribute__((weak_import));   // must match GpuProbe's definition
 extern volatile uint32_t native_adreno_close_step[8] __attribute__((weak_import));
 // Who opens the published GPU service apart from the probe, whether the two sandbox gates let
 // them in, and the last line each streamed. Without these the console only shows that clients
@@ -1612,7 +1612,7 @@ static void ufs_time_report(unsigned now) {
     for (unsigned r = 0; r < sizeof rows / sizeof rows[0]; ++r) {
       const char *text = native_gpu_rows[rows[r]];
       if (!text[0]) continue;
-      char gpu[192];
+      char gpu[240];
       int m = snprintf(gpu, sizeof gpu, "GPUROW%d %s\n", rows[r], text);
       if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
     }
@@ -1709,7 +1709,7 @@ static void touch_time_report(unsigned now) {
     for (unsigned r = 0; r < sizeof rows / sizeof rows[0]; ++r) {
       const char *text = native_gpu_rows[rows[r]];
       if (!text[0]) continue;
-      char gpu[192];
+      char gpu[240];
       int m = snprintf(gpu, sizeof gpu, "GPUROW%d %s\n", rows[r], text);
       if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
     }
@@ -1814,7 +1814,7 @@ static void gpu_rows_report(unsigned now) {
   for (unsigned r = 0; r < sizeof rows / sizeof rows[0]; ++r) {
     const char *text = native_gpu_rows[rows[r]];
     if (!text[0]) continue;
-    char gpu[192];
+    char gpu[240];
     int m = snprintf(gpu, sizeof gpu, "GPUROW%d %s\n", rows[r], text);
     if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
   }

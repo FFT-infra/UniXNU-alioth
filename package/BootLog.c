@@ -30,7 +30,7 @@ extern unsigned native_ufs_store_gpt_check(void) __attribute__((weak_import));
 extern uint32_t cs_text_fixup_parsed __attribute__((weak_import));
 extern uint32_t cs_text_fixup_applied __attribute__((weak_import));
 extern char boot_progress_page_text[48][120] __attribute__((weak_import));
-extern char native_gpu_rows[][200] __attribute__((weak_import));   // must match GpuProbe's definition
+extern char native_gpu_rows[][256] __attribute__((weak_import));   // must match GpuProbe's definition
 extern char boot_progress_banner_text[49][120] __attribute__((weak_import));
 extern volatile unsigned boot_progress_banner_rows __attribute__((weak_import));
 extern char boot_progress_ext[8][48] __attribute__((weak_import));
@@ -1064,7 +1064,7 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // whether any user client can open the driver at all (uc 0/0 vs uc 16/19).
   if (&native_gpu_rows && native_gpu_rows[0][0]) {
     static const int gpuRows[] = {0, 3, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 31};
-    char row[240];   // a GPU row is now up to 200 bytes, plus "GPUROWnn " and the NUL
+    char row[300];   // a GPU row is now up to 256 bytes, plus "GPUROWnn " and the NUL
     for (unsigned r = 0; r < sizeof gpuRows / sizeof gpuRows[0]; ++r) {
       const char *text = native_gpu_rows[gpuRows[r]];
       if (!text[0]) continue;
