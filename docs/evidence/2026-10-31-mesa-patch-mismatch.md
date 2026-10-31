@@ -71,3 +71,50 @@ grep -c tu_attachment_unpadded patches/mesa/turnip-gmem-mutable-swap.patch → 2
 **不重建插件也能继续**：`GPUROW23`/`GPUROW24` 已经证明旧插件能加载、能注册，
 `GPUROW28` 的 UCHE 故障因此**无法归因到「parity 的插件」**（见
 `docs/evidence/2026-10-31-uche-fault.md`）。这一条要在插件重建之后才能说。
+
+---
+
+## 更正：这条结论是错的，原因是我把源树清空了
+
+**上面说的「补丁与钉点不符」不成立。** 实测：按顺序把 11 个补丁应用到干净的
+`85fda3b` 上，**11 个全部 `rc=0`**，然后 `validate_recorded_patches` 通过：
+
+```
+patches/mesa/freedreno-tools-nir.patch                   rc=0
+… （11 条全 rc=0）
+patches/mesa/turnip-gmem-mutable-swap.patch              rc=0
+VALIDATED
+```
+
+### 我错在哪
+
+`build-turnip-darwin.py` **不应用补丁**——它只调用 `validate_recorded_patches`，
+后者校验「源树 = 钉点 + 全部补丁」（`scripts/mesa_patch_identity.py:9-45`）。
+正向应用补丁的脚本在仓库里**没有**：`.cache/mesa-work` 本来就是「已打好补丁」的状态。
+
+我在排查时执行了：
+
+```bash
+git -C .cache/mesa-work checkout -- .
+rm -f .../tu_builtin_cache.{cc,h} .../tu_knl_darwin.cc
+```
+
+**把那个状态清掉了。** 之后再跑 `build-turnip-darwin.py`，校验自然失败，
+而我把它读成了「补丁与钉点不符」。
+
+### 真正的错误链
+
+1. 第一次跑 `build-turnip-darwin.py` 时，源树里**有 19 个未提交改动 + 3 个未跟踪文件**——
+   那是补丁的产物，**不是脏工作区**；
+2. 我把它们当成脏工作区，stash 掉、再 checkout 清掉；
+3. 于是校验失败，我误判为上游缺陷。
+
+**这是一次「把正常状态当成异常，然后去修它」的错。** 本轮的第十七次
+「判据测错对象」：我把「源树有未提交改动」当成故障信号，而它恰恰是正确状态。
+
+### 已恢复
+
+11 个补丁已按顺序重新应用，`validate_recorded_patches` 通过，Turnip 构建已重新启动。
+
+`decisions/2026-10-31-mesa-patch-blocker.md` 的前提随之作废——那份文件保留，作为
+「一次误判的记录」，但不要再按它去改钉点或报上游。
