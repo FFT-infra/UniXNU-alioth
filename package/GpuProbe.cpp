@@ -1583,10 +1583,10 @@ void cpErrorRow() {
         const uint32_t opened = native_adreno_publish_stats(&closed);
         char line[sizeof native_gpu_rows[0]];
         snprintf(line, sizeof line,
-            "LIVE irq%u last%x seen%x m%u | sub %u/%u t%u p%u | uc %u/%u | bo %u/%u r%u s%x | busy %u | cp %x/%x/%x",
+            "LIVE irq%u last%x seen%x m%u | sub %u/%u t%u p%u | uc %u/%u | bo %u/%u r%u s%x | busy %u | cp %x/%x/%x | rbbm %08x",
             gIrqCount, gIrqLast, gIrqSeen, gIrqMasked, st.submissions, st.completed, st.timeouts, st.poisoned_jobs, opened, closed,
             native_adreno_bo_memory[4], native_adreno_bo_memory[5], native_adreno_bo_memory[2], native_adreno_bo_memory[3],
-            permille, rptr, ib1, rem1);
+            permille, rptr, ib1, rem1, gpuRead(0x210));
         // The idle counters move on every fence wait: refresh the row only when the work itself changed.
         static uint32_t lastSub = ~0u, lastOpened = ~0u, lastIrqMasked = ~0u;
         if (st.submissions != lastSub || opened != lastOpened || gIrqMasked != lastIrqMasked || t % 30 == 0) {
