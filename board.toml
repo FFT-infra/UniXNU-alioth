@@ -288,6 +288,8 @@ volume = "ALIOTHESP"
 size_mib = 180
 loader = "firmware"
 title = "Boot"
+# Adds the Tools menu item that AdvancedLogDxe publishes (log-capture step 1).
+tools = true
 # The board's DRAM from 0x80000000 to the end of the last bank.
 dram_size = "0x200000000"
 skip_setup_tool = "scripts/seed-data-skip-setup.py"
