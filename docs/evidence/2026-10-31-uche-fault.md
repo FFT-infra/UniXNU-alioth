@@ -63,3 +63,40 @@ IOVA 被算到了 94 TiB」与「池子不够」是两类问题，不能混。
 
 **判据**：在 `NativeAdrenoUserClient` 的提交路径里加一行打印，记录每次提交的 IB 首地址与
 长度，看第三次的 IB 里有没有 94 TiB 的地址。
+
+---
+
+## 补：94 TiB 为什么没被窗口检查拒绝
+
+`NativeAdrenoUserClient::setScope`（`parity-src/NativeAdrenoUserClient.cpp:140-150`）把窗口设成
+`[GpuClientVaStart, 2^input_bits)`：
+
+```
+GpuClientVaStart = 0x100000000      // 4 GiB, msm ADRENO_VM_START (NativeAdrenoGpuContext.h:21)
+window           = 2^input_bits - GpuClientVaStart   // NativeAdrenoPublish.cpp:120
+```
+
+| `input_bits` | 窗口上限 | 94 TiB 在内？ |
+| --- | --- | --- |
+| 36 | 64 GiB | 否 |
+| 40 | 1 TiB | 否 |
+| 44 | 16 TiB | 否 |
+| **48** | **256 TiB** | **是** |
+
+所以 `input_bits = 48` 时，**94 TiB 是窗口内的合法 IOVA**，`setScope` 接受、`mapBo` 的
+`if(window_bytes_ && …)` 也放行（`:312`）。
+
+**结论：这不是「窗口太小」或「地址越界」，而是「窗口内的一个地址从未被映射」。**
+GPU 读到它，SMMU 报 OOB。窗口检查按设计工作——它管的是**范围**，不管**是否映射**。
+
+## 与 BO 计数对不上的地方
+
+`GPUROW25` 的 `bo %u/%u` 取 `native_adreno_bo_memory[4]` 与 `[5]`（`GpuProbe.cpp:1452`），
+用户态之后一直是 `bo 0/0`。**若用户确实映射了 BO，这两个计数不该是 0。**
+两种可能：
+1. parity 去掉固定池之后，这两个计数不再更新（读数是旧的）；
+2. 用户态在提交之前没有成功映射任何 BO——那么 94 TiB 的读就是**从一张空表开始的第一次读**。
+
+**下一轮先判这一条**：`mapBo` 每次成功时加一行打印（handle、iova、bytes），看用户态那几次
+映射到了哪些地址。若那几次的地址都不在 94 TiB 附近，说明 94 TiB 来自别处（例如 IB 里的
+一个错误指针），而不是一次映射。
