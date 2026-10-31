@@ -84,6 +84,8 @@ extern volatile uint32_t native_adreno_table_switches[8] __attribute__((weak_imp
 extern volatile uint32_t native_adreno_ttbr0_tlb[3] __attribute__((weak_import));
 /* [0] hangs, [1] restarts, [2] failed restarts, [3] the last hung fence, [4] the last restart s IOReturn, [5] replayed, [6] hangs with a guilty job, [7] hangs of the kernel s own VM. */
 extern volatile uint32_t native_adreno_recovery[8] __attribute__((weak_import));
+/* Where the last recover() stopped: [0] the step (1 fence read, 2 restart hook, 3 table write, 4 nop encode, 5 replay vm, 6 replay submit), [1] the IOReturn or value there, [2] fence, [3] last submitted. */
+extern volatile uint32_t native_adreno_recover_trace[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_wfi_dropped __attribute__((weak_import));
 extern volatile uint32_t native_adreno_wfi_try[5] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_trace_stage __attribute__((weak_import));
@@ -1091,6 +1093,13 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
                native_adreno_recovery[0], native_adreno_recovery[1], native_adreno_recovery[2],
                native_adreno_recovery[3], native_adreno_recovery[4], native_adreno_recovery[5]);
       at = put(out, at, cap, rrow, sizeof rrow);
+      if (&native_adreno_recover_trace) {
+        char tr[88];
+        snprintf(tr, sizeof tr, "[gpu recover trace] step=%u value=%x fence=%u last=%u",
+                 native_adreno_recover_trace[0], native_adreno_recover_trace[1],
+                 native_adreno_recover_trace[2], native_adreno_recover_trace[3]);
+        at = put(out, at, cap, tr, sizeof tr);
+      }
     }
     if (&native_adreno_ttbr0_tlb && native_adreno_ttbr0_tlb[0]) {
       char trow[72];
