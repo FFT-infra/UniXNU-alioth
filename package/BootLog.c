@@ -162,7 +162,7 @@ extern int (*native_adreno_dram_read32)(uint64_t, uint32_t *) __attribute__((wea
 extern int (*native_adreno_cached_read32)(uint64_t, uint32_t *) __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ring_log[4][4 + 112] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ring_log_count __attribute__((weak_import));
-extern volatile uint32_t native_adreno_ib_log[4][6 + 96] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_ib_log[4][6 + 96 + 96 + 2] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ib_log_count __attribute__((weak_import));
 /* The submission's coherence sample and the write-combined distrust count (NativeAdrenoSubmit.cpp:289-301): [0] samples taken,
  * [1..3] the cached and uncached reads of the first IB word, [4] submissions that found a dirty line and dropped write-combined,
@@ -568,6 +568,15 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       for (uint32_t i = 0; i < 96; i += 8) {
         int n = snprintf(row, sizeof row, "I%02x", i);
         for (uint32_t k = i; k < i + 8 && k < 96 && n > 0 && n < 110; ++k) n += snprintf(row + n, sizeof row - n, " %08x", r[6 + k]);
+        at = put(out, at, cap, row, sizeof row);
+      }
+      // The same words through the kernel's CPU view: a client IB that reads as zeros one way and
+      // real packets the other names the reader, not the GPU.
+      snprintf(row, sizeof row, "[ib view] status hook=%x view=%x differ=%u", r[198] & 0xffff, r[198] >> 16, r[199]);
+      at = put(out, at, cap, row, sizeof row);
+      for (uint32_t i = 0; i < 96; i += 8) {
+        int n = snprintf(row, sizeof row, "V%02x", i);
+        for (uint32_t k = i; k < i + 8 && k < 96 && n > 0 && n < 110; ++k) n += snprintf(row + n, sizeof row - n, " %08x", r[102 + k]);
         at = put(out, at, cap, row, sizeof row);
       }
     }
