@@ -1160,6 +1160,9 @@ NativeAdrenoAbiDeviceInfo kDeviceInfo = {0x06050002u, 0x120000u, 0, 0x1fffffffff
 NativeAdrenoSubmit *gSubmit;
 NativeAdrenoTimer *gTimer;
 NativeAdrenoTimeIo gTimerIo{nullptr, naRead};
+/* The driver's own IB record (NativeAdrenoSubmit.cpp): [slot] fence, iova low/high, bytes, the mapping
+ * base low/high, then the words. Read here to replay the client's last IB from the kernel's VM. */
+extern "C" {extern volatile uint32_t native_adreno_ib_log[4][6+96+96+2+16+80];extern volatile uint32_t native_adreno_ib_log_count;}
 extern "C" {
 /* The client's last logged IB, rebuilt from the driver's record, for one replay submission from the
  * kernel's own address space: same packets, different VM. If that completes, the IB content is fine
