@@ -1044,8 +1044,9 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // the message ring before the log is read (the probe closes at about 5 s, the ring holds seconds of a
   // verbose boot), so the step is carried as a value and printed by every round that follows.
   if (&native_adreno_close_step && native_adreno_close_step[0]) {
-    snprintf(row, sizeof row, "[gpu close] step=%u pid=%u", native_adreno_close_step[0], native_adreno_close_step[1]);
-    at = put(out, at, cap, row, sizeof row);
+    char closerow[64];
+    snprintf(closerow, sizeof closerow, "[gpu close] step=%u pid=%u", native_adreno_close_step[0], native_adreno_close_step[1]);
+    at = put(out, at, cap, closerow, sizeof closerow);
   }
   if (&native_adreno_stall && native_adreno_stall[0]) {
     char row[240];    int n = snprintf(row, sizeof row, "[gpu stall] fence=%u n=%u", native_adreno_stall[0], native_adreno_stall[1]);
