@@ -111,3 +111,53 @@ display 服务启动时跑）。查 `native_legacy_display_late_probe` 的调用
 2. 若多次 → `gMode` 的「只解析一次」保护有洞，改成「解析失败也置一个 sentinel」。
 3. 若一次 → `PE_parse_boot_argn` 在 m7 那几轮确实读到了 7，去核板子实际加载的镜像
    sha256（`fastboot boot` 之后无法再查，只能核 `build/sheng-logs/*/header.txt` 的 tag）。
+
+---
+
+## 第三轮：直接打印解析结果，`GPUARG` 给了答案
+
+`zap7` 轮次（`tmp/boot-zap7.img`）第一行：
+
+```
+GPUARG call 1 pipa-gpu=12 parsed=1 gMode=0
+GPUROW0 GPU m12 gcc=ok cc=ok smmu=ok gpu=skip io=0 cx1 clocks1 ahb0
+```
+
+**解析是对的（`12`），`native_gpu_probe` 只被调用一次（`call 1`），`gMode` 从 0 变成 12，
+探针走到 `GPUROW28`。**
+
+### 那 `m7` 的轮次是什么
+
+`m7` 的轮次在 `GPUARG` 加进镜像之前就跑了（`zap3`/`zap4`/`zap6`），所以它们没有这一行。
+**现在 `GPUARG` 在 `return` 之前打印并带调用计数，所以下一轮如果又是 m7，它会直接说明：**
+- `parsed=0` → `PE_parse_boot_argn` 那一轮失败了（boot args 没传到）；
+- `pipa-gpu=7` → 命令行真的不同；
+- `call 2` 且 `gMode=7` → 第二次调用时 `gMode` 已是 7，说明第一次调用设了它。
+
+### 这一轮确立的（可复现）
+
+`m12` 的轮次稳定走到同一处：
+
+| 轮次 | 最远行 | `far` |
+| --- | --- | --- |
+| `a6xx2`（07:48） | 28 | `5e0be55794f5` |
+| `zap5` | 28 | `5e09e55794f5` |
+| `zap7` | 28 | `5e09e75794f5` |
+
+三轮的 `GPUROW28` 是 `cr0 260406 gfsr 0 syn 0/0/0 | cb0 fsr 400 syn 40c0e`，`far` 只差
+低位几个 nibble。**这是同一个故障，不是三种。**
+
+`GPUROW25 LIVE` 也都是 `busy 1000`、`t` 到 10^6 量级——**栅栏等待超时，GPU 不前进。**
+
+### 下一轮（不需要改代码）
+
+同一镜像连跑 3 次，只读 `GPUARG` 那一行与最远行：
+
+| 期望 | 说明 |
+| --- | --- |
+| 三次都 `pipa-gpu=12 parsed=1 call 1` 且都到 28 | `m7` 是旧镜像的偶然，可以结案 |
+| 有 `parsed=0` | boot args 没传到内核，去查 DarwinBoot 那一段 |
+| 有 `call 2` | `gMode` 的「只解析一次」保护有洞 |
+| 有 `pipa-gpu=7` | 命令行真的不同，核板子实际加载的镜像 |
+
+**判据是 `GPUARG` 那一行，不是 `GPUROW0`。** 前者在解析点，后者在 15 秒扫描之后。
