@@ -1281,7 +1281,8 @@ int ucRound(IOService *svc) {
                     // The longer wait separates "the GPU is slow to come back after the client
                     // close" from "the ring is never consumed"; the LIVE row's cp field then says
                     // whether the CP's read pointer moved at all.
-                    snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0], "SELFTEST wait fence %u", sr.fence);
+                    snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0], "SELFTEST wait fence %llu",
+                             static_cast<unsigned long long>(sr.fence));
                     changed();
                     NativeAdrenoAbiWaitFence wait{sr.fence, 2000000000ull};
                     if (step(ucCall(uc, NativeAdrenoMethodWaitFence, &wait, nullptr))) {
