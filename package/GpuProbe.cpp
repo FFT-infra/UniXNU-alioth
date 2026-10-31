@@ -1263,14 +1263,18 @@ int ucRound(IOService *svc) {
                 volatile uint32_t *tw = reinterpret_cast<volatile uint32_t *>(maps[1]->getVirtualAddress());
                 for (unsigned i = 0; i < 1024; ++i) tw[i] = 0xdeadbeef;
                 const uint32_t values[3] = {0x0badc0deu, 0xfeed0001u, 0x600d0003u};
-                uint32_t words[12];
-                bool built = true;
+                /* One packet more than the three writes: CP_WAIT_FOR_IDLE (type 7, opcode 0x26, no
+                 * payload), which the failing client IB carries at its word 4. The self-test's
+                 * three-write IB completes every round and the client's 736-byte one never does;
+                 * this is the smallest difference between them that can be varied alone. */
+                uint32_t words[13];
+                bool built = AdrenoPM4Type7(0x26, 0, &words[0]) == AdrenoPM4Success;
                 for (unsigned i = 0; i < 3; ++i) {
-                    built = built && AdrenoPM4Type7(0x3d, 3, &words[i * 4]) == AdrenoPM4Success;
-                    words[i * 4 + 1] = uint32_t(tgtIova + i * 4); words[i * 4 + 2] = uint32_t(tgtIova >> 32);
-                    words[i * 4 + 3] = values[i];
+                    built = built && AdrenoPM4Type7(0x3d, 3, &words[i * 4 + 1]) == AdrenoPM4Success;
+                    words[i * 4 + 2] = uint32_t(tgtIova + i * 4); words[i * 4 + 3] = uint32_t(tgtIova >> 32);
+                    words[i * 4 + 4] = values[i];
                 }
-                for (unsigned i = 0; i < 12; ++i) iw[i] = words[i];
+                for (unsigned i = 0; i < 13; ++i) iw[i] = words[i];
                 __asm__ volatile("dsb sy" ::: "memory");
                 NativeAdrenoAbiSubmit submit{};
                 submit.buffer_count = 1;
