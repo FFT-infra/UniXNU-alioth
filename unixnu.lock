@@ -6,6 +6,9 @@ commit = "933f9360f1b70dfbda5548386a3d65e0358b4f7d"
 [source."IOStorageFamily"]
 commit = "e45fbe30a7879e0b16e26dddb78538f1b00e0bff"
 
+[source."QcomXnuUsbDebug"]
+commit = "18bcc385bc0c97ff38343a83040f19711392867b"
+
 [source."ShengHidInput"]
 commit = "5f3a37cec0c3fc4234b10726b25489a55f0d77ef"
 
