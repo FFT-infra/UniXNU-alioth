@@ -161,6 +161,10 @@ extern volatile uint32_t native_adreno_ring_log[4][4 + 112] __attribute__((weak_
 extern volatile uint32_t native_adreno_ring_log_count __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ib_log[4][4 + 28] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ib_log_count __attribute__((weak_import));
+/* The submission's coherence sample and the write-combined distrust count (NativeAdrenoSubmit.cpp:289-301): [0] samples taken,
+ * [1..3] the cached and uncached reads of the first IB word, [4] submissions that found a dirty line and dropped write-combined,
+ * [5..7] the first such sample. A third submission whose IB head reads as zeros is only "Metal wrote nothing" if [4] stays 0. */
+extern volatile uint32_t native_adreno_coherence[8] __attribute__((weak_import));
 extern unsigned native_legacy_properties_now(char *, unsigned) __attribute__((weak_import));
 extern unsigned native_legacy_clients_dump(char *, unsigned) __attribute__((weak_import));
 extern unsigned native_legacy_swap_timeline(char *, unsigned) __attribute__((weak_import));
@@ -553,7 +557,8 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     for (unsigned back = 0; back < 4 && back < native_adreno_ib_log_count; ++back) {
       const volatile uint32_t *r = native_adreno_ib_log[(newest - back) & 3];
       char row[130];
-      snprintf(row, sizeof row, "[ib] fence=%u iova=%x%08x bytes=%u", r[0], r[2], r[1], r[3]);
+      snprintf(row, sizeof row, "[ib] fence=%u iova=%x%08x bytes=%u%s", r[0], r[2], r[1], r[3],
+               &native_adreno_coherence[4] ? (native_adreno_coherence[4] ? " wc-distrusted" : " wc-trusted") : "");
       at = put(out, at, cap, row, sizeof row);
       for (uint32_t i = 0; i < 28; i += 8) {
         int n = snprintf(row, sizeof row, "I%02x", i);
@@ -561,6 +566,13 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
         at = put(out, at, cap, row, sizeof row);
       }
     }
+  }
+  if (&native_adreno_coherence[0] && native_adreno_coherence[0]) {
+    char row[130];
+    snprintf(row, sizeof row, "[coherence] samples=%u cached=%08x before=%08x after=%08x distrust=%u first %08x/%08x/%08x",
+             native_adreno_coherence[0], native_adreno_coherence[1], native_adreno_coherence[2], native_adreno_coherence[3],
+             native_adreno_coherence[4], native_adreno_coherence[5], native_adreno_coherence[6], native_adreno_coherence[7]);
+    at = put(out, at, cap, row, sizeof row);
   }
   // The fence page, word by word as DRAM holds it and as the CPU's cacheable alias reads it (the CP writes the timestamps with a GPU-side write).
   if (&native_adreno_fence_phys && native_adreno_fence_phys && &native_adreno_dram_read32 && native_adreno_dram_read32 && &native_adreno_cached_read32 &&
