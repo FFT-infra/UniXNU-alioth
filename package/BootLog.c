@@ -78,6 +78,7 @@ extern unsigned long vm_kernel_slide;
 extern volatile uint64_t native_gop_wait_stats[7] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_fence_wait[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall[24] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_close_step[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall_mem[59] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_unstick[15] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_wait_outer[4] __attribute__((weak_import));
@@ -1038,6 +1039,13 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       snprintf(row, sizeof row, "GPUROW%d %s", gpuRows[r], text);
       at = put(out, at, cap, row, sizeof row);
     }
+  }
+  // The last step a user client close reached. The driver's own IOLog lines for these steps fall out of
+  // the message ring before the log is read (the probe closes at about 5 s, the ring holds seconds of a
+  // verbose boot), so the step is carried as a value and printed by every round that follows.
+  if (&native_adreno_close_step && native_adreno_close_step[0]) {
+    snprintf(row, sizeof row, "[gpu close] step=%u pid=%u", native_adreno_close_step[0], native_adreno_close_step[1]);
+    at = put(out, at, cap, row, sizeof row);
   }
   if (&native_adreno_stall && native_adreno_stall[0]) {
     char row[240];    int n = snprintf(row, sizeof row, "[gpu stall] fence=%u n=%u", native_adreno_stall[0], native_adreno_stall[1]);
