@@ -1285,10 +1285,17 @@ int ucRound(IOService *svc) {
                              static_cast<unsigned long long>(sr.fence));
                     changed();
                     NativeAdrenoAbiWaitFence wait{sr.fence, 2000000000ull};
-                    if (step(ucCall(uc, NativeAdrenoMethodWaitFence, &wait, nullptr))) {
-                        __asm__ volatile("dsb sy" ::: "memory");
+                    const bool completed = step(ucCall(uc, NativeAdrenoMethodWaitFence, &wait, nullptr)) != 0;
+                    /* Read the target whether or not the fence came back: the CP writes the three markers
+                     * before the flush that sets the fence, so the target says whether the GPU executed the
+                     * IB at all. Without this a timed-out wait cannot be told from a lost fence write. */
+                    __asm__ volatile("dsb sy" ::: "memory");
+                    if (completed)
                         matched = (tw[0] == values[0]) + (tw[1] == values[1]) + (tw[2] == values[2]) + (tw[3] == 0xdeadbeef);
-                    }
+                    else
+                        snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0],
+                                 "SELFTEST fence %llu timed out; target %x %x %x %x frozen %x",
+                                 static_cast<unsigned long long>(sr.fence), tw[0], tw[1], tw[2], tw[3], tw[0x3ff]);
                 }
                 NativeAdrenoAbiTimestamp ts{};
                 step(ucCall(uc, NativeAdrenoMethodGetTimestamp, nullptr, &ts));
