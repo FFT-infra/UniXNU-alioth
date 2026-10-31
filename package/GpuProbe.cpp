@@ -1360,7 +1360,10 @@ bool selfTest() {
      * reads: the driver zeroes a fresh BO s pages, and that zero can land after this fill, so the
      * sentinel reads 0 in one round and 0xdeadbeef in the next (rounds 3 4, tgt1 ... 600d0003 0
      * against tgt ... 600d0003 deadbeef). The verdict is the three markers the CP itself wrote. */
-    const bool ok = native_gpu_publish[8] >= 3 && native_gpu_publish[9] >= 3;
+    /* Signed: ucRound answers -1 when a round fails, and that stored in the uint32_t array is
+     * 0xffffffff, which a ">= 3" test reads as the largest possible pass. fix28 showed it: rounds
+     * -1 -1 beside METAL ok. */
+    const bool ok = int32_t(native_gpu_publish[8]) >= 3 && int32_t(native_gpu_publish[9]) >= 3;
     publishRow(ok ? "ok" : "self test failed");
     return ok;
 }
