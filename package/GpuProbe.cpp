@@ -96,7 +96,6 @@ volatile uint64_t native_gpu_idle_sleeps, native_gpu_idle_spins;
 #include "NativeAdrenoTimer.h"
 #include "NativeAdrenoABI.h"
 #include "NativeAdrenoUserClient.h"
-extern "C" void native_gpu_dram_map_reset();   // frees the page dramRead32 holds; defined with its map below
 extern "C" {
 NativeAdrenoVm *NativeAdrenoGpuContextVm();
 IOReturn native_adreno_publish(NativeAdrenoVm *, NativeAdrenoSubmit *, NativeAdrenoRing *, const NativeAdrenoRingClock *,
@@ -1317,10 +1316,6 @@ int ucRound(IOService *svc) {
     for (auto *m : maps) if (m) m->release();
     mark("release descs");
     for (auto *d : desc) if (d) d->release();
-    /* The page dramRead32 mapped for this submission's IB is a page of the BO this close is about to
-     * free. Dropping that map first is what keeps XNU's pmap_assert_free from finding a live kernel
-     * PTE under a page being returned to the VM. */
-    native_gpu_dram_map_reset();
     mark("clientClose");
     step(uc->clientClose());
     mark("uc release");
@@ -1649,21 +1644,22 @@ void gpuThread(void *, wait_result_t) {
 // A declaration, not a definition: NativeAdrenoVm.cpp:5 defines this pointer (zero-initialised).
 extern "C" {extern int (*native_adreno_dram_read32)(uint64_t physical, uint32_t *value);}
 namespace {
-OSSharedPtr<IOMemoryMap> gDramPageMap;
-uint64_t gDramPage = ~uint64_t(0);
-extern "C" void native_gpu_dram_map_reset() {gDramPageMap = OSSharedPtr<IOMemoryMap>(); gDramPage = ~0ull;}
+/* Map, read, unmap. The page being read belongs to a BO (NativeAdrenoVm::dramWord reaches here only
+ * for memory with no kernel CPU mapping, which is exactly a system BO), and XNU refuses to return a
+ * physical page to the VM while any pmap still maps it -- kernel_pmap included. Holding the map
+ * across the read of one IB cost a whole round: the client that owned that BO closed, the free met
+ * the assertion, and clientClose never returned ([gpu close] step 35, dev 0, prep 0, sys 1, spans 1).
+ * The map therefore lives no longer than the read it serves. */
 int dramRead32(uint64_t physical, uint32_t *value) {
     if (!value) return -1;
     const uint64_t page = physical & ~uint64_t(0xfff);
-    if (page != gDramPage || !gDramPageMap) {
-        IODeviceMemory *memory = IODeviceMemory::withRange(page, 0x1000);
-        if (!memory) return -1;
-        gDramPageMap = OSSharedPtr<IOMemoryMap>(memory->map(kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
-        memory->release();
-        if (!gDramPageMap) return -1;
-        gDramPage = page;
-    }
-    *value = reinterpret_cast<volatile uint32_t *>(gDramPageMap->getVirtualAddress())[(physical - page) / 4];
+    IODeviceMemory *memory = IODeviceMemory::withRange(page, 0x1000);
+    if (!memory) return -1;
+    IOMemoryMap *map = memory->map(kIOMapAnywhere | kIOMapInhibitCache);
+    memory->release();
+    if (!map) return -1;
+    *value = reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress())[(physical - page) / 4];
+    map->release();
     return 0;
 }
 }  // namespace
