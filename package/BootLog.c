@@ -1046,8 +1046,9 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // verbose boot), so the step is carried as a value and printed by every round that follows.
   if (&native_adreno_close_step && native_adreno_close_step[0]) {
     char closerow[64];
-    snprintf(closerow, sizeof closerow, "[gpu close] step=%u pid=%u stage=%u", native_adreno_close_step[0],
-             native_adreno_close_step[1], &native_adreno_trace_stage ? native_adreno_trace_stage : 0u);
+    snprintf(closerow, sizeof closerow, "[gpu close] step=%u pid=%u stage=%u dev=%u prep=%u sys=%u spans=%u", native_adreno_close_step[0],
+             native_adreno_close_step[1], &native_adreno_trace_stage ? native_adreno_trace_stage : 0u,
+             native_adreno_close_step[2], native_adreno_close_step[3], native_adreno_close_step[4], native_adreno_close_step[5]);
     at = put(out, at, cap, closerow, sizeof closerow);
   }
   if (&native_adreno_stall && native_adreno_stall[0]) {

@@ -1316,12 +1316,11 @@ int ucRound(IOService *svc) {
     for (auto *m : maps) if (m) m->release();
     mark("release descs");
     for (auto *d : desc) if (d) d->release();
-    /* The close is what hangs (GPUROW24 "SELFTEST clientClose", and [gpu close] stops inside
-     * descriptor_->release() with the timed-out fence's job still outstanding). One round skips it
-     * so the self-test can return and the accelerator registration behind it can be checked; the
-     * client is left open on purpose, and native_adreno_publish's opened count shows it. */
-    mark("close skipped");
-    return matched;
+    mark("clientClose");
+    step(uc->clientClose());
+    mark("uc release");
+    uc->release();
+    mark("round done");
     return matched;
 }
 // Two rounds: the second proves the client slot and the IOVAs recycle after clientClose. pipa-gpu-selftest=0 skips them.
