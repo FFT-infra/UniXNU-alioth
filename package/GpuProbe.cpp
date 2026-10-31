@@ -1293,8 +1293,19 @@ int ucRound(IOService *svc) {
                     words[i * 4 + 1] = uint32_t(tgtIova + i * 4); words[i * 4 + 2] = uint32_t(tgtIova >> 32);
                     words[i * 4 + 3] = values[i];
                 }
+                /* pipa-gpu-nop=1 sends a single CP_NOP instead of the three writes. fix56d read scr=5
+                 * (fence-1) on a hung round: the CP never reached the fence packet, so it stopped inside
+                 * this IB. A NOP-only IB that still hangs means the stop is on fetching the IB; one that
+                 * completes means the stop is on the writes the IB makes. */
+                unsigned nopOnly = 0;
+                PE_parse_boot_argn("pipa-gpu-nop", &nopOnly, sizeof nopOnly);
                 if (gReplayWords && gReplayWords <= 192) {
                     for (unsigned i = 0; i < gReplayWords; ++i) iw[i] = gReplayIb[i];
+                } else if (nopOnly) {
+                    uint32_t nop = 0;
+                    built = built && AdrenoPM4Type7(0x10, 0, &nop) == AdrenoPM4Success;
+                    iw[0] = nop;
+                    for (unsigned i = 1; i < 12; ++i) iw[i] = 0;
                 } else {
                     for (unsigned i = 0; i < 12; ++i) iw[i] = words[i];
                 }

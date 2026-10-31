@@ -551,7 +551,6 @@ kernel_args = [
   # board package, before calling an argument unused.
   "offline-legacy-validate=1",
   "offline-legacy-phase=4",
-  "offline-legacy-transfer=1",
   "offline-legacy-cpu-present=1",
   # offline-legacy-dump-at is gone. It gated native_legacy_dump_state(), which was removed when
   # the cell painter replaced the panic dump, so the argument had been a dead key: present on the
