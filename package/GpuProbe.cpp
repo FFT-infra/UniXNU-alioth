@@ -1293,11 +1293,12 @@ int ucRound(IOService *svc) {
                     __asm__ volatile("dsb sy" ::: "memory");
                     if (completed)
                         matched = (tw[0] == values[0]) + (tw[1] == values[1]) + (tw[2] == values[2]) + (tw[3] == 0xdeadbeef);
-                    else
+                    else {
                         /* Into the publish row, which every later round prints: the teardown markers
                          * write row 24 and would hide this one. */
                         native_gpu_publish[10] = tw[0]; native_gpu_publish[11] = tw[1];
                         native_gpu_publish[12] = tw[2]; native_gpu_publish[13] = tw[3];
+                    }
                 }
                 NativeAdrenoAbiTimestamp ts{};
                 step(ucCall(uc, NativeAdrenoMethodGetTimestamp, nullptr, &ts));
