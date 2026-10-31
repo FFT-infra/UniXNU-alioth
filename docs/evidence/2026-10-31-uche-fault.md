@@ -100,3 +100,44 @@ GPU 读到它，SMMU 报 OOB。窗口检查按设计工作——它管的是**�
 **下一轮先判这一条**：`mapBo` 每次成功时加一行打印（handle、iova、bytes），看用户态那几次
 映射到了哪些地址。若那几次的地址都不在 94 TiB 附近，说明 94 TiB 来自别处（例如 IB 里的
 一个错误指针），而不是一次映射。
+
+---
+
+## 关键一轮：新插件下故障不变
+
+`plug1`（11:30 构建，`tmp/boot-plug1.img`）是**第一个用 parity 源重建的插件**：
+
+| 输入 | 时间 | 来源 |
+| --- | --- | --- |
+| Turnip `libvulkan_freedreno.dylib` | 10:54 | `build-turnip-darwin.py --target ios` → PASS，17,881,712 B |
+| bridge `libadreno_metal_bridge.a` | 11:07 | `build-adreno-metal-bridge.py --target ios` → Finished |
+| 插件 `NativeAdrenoMetal` | 11:17 | `build-adreno-metal-plugin.py`，18,554,832 B，CDHash `72bc50c2` |
+| addon | `gpu-parity4.gpuaddon` | 9 files，12,033,112 B |
+
+（插件编译时用 `CCC_OVERRIDE_OPTIONS='+-Wno-unused-function'` 绕过一个**上游**的
+`#if` 不一致，见 `docs/evidence/2026-10-31-plugin-unused-function.md`；脚本与源都没改。）
+
+上板结果：
+
+```
+GPUROW0  GPU m12 …
+GPUROW25 LIVE … | sub 3/2 t1029788 p0 | uc 5/3 | busy 999
+GPUROW28 FAULTS cr0 260406 gfsr 0 syn 0/0/0 | cb0 fsr 400 syn 40c0e far 5e09e55794f5
+```
+
+**与旧插件的三轮（`zap7`/`zap7b`/`zap7c`）逐字相同**：`sub 3/2`、`busy 999`、`far 5e09e55794f5`。
+
+## 所以
+
+**94 TiB 这个故障与插件版本无关。** 它不来自 10-30 的旧插件，也不来自 parity 的新插件。
+它在**驱动侧或 Metal 侧**（`NativeAdrenoUserClient` 的 IOVA 分配，或 Metal 发出的 IB）。
+
+这排除了一个先前无法排除的变量（`docs/evidence/2026-10-31-stale-metal-addon.md` 里的
+「无法归因到 parity 的插件或旧插件」）。
+
+## 下一轮的目标（离线）
+
+按 `docs/evidence/2026-10-31-uche-fault.md` 前面列的：在 `NativeAdrenoUserClient` 的提交
+路径里记录每次提交的 IB 首地址与长度，看第三次的 IB 里有没有 94 TiB 的地址。
+
+**这是驱动侧改动，要改 `tmp/parity-src`、重新钉 `feeds.toml`、重建、上板**——完整一轮。
