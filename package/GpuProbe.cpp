@@ -1545,8 +1545,33 @@ void gpuThread(void *, wait_result_t) {
 
 extern "C" void native_gpu_probe(void) {
     unsigned mode = 0;
-    if (gMode || !PE_parse_boot_argn("pipa-gpu", &mode, sizeof mode) || !mode) return;
+    const boolean_t parsed = PE_parse_boot_argn("pipa-gpu", &mode, sizeof mode);
+    // Before the early return, so this prints whichever path the call takes: a boot that reports
+    // m7 and a boot that reports m12 differ here, and every row-based attempt was overwritten
+    // before the 15 s scan could see it. It also says how many times this entry point ran, which
+    // is the other half of the question (a second call returns early on `gMode` and would
+    // otherwise be invisible). docs/evidence/2026-10-31-mode-mismatch.md
+    {
+        extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
+        static unsigned calls;
+        char line[96];
+        int n = snprintf(line, sizeof line, "GPUARG call %u pipa-gpu=%u parsed=%d gMode=%u\n",
+                         ++calls, mode, parsed ? 1 : 0, gMode);
+        if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
+    }
+    if (gMode || !parsed || !mode) return;
     gMode = mode > 12 ? 12 : mode;
+    // The row that says which mode the probe runs in is written after gpb_run(), and on
+    // 2026-10-31 09:07 it said m7 for an image whose command line carries pipa-gpu=12. This row
+    // records what was *parsed*, so the next boot separates "the argument differs" from "gMode
+    // was changed after this". It goes in kRowAfter, which the cold start overwrites later and
+    // which no other step touches before that; kRowContext was tried first and was overwritten
+    // by gmuColdStart's own row before any 15 s scan could print it.
+    // docs/evidence/2026-10-31-mode-mismatch.md
+    // Print it now instead of leaving it for the 15 s row scan: every row the probe writes is
+    // overwritten by the next step within seconds, and two attempts at keeping one alive
+    // (kRowContext, kRowAfter) were overwritten before a scan ran. A direct write cannot be
+    // overwritten, and this line only runs once per boot.
     thread_t thread = nullptr;
     if (kernel_thread_start(gpuThread, nullptr, &thread) == KERN_SUCCESS) thread_deallocate(thread);
 }
