@@ -243,6 +243,7 @@ struct boot_log_header {
 };
 // Writer state for the board page: 0 off, 1 waiting for the window, 2 writing, 3 stopped after errors, 4 stopped (GPT changed).
 volatile uint32_t boot_log_state, boot_log_rounds, boot_log_errors;
+volatile uint32_t boot_log_slots_hint;   // the writer's slots_written, for the console heartbeat
 volatile uint64_t boot_log_first_lba;
 static int boot_log_started;
 // The timed return is the board's, not the writer's. The writer can block in a UFS write --
@@ -1289,6 +1290,7 @@ static void writer(void *arg, wait_result_t result) {
     log_phase = 4;
     if (ok) ++h.slots_written;
     else ++h.write_errors;
+    __atomic_store_n(&boot_log_slots_hint, h.slots_written, __ATOMIC_RELAXED);
     // The newest complete export is already on the medium; the header names it.
     IOLockLock(export_lock);
     h.export_generation = export_ready; h.export_bytes = export_ready_bytes; h.export_first = export_ready_first;
@@ -1382,8 +1384,12 @@ void boot_log_tick(unsigned now) {
     const unsigned phase = __atomic_load_n(&log_phase, __ATOMIC_RELAXED);
     if (phase != last_phase || now - last_at >= 10) {
       last_phase = phase; last_at = now;
-      char row[64];
-      const int n = snprintf(row, sizeof row, "BLPHASE t=%us phase=%u\n", now, phase);
+      char row[128];
+      // Round and slots as well as the phase: a writer that stops leaves its phase behind, and a
+      // writer that keeps running but cannot write leaves the round count still while the phase
+      // cycles. Without both numbers those two read the same on the console.
+      const int n = snprintf(row, sizeof row, "BLPHASE t=%us phase=%u round=%u slots=%u err=%u state=%u\n", now, phase,
+                             boot_log_rounds, __atomic_load_n(&boot_log_slots_hint, __ATOMIC_RELAXED), boot_log_errors, boot_log_state);
       if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(row, (size_t)n < sizeof row ? (size_t)n : sizeof row - 1);
     }
   }
