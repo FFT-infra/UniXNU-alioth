@@ -1281,6 +1281,8 @@ int ucRound(IOService *svc) {
                     // The longer wait separates "the GPU is slow to come back after the client
                     // close" from "the ring is never consumed"; the LIVE row's cp field then says
                     // whether the CP's read pointer moved at all.
+                    snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0], "SELFTEST wait fence %u", sr.fence);
+                    changed();
                     NativeAdrenoAbiWaitFence wait{sr.fence, 2000000000ull};
                     if (step(ucCall(uc, NativeAdrenoMethodWaitFence, &wait, nullptr))) {
                         __asm__ volatile("dsb sy" ::: "memory");
@@ -1292,10 +1294,22 @@ int ucRound(IOService *svc) {
             }
         }
     }
+    // Teardown markers. Releasing a BO's mapping while a job that used it still has an
+    // uncompleted fence is the case the GPU guide says to stop the queue for first; if that
+    // release is what blocks, the last marker names it instead of leaving the round silent.
+    auto mark = [&](const char *what) {
+        snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0], "SELFTEST %s", what);
+        changed();
+    };
+    mark("release maps");
     for (auto *m : maps) if (m) m->release();
+    mark("release descs");
     for (auto *d : desc) if (d) d->release();
+    mark("clientClose");
     step(uc->clientClose());
+    mark("uc release");
     uc->release();
+    mark("round done");
     return matched;
 }
 // Two rounds: the second proves the client slot and the IOVAs recycle after clientClose. pipa-gpu-selftest=0 skips them.
