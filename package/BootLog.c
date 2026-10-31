@@ -30,6 +30,7 @@ extern unsigned native_ufs_store_gpt_check(void) __attribute__((weak_import));
 extern uint32_t cs_text_fixup_parsed __attribute__((weak_import));
 extern uint32_t cs_text_fixup_applied __attribute__((weak_import));
 extern char boot_progress_page_text[48][120] __attribute__((weak_import));
+extern char native_gpu_rows[][120] __attribute__((weak_import));
 extern char boot_progress_banner_text[49][120] __attribute__((weak_import));
 extern volatile unsigned boot_progress_banner_rows __attribute__((weak_import));
 extern char boot_progress_ext[8][48] __attribute__((weak_import));
@@ -1019,9 +1020,23 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_adreno_unstick[11], native_adreno_unstick[12], native_adreno_unstick[13]);
     at = put(out, at, cap, row, sizeof row);
   }
+  // The probe's own rows, into the persistent log. The USB console node on this board is the
+  // node that enumerated at boot, so console-capture.py's "mtime newer than this run" test never
+  // passes and the GPU rows were never captured; the log is the only channel that survives the
+  // round. The mode (0), the publication and user-client counters (23), the live counters (25)
+  // and the CP hardware-error row (31) are the four a stall needs.
+  if (&native_gpu_rows && native_gpu_rows[0][0]) {
+    static const int gpuRows[] = {0, 23, 25, 31};
+    char row[170];
+    for (unsigned r = 0; r < sizeof gpuRows / sizeof gpuRows[0]; ++r) {
+      const char *text = native_gpu_rows[gpuRows[r]];
+      if (!text[0]) continue;
+      snprintf(row, sizeof row, "GPUROW%d %s", gpuRows[r], text);
+      at = put(out, at, cap, row, sizeof row);
+    }
+  }
   if (&native_adreno_stall && native_adreno_stall[0]) {
-    char row[240];
-    int n = snprintf(row, sizeof row, "[gpu stall] fence=%u n=%u", native_adreno_stall[0], native_adreno_stall[1]);
+    char row[240];    int n = snprintf(row, sizeof row, "[gpu stall] fence=%u n=%u", native_adreno_stall[0], native_adreno_stall[1]);
     for (unsigned k = 2; k < 24 && n > 0 && (size_t)n < sizeof row; ++k) n += snprintf(row + n, sizeof row - n, " %x", native_adreno_stall[k]);
     at = put(out, at, cap, row, sizeof row);
     // SMMU FSR, FAR lo/hi, FSYNR0, then for the BR IB1, BV IB1 and BV IB2: the dword index in the IB where the 16 words start
