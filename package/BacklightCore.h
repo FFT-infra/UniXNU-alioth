@@ -37,11 +37,15 @@ static inline uint32_t bl_long_write_header(uint32_t payload_bytes) {
 static inline uint32_t bl_short_write(uint8_t command) {
   return BL_FLAG_LAST | (0x05u << 16) | (uint32_t)command;
 }
-// SET_MAXIMUM_RETURN_PACKET_SIZE (0x37) with the size as its one parameter.
+// SET_MAXIMUM_RETURN_PACKET_SIZE (0x37) with the size as its one parameter. 0x37 is a SHORT
+// packet: byte 0 = size low, byte 1 = size high, byte 2 = the data type, and the flags byte is 0
+// (the vendor's dsi_set_max_return_size clears LASTCOMMAND, dsi_ctrl.c:1574-1576, and copy_and_pad
+// sets the payload bit only when there is a payload, :1088). Sending it as a long packet — the old
+// BL_FLAG_PAYLOAD|BL_FLAG_LAST form — makes the panel eat the trailing zero word and the read
+// desynchronises. For size 2 the correct word is 0x00370202.
 static inline uint32_t bl_max_return_header(uint32_t size) {
-  return BL_FLAG_PAYLOAD | BL_FLAG_LAST | (0x37u << 16) | 2u | ((size & 0xffu) << 8);
+  return (0x37u << 16) | (size & 0xffu) | ((size >> 8) << 8);
 }
-static inline uint32_t bl_max_return_payload(uint32_t size) {return (size >> 8) & 0xffu;}
 // A DCS read: 0xA0060000 | command, with the BTA flag so the panel turns the lane around.
 static inline uint32_t bl_read_header(uint8_t command) {
   return BL_FLAG_BTA | BL_FLAG_LAST | (0x06u << 16) | (uint32_t)command;

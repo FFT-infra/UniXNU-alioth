@@ -1240,7 +1240,6 @@ step_rail_vote(void)
 #define TCS(reg) (RSC_TCS_OFFSET + RSC_TCS_STRIDE * id + (reg))
 
 	RSC_W(TCS(RSC_TCS_CMD_ENABLE), 0);
-	RSC_W(RSC_DRV_IRQ_ENABLE, drv[RSC_DRV_IRQ_ENABLE / 4] | (1u << id));
 	for (unsigned i = 0; i < 3; i++) {
 		const uint32_t cmd = TCS(RSC_CMD_MSGID) + RSC_CMD_STRIDE * i;
 
@@ -1257,21 +1256,37 @@ step_rail_vote(void)
 		RSC_W(TCS(RSC_TCS_CONTROL), RSC_CONTROL_AMC_ON);
 		RSC_W(TCS(RSC_TCS_CONTROL), RSC_CONTROL_AMC_ON | RSC_CONTROL_TRIGGER);
 	}
-	for (polls = 0; polls < 2000; polls++) {
-		if (drv[RSC_DRV_IRQ_STATUS / 4] & (1u << id)) {
-			break;
+	/* The completion judge is the three commands' CMD_STATUS, the vendor's ISR criterion
+	 * (rpmh-rsc.c:283-290: ISSUED | COMPL). The IRQ registers live in the TCS block
+	 * (tcs_base = drv + 0xd00), not at the DRV base, and this judgement needs no IRQ, so the
+	 * DRV-base IRQ_ENABLE/CLEAR writes are gone. A stale CMD_STATUS left by an earlier request
+	 * is excluded by the progress guard: at least one poll must see the TCS busy or a command
+	 * status incomplete before all three read ISSUED|COMPL. */
+	{
+		bool progress = false;
+
+		status = 0;
+		for (polls = 0; polls < 100000; polls++) {
+			bool complete = true;
+
+			for (unsigned i = 0; i < 3; i++) {
+				const uint32_t v = drv[(TCS(RSC_CMD_STATUS) + RSC_CMD_STRIDE * i) / 4];
+
+				if (i == 0) status = v;
+				complete = complete && v != 0xffffffffu && (v & 0x10100u) == 0x10100u;
+			}
+			progress = progress || !complete || drv[TCS(RSC_TCS_STATUS) / 4] == 0;
+			if (complete && progress) break;
+			delay_for_interval(1, NSEC_PER_USEC);   /* 1 us; 100000 polls = 100 ms */
 		}
-		delay_for_interval(5, NSEC_PER_USEC);   /* 5 microseconds, the vendor's poll interval */
 	}
-	status = drv[(TCS(RSC_CMD_STATUS)) / 4];
-	RSC_W(RSC_DRV_IRQ_CLEAR, 1u << id);
 	RSC_W(TCS(RSC_TCS_CMD_ENABLE), 0);
-	RSC_W(RSC_DRV_IRQ_ENABLE, drv[RSC_DRV_IRQ_ENABLE / 4] & ~(1u << id));
 #undef TCS
 #undef RSC_W
 
 	line("the vote %s after %u polls; command status %#x",
-	    (drv[RSC_DRV_IRQ_STATUS / 4] & (1u << id)) || polls < 2000 ? "completed" : "DID NOT COMPLETE",
+	    (drv[(RSC_TCS_OFFSET + RSC_TCS_STRIDE * id + RSC_CMD_STATUS) / 4] & 0x10100u) == 0x10100u
+	        ? "completed" : "DID NOT COMPLETE",
 	    polls, status);
 
 	/*

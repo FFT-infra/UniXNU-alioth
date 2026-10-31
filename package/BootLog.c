@@ -1024,9 +1024,12 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // node that enumerated at boot, so console-capture.py's "mtime newer than this run" test never
   // passes and the GPU rows were never captured; the log is the only channel that survives the
   // round. The mode (0), the publication and user-client counters (23), the live counters (25)
-  // and the CP hardware-error row (31) are the four a stall needs.
+  // The mode (0), the publication and user-client counters (23), the Metal registration (24),
+  // the live counters (25) and the CP hardware-error row (31) are what a stall needs. Row 24
+  // answers "did selfTest() pass and register the accelerator", which is the gate that decides
+  // whether any user client can open the driver at all (uc 0/0 vs uc 16/19).
   if (&native_gpu_rows && native_gpu_rows[0][0]) {
-    static const int gpuRows[] = {0, 23, 25, 31};
+    static const int gpuRows[] = {0, 23, 24, 25, 31};
     char row[170];
     for (unsigned r = 0; r < sizeof gpuRows / sizeof gpuRows[0]; ++r) {
       const char *text = native_gpu_rows[gpuRows[r]];

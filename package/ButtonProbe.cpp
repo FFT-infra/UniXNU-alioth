@@ -142,7 +142,8 @@ int write8(int apid, uint8_t addr, uint8_t value) {return transfer(apid, addr, &
 // reading of 0 means absent and a nonzero reading means filtered out.
 static int gPpidMatches;
 int findApid(uint32_t ppid) {
-    int found = -1;
+    int irqApid = -1;        // the highest APID with the irq-owner bit set, whose owner gets the interrupt
+    int irqEe = -1;
     int matched = 0;
     for (uint32_t i = 0; i < gApids; ++i) {
         const uint32_t map = gCore.va[(gApidMap + 4 * i) / 4];
@@ -152,19 +153,22 @@ int findApid(uint32_t ppid) {
         // spmi-pmic-arb.c:50), not at cnfg + 4 * apid. Reading the wrong register is what
         // rejected the PON in u279, where off=1 proved the map entry existed.
         const uint32_t owner = gCnfg.va[bt_ownership_offset(i) / 4];
-        // Record every match's APID and owner EE, not just the first. [6] used to hold one
-        // sample, and because only the PON satisfied the filter it could never describe the
-        // GPIO - so "the GPIO's owner EE is 2" was read out of a field that never held it.
-        // [8] and [9] carry the most recent match: APID, then irq-owner bit | owner EE.
+        const unsigned ee = bt_owner_ee(owner);
+        // The interrupt goes to the HIGHEST APID with the irq-owner bit set, and that APID's
+        // owner EE is the one that receives it (spmi-pmic-arb.c:905-906, :936-939). ownerEE=2
+        // was being read out of a match we never armed; that is this rule, not a defect.
+        if (bt_entry_irq_owner(map)) { irqApid = (int)i; irqEe = (int)ee; }
+        // Record the most recent match: APID, then irq-owner bit | owner EE.
         native_buttons_stats[8] = (int32_t)i;
-        native_buttons_stats[9] = (int32_t)((bt_entry_irq_owner(map) ? 1 : 0) << 16 | bt_owner_ee(owner));
+        native_buttons_stats[9] = (int32_t)((bt_entry_irq_owner(map) ? 1 : 0) << 16 | ee);
         if (matched == 1) {
-            native_buttons_stats[6] = (int32_t)((bt_entry_irq_owner(map) ? 1 : 0) << 16 | bt_owner_ee(owner));
+            native_buttons_stats[6] = (int32_t)((bt_entry_irq_owner(map) ? 1 : 0) << 16 | ee);
         }
-        if (bt_entry_irq_owner(map) && bt_owner_ee(owner) == 0) found = (int)i;
     }
+    // Only arm the interrupt when the irq-owner EE is ours; otherwise the caller must poll
+    // (stats[1] then stays 0 while the level still changes, which is the positive polling sign).
     gPpidMatches = matched;
-    return found;
+    return irqEe == 0 ? irqApid : -1;
 }
 
 // Both edges of the given interrupt bits, latched state cleared, then enabled in the peripheral.

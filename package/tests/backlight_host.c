@@ -39,15 +39,13 @@ int main(void) {
   assert(bl_short_write(BL_DCS_DISPLAY_OFF) == 0x80050028u);
   assert(bl_short_write(BL_DCS_SLEEP_IN) == 0x80050010u);
 
-  // SET_MAXIMUM_RETURN_PACKET_SIZE is type 0x37, not 0x15. With the size 2 as its one parameter
-  // the word is 0xC0370202: data type 0x37 in byte 2, the size's low byte in byte 1, and the
-  // word count 2 (the command byte plus the parameter) in byte 0. The size's high byte is the
-  // separate payload word, zero for any size below 256.
-  assert((bl_max_return_header(2) >> 16) == 0xC037u);
-  assert((bl_max_return_header(2) & 0xffu) == 2u);          // the command byte plus one parameter
-  assert(((bl_max_return_header(2) >> 8) & 0xffu) == 2u);   // size low byte
-  assert(bl_max_return_payload(2) == 0u);
-  assert(bl_max_return_payload(0x102) == 1u);
+  // SET_MAXIMUM_RETURN_PACKET_SIZE is type 0x37, a SHORT packet: byte 0 = size low, byte 1 =
+  // size high, byte 2 = 0x37, flags byte 0 (no payload bit, no LAST — the vendor clears
+  // LASTCOMMAND). For size 2 the word is 0x00370002.
+  assert(bl_max_return_header(2) == 0x00370002u);
+  assert((bl_max_return_header(0x102) >> 16) == 0x0037u);
+  assert((bl_max_return_header(0x102) & 0xffu) == 0x02u);
+  assert(((bl_max_return_header(0x102) >> 8) & 0xffu) == 0x01u);
 
   // The DCS read: type 0x06, the command in byte 0, and the BTA flag (bit 5 of the flags byte,
   // i.e. bit 29 of the word) so the panel turns the lane around. The command must come through

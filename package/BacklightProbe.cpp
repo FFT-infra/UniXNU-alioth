@@ -241,8 +241,10 @@ int32_t readBrightness() {
     // secure_mode, and its normal path completes on an interrupt this kernel does not attach.
     // What the panel actually received is what RDBK_DATA_CTRL reports next, so the readback
     // count is the real verdict and the transfer results are only diagnostics.
-    const uint32_t size[2] = {bl_max_return_header(2), bl_max_return_payload(2)};
-    const int sizeRc = sendPacket(size, 2, false);
+    // SET_MAXIMUM_RETURN_PACKET_SIZE is a short packet now (see BacklightCore.h), one DWORD, so
+    // DMA_CMD_LENGTH is 4 bytes and matches the vendor's cmd->size.
+    const uint32_t size[1] = {bl_max_return_header(2)};
+    const int sizeRc = sendPacket(size, 1, false);
     const uint32_t read[1] = {bl_read_header(kDcsBrightnessGet)};
     const int readRc = sendPacket(read, 1, false);
     native_backlight_stats[6] = (int32_t)((sizeRc ? 1 : 0) | (readRc ? 2 : 0));
