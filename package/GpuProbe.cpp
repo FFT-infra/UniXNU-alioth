@@ -1666,6 +1666,10 @@ int dramRead32(uint64_t physical, uint32_t *value) {
     IOMemoryMap *map = memory->map(kIOMapAnywhere | kIOMapInhibitCache);
     memory->release();
     if (!map) return -1;
+    /* Read the whole page once, then pick the word. A 736-byte IB spans two pages and every word of
+     * it is read through this hook; mapping per word made the second half of such an IB read a
+     * different page's first word, which is why the stall dump showed zeros where the CP had just
+     * fetched real packets. One page mapped for the read, the word taken from it. */
     *value = reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress())[(physical - page) / 4];
     map->release();
     return 0;
