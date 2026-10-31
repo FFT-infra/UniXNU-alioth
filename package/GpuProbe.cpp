@@ -1739,6 +1739,8 @@ extern "C" IOReturn nativeGpuRestart(void *cookie, NativeAdrenoRing *ring, uint3
     IOReturn status = ring->restart(completed);
     native_gpu_restart_step = status ? 1u : 2u;
     if (status) return status;
+    /* The CP is at reset again, so its init may be sent again. */
+    gCpInit->reopen();
     NativeAdrenoCpInitConfig config{gNb[0].iova, 0, 1};
     config.generation = 6;
     uint32_t fence = 0;
