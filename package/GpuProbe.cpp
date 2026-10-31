@@ -112,10 +112,11 @@ extern volatile uint32_t native_adreno_bo_memory[8];
 // start's load, 15 its HFI messages, 16 the GMU state after it, 17 GX power, 18 the GPU's SMMU context, 19 the CP steps, 20 the
 // CP's state after them, 21 the zap shader and the secure-mode exit, 22 the GPU interrupt, 23 the publication and the user-client
 // rounds, 24 the Metal accelerator, 25 the live counters, 26-27 the CP's state once it stops moving, 28 the GPU SMMU's faults,
-// 29 the UCHE and UBWC registers as read back.
+// 29 the UCHE and UBWC registers as read back, 30 the tiling registers, 31 the CP hardware-error registers latched by the
+// interrupt that raises them.
 enum {kRowSummary, kRowGcc, kRowGpucc, kRowSmmu, kRowClk, kRowClk2, kRowGmu, kRowGmu2, kRowDbArc, kRowDbBcm, kRowLevels,
       kRowContext = kRowLevels + 3, kRowLoad, kRowHfi, kRowAfter, kRowGx, kRowGpuCtx, kRowCp, kRowCpState, kRowZap, kRowIrq,
-      kRowPublish, kRowMetal, kRowLive, kRowHang, kRowHang2, kRowFaults, kRowUche, kRowTiling, kRows};
+      kRowPublish, kRowMetal, kRowLive, kRowHang, kRowHang2, kRowFaults, kRowUche, kRowTiling, kRowCpErr, kRows};
 extern "C" {
 char native_gpu_rows[kRows][120];
 volatile uint32_t native_gpu_changes;
@@ -587,6 +588,11 @@ uint64_t naNow(void *) {uint64_t us = 0; gmuNow(nullptr, &us); return us;}
 // 100 us, whichever is first; before that, or where it may not block, it spins 20 us (UniXNU-tb128fu, sheng int-143).
 volatile bool gIrqAttached;
 volatile uint32_t gIrqCount, gIrqSeen, gIrqLast, gIrqRepeat, gIrqMasked;
+// The CP hardware-error registers, latched in the interrupt that reports CP_HW_ERROR (RBBM_INT_0 bit 9). The heartbeat's 2 s
+// sample can miss the state, and until now nothing read these at all: only the HANG rows did, and they fill only once the CP
+// has stopped moving. [0] RBBM status, [1] CP_INTERRUPT_STATUS 0x823, [2] CP_HW_FAULT 0x821, [3] CP_PROTECT_STATUS 0x824,
+// [4]/[5] CP_SQE_STAT_DATA after selecting index 1 (a6xx_cp_hw_err_irq, a6xx_gpu.c:533-583).
+volatile uint32_t gCpErr[6], gCpErrSeen;
 int naIdle(void *) {
     if (gIrqAttached && ml_get_interrupts_enabled() && !ml_at_interrupt_context() && get_preemption_level() == 0) {
         assert_wait_timeout(event_t(&gIrqCount), THREAD_UNINT, 100, NSEC_PER_USEC);
@@ -1108,6 +1114,16 @@ void gpuIrq(void *) {
     gIrqLast = status;
     gIrqSeen = gIrqSeen | status;
     gIrqCount = gIrqCount + 1;
+    if (status & (1u << 9)) {
+        // CP_HW_ERROR: the decode a6xx_cp_hw_err_irq does. Read the state here, not in the 2 s heartbeat, because the
+        // registers are the interrupt's own.
+        gCpErr[0] = status;
+        gCpErr[1] = gpuRead(0x823);                       // CP_INTERRUPT_STATUS
+        gCpErr[2] = gpuRead(0x821);                       // CP_HW_FAULT
+        gCpErr[3] = gpuRead(0x824);                       // CP_PROTECT_STATUS
+        if (gCpErr[1] & 1u) {gw(0x908, 1); gCpErr[4] = gpuRead(0x909);}   // opcode error: SQE stat index 1
+        gCpErrSeen = 1;
+    }
     if (gIrqRepeat > 100000) {gw(0x38, 0); gIrqMasked = 1;}
     thread_wakeup(event_t(&gIrqCount));
 }
@@ -1408,6 +1424,35 @@ void hangRows(unsigned t) {
     changed();
 }
 
+// The CP hardware-error row. The flags are the ones a6xx_cp_hw_err_irq decodes, in its order: O opcode, U ucode, H HW fault,
+// P register protection, A AHB, V VSD parity, I illegal instruction. The protection status carries the direction and address
+// the vendor prints (bit 20 READ, low 18 bits the address).
+void cpErrorRow() {
+    if (!gCpErrSeen) return;
+    static uint32_t last[6] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
+    bool same = true;
+    for (unsigned i = 0; i < 6; ++i) same = same && gCpErr[i] == last[i];
+    if (same) return;
+    for (unsigned i = 0; i < 6; ++i) last[i] = gCpErr[i];
+    static const struct {uint32_t bit; char c;} flags[7] = {{1u << 0, 'O'}, {1u << 1, 'U'}, {1u << 2, 'H'}, {1u << 4, 'P'},
+                                                            {1u << 5, 'A'}, {1u << 6, 'V'}, {1u << 7, 'I'}};
+    char text[8];
+    unsigned n = 0;
+    for (unsigned i = 0; i < 7; ++i) text[n++] = (last[1] & flags[i].bit) ? flags[i].c : '-';
+    text[n] = 0;
+    const uint32_t prot = last[3];
+    char row[120];
+    if (last[1] & 1u) {
+        snprintf(row, sizeof row, "CPERR irq %08x st %08x %s hw %08x prot %08x %s%05x sqe %08x/%08x", last[0], last[1], text,
+                 last[2], prot, (prot & (1u << 20)) ? "R" : "W", prot & 0x3ffff, last[4], last[5]);
+    } else {
+        snprintf(row, sizeof row, "CPERR irq %08x st %08x %s hw %08x prot %08x %s%05x", last[0], last[1], text, last[2], prot,
+                 (prot & (1u << 20)) ? "R" : "W", prot & 0x3ffff);
+    }
+    strlcpy(native_gpu_rows[kRowCpErr], row, sizeof native_gpu_rows[0]);
+    changed();
+}
+
 // The live row, every 2 s once the device is published: interrupts (count, last status, all seen, masked), submissions (submitted,
 // completed, timeouts, poisoned), user clients opened/closed, the BO pool (MiB in use, peak, size; BOs that did not fit and fell
 // back to scattered pages, scattered BOs in all), and the GPU's busy share of the last beat in per mille. Only changed values reach
@@ -1463,6 +1508,7 @@ void hangRows(unsigned t) {
         }
         ucheRow();
         submitRow();
+        cpErrorRow();
         static bool oobDumped;
         if (!oobDumped && (gIrqSeen & (1u << 24))) {oobDumped = true; regDump("oob");}   // RBBM_INT_0 UCHE_OOB_ACCESS
         IOSleep(2000);
@@ -1590,6 +1636,13 @@ extern "C" void native_gpu_probe(void) {
                          ++calls, mode, parsed ? 1 : 0, gMode);
         if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
     }
+    // The same three numbers in the row the 15 s scan prints, because the direct write above is
+    // lost when the USB console has not enumerated yet (the cperr1 boot printed no GPUARG line
+    // and then reported m7 for an image whose args carry pipa-gpu=12). A CP error overwrites this
+    // row with its own decode, which is the wanted behaviour.
+    snprintf(native_gpu_rows[kRowCpErr], sizeof native_gpu_rows[0], "GPUPARSE arg=%u parsed=%d gMode=%u", mode,
+             parsed ? 1 : 0, gMode);
+    changed();
     if (gMode || !parsed || !mode) return;
     gMode = mode > 12 ? 12 : mode;
     // The row that says which mode the probe runs in is written after gpb_run(), and on

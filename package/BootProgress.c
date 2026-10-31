@@ -1607,7 +1607,7 @@ static void ufs_time_report(unsigned now) {
   if (&native_gpu_rows && native_gpu_rows[0][0] && now >= gpuRowsSentAt + 15) {
     // The summary alone hides every step after it: modes 7 and above report in the GMU and
     // HFI rows. Print the summary and those, one line each.
-    static const int rows[] = {0, 3, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 28};
+    static const int rows[] = {0, 3, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 28, 31};
     for (unsigned r = 0; r < sizeof rows / sizeof rows[0]; ++r) {
       const char *text = native_gpu_rows[rows[r]];
       if (!text[0]) continue;
@@ -1695,7 +1695,7 @@ static void touch_time_report(unsigned now) {
   if (&native_gpu_rows && native_gpu_rows[0][0] && now >= gpuRowsSentAt + 15) {
     // The summary alone hides every step after it: modes 7 and above report in the GMU and
     // HFI rows. Print the summary and those, one line each.
-    static const int rows[] = {0, 3, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 28};
+    static const int rows[] = {0, 3, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 28, 31};
     for (unsigned r = 0; r < sizeof rows / sizeof rows[0]; ++r) {
       const char *text = native_gpu_rows[rows[r]];
       if (!text[0]) continue;
