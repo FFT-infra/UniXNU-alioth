@@ -1161,14 +1161,20 @@ NativeAdrenoSubmit *gSubmit;
 NativeAdrenoTimer *gTimer;
 NativeAdrenoTimeIo gTimerIo{nullptr, naRead};
 extern "C" {
+/* The client's last logged IB, rebuilt from the driver's record, for one replay submission from the
+ * kernel's own address space: same packets, different VM. If that completes, the IB content is fine
+ * and what stops the CP is the client's context; if it does not, the content is the block. */
+uint32_t gReplayIb[192];
+uint32_t gReplayWords;
+int gReplayResult;
 uint32_t native_gpu_publish[20];   // submit attach, timer attach, publish, user-client rounds, target words (see publishRow)
 }
 void publishRow(const char *what) {
     const uint32_t *p = native_gpu_publish;
     snprintf(native_gpu_rows[kRowPublish], sizeof native_gpu_rows[0],
-             "PUBLISH %s submit %x timer %x publish %x | uc %u/%u first %x at %u cpumap %x | rounds %d %d | tgt %x %x %x %x | tgt1 %x %x %x %x",
+             "PUBLISH %s submit %x timer %x publish %x | uc %u/%u first %x at %u cpumap %x | rounds %d %d | tgt %x %x %x %x | tgt1 %x %x %x %x | rp %d",
              what, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], int32_t(p[8]), int32_t(p[9]),
-             p[10], p[11], p[12], p[13], p[16], p[17], p[18], p[19]);
+             p[10], p[11], p[12], p[13], p[16], p[17], p[18], p[19], gReplayResult);
     changed();
 }
 
@@ -1279,11 +1285,15 @@ int ucRound(IOService *svc) {
                     words[i * 4 + 1] = uint32_t(tgtIova + i * 4); words[i * 4 + 2] = uint32_t(tgtIova >> 32);
                     words[i * 4 + 3] = values[i];
                 }
-                for (unsigned i = 0; i < 12; ++i) iw[i] = words[i];
+                if (gReplayWords && gReplayWords <= 192) {
+                    for (unsigned i = 0; i < gReplayWords; ++i) iw[i] = gReplayIb[i];
+                } else {
+                    for (unsigned i = 0; i < 12; ++i) iw[i] = words[i];
+                }
                 __asm__ volatile("dsb sy" ::: "memory");
                 NativeAdrenoAbiSubmit submit{};
                 submit.buffer_count = 1;
-                submit.buffers[0] = {ib.handle, ibIova, sizeof words};
+                submit.buffers[0] = {ib.handle, ibIova, gReplayWords ? gReplayWords * 4u : sizeof words};
                 NativeAdrenoAbiSubmitReply sr{};
                 if (step(built ? kIOReturnSuccess : kIOReturnInternalError) && step(ucCall(uc, NativeAdrenoMethodSubmit, &submit, &sr))) {
                     // 2 s, not 200 ms: the first self-test fence completes in ~13 us, the second
@@ -1360,6 +1370,24 @@ bool selfTest() {
              int32_t(native_gpu_publish[9]), native_gpu_publish[5], native_gpu_publish[6], native_gpu_publish[3], native_gpu_publish[4],
              native_gpu_publish[15], native_gpu_publish[14]);
     changed();
+    /* Round 3: the client's own last IB, replayed from this kernel address space. Same packets, a table
+     * that is certainly right. What it answers: whether the 736-byte content is what stops the CP, or
+     * whether only the client's context does. */
+    gReplayResult = 0;
+    if (&native_adreno_ib_log_count && native_adreno_ib_log_count && int32_t(native_gpu_publish[9]) >= 3) {
+        const volatile uint32_t *r = native_adreno_ib_log[(native_adreno_ib_log_count - 1) & 3];
+        const uint32_t bytes = r[3], words = bytes / 4;
+        if (bytes > 48 && words <= 192) {
+            for (unsigned i = 0; i < 96 && i < words; ++i) gReplayIb[i] = r[6 + i];
+            for (unsigned i = 96; i < 176 && i < words; ++i) gReplayIb[i] = r[216 + (i - 96)];
+            for (unsigned i = 176; i < words; ++i) gReplayIb[i] = r[200 + 16 - (words - i)];
+            gReplayWords = words;
+            gReplayResult = ucRound(svc);
+            gReplayWords = 0;
+            snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0], "SELFTEST replay %d of %u bytes", gReplayResult, bytes);
+            changed();
+        }
+    }
     /* Three markers, not four. The fourth word is a 0xdeadbeef sentinel the test writes to catch a
      * write past the last marker, and it is written through the same non-cacheable mapping the CP
      * reads: the driver zeroes a fresh BO s pages, and that zero can land after this fill, so the
