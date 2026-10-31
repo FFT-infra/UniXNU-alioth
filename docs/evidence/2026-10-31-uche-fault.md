@@ -216,6 +216,22 @@ GPUROW28 FAULTS cr0 260406 gfsr 0 syn 0/0/0 | cb0 fsr 400 syn 40c0e far 5e09e557
 | --- | --- | --- |
 | `cperr1` | `tmp/boot-cperr1.img`，sha `cf39e50f…`，kernel `319146cb…` | 板子自回；但 console 捕获挂在**过期节点**上，得到的是上一轮缓存的旧内核输出（`GPU m7`、内核版本 10-28），不是本轮 |
 | `cperr2` | `tmp/boot-cperr2.img`，sha `c2ade3d4…` | 板子 240 秒未自回，`board-state` = `reader-or-userspace`；console 捕获未生成文件，进程随脚本退出 |
+| `cperr2b`（断电后重跑） | 同 `cperr2` 镜像 | 同一形态，16:15 进用户态；`/dev/tty.usbmodem14101` 的 mtime 是 16:15:37，**早于本轮开始**，`console-capture.py` 一直判 stale，`tmp/console-cperr2b.log` 不存在。脚本在超时前被停掉，锁已清 |
+
+### 这一轮暴露的脚本判据缺陷
+
+`console-capture.py` 以「节点 mtime 晚于本轮开始」判新鲜。这颗板子**启动后不再重新枚举串口**：
+节点在启动时出现一次，mtime 就是那一刻，之后一直不变。所以这个判据在这颗板上**恒为假**，
+捕获器永远等不到「新鲜」节点——cperr1/cperr2/cperr2b 三轮都是这样，不是硬件。
+
+改法（下一轮改脚本，不要动正在跑的）：
+
+- 新鲜度改成「节点存在，且本轮开始后能打开并读到数据」，打不开再重试；或
+- 不依赖 console：把 GPU 行写进持久日志。
+
+后者已经落地：`package/BootLog.c` 增加 `native_gpu_rows` 弱引用，把第 0/23/25/31 行
+写进日志文本块（提交 `542c438`）。持久日志是这颗板上唯一能跨轮稳定读出的通道。
+
 
 `cperr2` 运行中直接读活着的 console 节点，得到：
 
