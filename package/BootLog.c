@@ -159,7 +159,7 @@ extern int (*native_adreno_dram_read32)(uint64_t, uint32_t *) __attribute__((wea
 extern int (*native_adreno_cached_read32)(uint64_t, uint32_t *) __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ring_log[4][4 + 112] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ring_log_count __attribute__((weak_import));
-extern volatile uint32_t native_adreno_ib_log[4][4 + 28] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_ib_log[4][6 + 28] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ib_log_count __attribute__((weak_import));
 /* The submission's coherence sample and the write-combined distrust count (NativeAdrenoSubmit.cpp:289-301): [0] samples taken,
  * [1..3] the cached and uncached reads of the first IB word, [4] submissions that found a dirty line and dropped write-combined,
@@ -557,12 +557,13 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     for (unsigned back = 0; back < 4 && back < native_adreno_ib_log_count; ++back) {
       const volatile uint32_t *r = native_adreno_ib_log[(newest - back) & 3];
       char row[130];
-      snprintf(row, sizeof row, "[ib] fence=%u iova=%x%08x bytes=%u%s", r[0], r[2], r[1], r[3],
+      snprintf(row, sizeof row, "[ib] fence=%u iova=%x%08x bytes=%u base=%x%08x off=%llx%s", r[0], r[2], r[1], r[3], r[5], r[4],
+               (unsigned long long)(((uint64_t)r[2] << 32 | r[1]) - ((uint64_t)r[5] << 32 | r[4])),
                &native_adreno_coherence[4] ? (native_adreno_coherence[4] ? " wc-distrusted" : " wc-trusted") : "");
       at = put(out, at, cap, row, sizeof row);
       for (uint32_t i = 0; i < 28; i += 8) {
         int n = snprintf(row, sizeof row, "I%02x", i);
-        for (uint32_t k = i; k < i + 8 && k < 28 && n > 0 && n < 110; ++k) n += snprintf(row + n, sizeof row - n, " %08x", r[4 + k]);
+        for (uint32_t k = i; k < i + 8 && k < 28 && n > 0 && n < 110; ++k) n += snprintf(row + n, sizeof row - n, " %08x", r[6 + k]);
         at = put(out, at, cap, row, sizeof row);
       }
     }
