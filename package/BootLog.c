@@ -79,6 +79,7 @@ extern volatile uint64_t native_gop_wait_stats[7] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_fence_wait[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall[24] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_close_step[8] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_cp_aperture[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_trace_stage __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall_mem[59] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_unstick[15] __attribute__((weak_import));
@@ -1065,6 +1066,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // The last step a user client close reached. The driver's own IOLog lines for these steps fall out of
   // the message ring before the log is read (the probe closes at about 5 s, the ring holds seconds of a
   // verbose boot), so the step is carried as a value and printed by every round that follows.
+  // Which mechanism puts a client address space in front of the CP: 2 the CP switches the
+  // table in the ring (needs the aperture SCM call to be available), 1 the CPU writes TTBR0
+  // with the GPU idle. A client IB in its own address space is only translatable if the
+  // table the CP runs under is that client's.
+  if (&native_adreno_cp_aperture && native_adreno_cp_aperture[0]) {
+    char aprow[96];
+    snprintf(aprow, sizeof aprow, "[gpu aperture] avail=%x res=%x check=%x mode=%u",
+             native_adreno_cp_aperture[0], native_adreno_cp_aperture[1], native_adreno_cp_aperture[2], native_adreno_cp_aperture[3]);
+    at = put(out, at, cap, aprow, sizeof aprow);
+  }
   if (&native_adreno_close_step && native_adreno_close_step[0]) {
     char closerow[64];
     snprintf(closerow, sizeof closerow, "[gpu close] step=%u pid=%u stage=%u dev=%u prep=%u sys=%u spans=%u", native_adreno_close_step[0],
