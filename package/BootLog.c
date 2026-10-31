@@ -81,6 +81,7 @@ extern volatile uint32_t native_adreno_stall[24] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_close_step[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_cp_aperture[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_wfi_dropped __attribute__((weak_import));
+extern volatile uint32_t native_adreno_wfi_try[5] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_trace_stage __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall_mem[59] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_unstick[15] __attribute__((weak_import));
@@ -1077,9 +1078,11 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_adreno_cp_aperture[0], native_adreno_cp_aperture[1], native_adreno_cp_aperture[2], native_adreno_cp_aperture[3]);
     at = put(out, at, cap, aprow, sizeof aprow);
   }
-  if (&native_adreno_wfi_dropped && native_adreno_wfi_dropped) {
-    char wrow[64];
-    snprintf(wrow, sizeof wrow, "[gpu wfi] dropped=%u", native_adreno_wfi_dropped);
+  if (&native_adreno_wfi_try && native_adreno_wfi_try[0]) {
+    char wrow[96];
+    snprintf(wrow, sizeof wrow, "[gpu wfi] scan=%u nomap=%u nocpu=%u dropped=%u last=%x",
+             native_adreno_wfi_try[0], native_adreno_wfi_try[1], native_adreno_wfi_try[2],
+             &native_adreno_wfi_dropped ? native_adreno_wfi_dropped : 0u, native_adreno_wfi_try[4]);
     at = put(out, at, cap, wrow, sizeof wrow);
   }
   if (&native_adreno_close_step && native_adreno_close_step[0]) {
