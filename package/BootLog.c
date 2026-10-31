@@ -79,6 +79,7 @@ extern volatile uint64_t native_gop_wait_stats[7] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_fence_wait[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall[24] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_close_step[8] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_trace_stage __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall_mem[59] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_unstick[15] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_wait_outer[4] __attribute__((weak_import));
@@ -1045,7 +1046,8 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // verbose boot), so the step is carried as a value and printed by every round that follows.
   if (&native_adreno_close_step && native_adreno_close_step[0]) {
     char closerow[64];
-    snprintf(closerow, sizeof closerow, "[gpu close] step=%u pid=%u", native_adreno_close_step[0], native_adreno_close_step[1]);
+    snprintf(closerow, sizeof closerow, "[gpu close] step=%u pid=%u stage=%u", native_adreno_close_step[0],
+             native_adreno_close_step[1], &native_adreno_trace_stage ? native_adreno_trace_stage : 0u);
     at = put(out, at, cap, closerow, sizeof closerow);
   }
   if (&native_adreno_stall && native_adreno_stall[0]) {
