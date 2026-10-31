@@ -96,6 +96,9 @@ volatile uint64_t native_gpu_idle_sleeps, native_gpu_idle_spins;
 #include "NativeAdrenoTimer.h"
 #include "NativeAdrenoABI.h"
 #include "NativeAdrenoUserClient.h"
+// The driver's restart hook setter (NativeAdrenoPublish.cpp) and its function type (NativeAdrenoSubmit.h).
+typedef IOReturn (*NativeAdrenoRestart)(void *cookie, NativeAdrenoRing *ring, uint32_t completed);
+extern "C" void native_adreno_set_restart(NativeAdrenoRestart restart, void *cookie);
 extern "C" {
 NativeAdrenoVm *NativeAdrenoGpuContextVm();
 IOReturn native_adreno_publish(NativeAdrenoVm *, NativeAdrenoSubmit *, NativeAdrenoRing *, const NativeAdrenoRingClock *,
@@ -1170,7 +1173,8 @@ extern "C" {
 uint32_t gReplayIb[192];
 uint32_t gReplayWords;
 int gReplayResult;
-uint32_t native_gpu_publish[20];   // submit attach, timer attach, publish, user-client rounds, target words (see publishRow)
+uint32_t native_gpu_publish[20];
+uint32_t native_gpu_restart_count;   // submit attach, timer attach, publish, user-client rounds, target words (see publishRow)
 }
 void publishRow(const char *what) {
     const uint32_t *p = native_gpu_publish;
@@ -1719,9 +1723,30 @@ int dramRead32(uint64_t physical, uint32_t *value) {
 }
 }  // namespace
 
+// The board's GPU restart for the driver's hangcheck (NativeAdrenoSubmit.h NativeAdrenoRestart): the
+// same sequence cpStart() runs, minus the buffer allocation. Linux's a6xx_recover does reset + hw_init +
+// a6xx_cp_init; the ring's restart(completed) clears the ring and reprograms RB/WPTR/RPTR first.
+extern "C" IOReturn nativeGpuRestart(void *cookie, NativeAdrenoRing *ring, uint32_t completed) {
+    if (!cookie || !ring || !gCpInit) return kIOReturnNotReady;
+    native_gpu_restart_count = native_gpu_restart_count + 1;
+    hwInit();
+    gw64(0x830, gNb[0].iova);
+    gw(0x808, 1);
+    IOReturn status = ring->restart(completed);
+    if (status) return status;
+    NativeAdrenoCpInitConfig config{gNb[0].iova, 0, 1};
+    config.generation = 6;
+    uint32_t fence = 0;
+    return gCpInit->run(&gRio, ring, &config, &fence);
+}
+
+
 extern "C" void native_gpu_probe(void) {
     // Before the thread below submits anything: the submission's diagnostics read through it.
     native_adreno_dram_read32 = dramRead32;
+    /* hangCheck counts every fence that stops moving (fix42 read hangs=339 restarts=0) and, without a
+     * hook, never brings the GPU back: every later submission then runs on a stopped CP. */
+    native_adreno_set_restart(nativeGpuRestart, nullptr);
     unsigned mode = 0;
     const boolean_t parsed = PE_parse_boot_argn("pipa-gpu", &mode, sizeof mode);
     // Before the early return, so this prints whichever path the call takes: a boot that reports
