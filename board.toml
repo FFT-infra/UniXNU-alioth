@@ -553,7 +553,6 @@ kernel_args = [
   "offline-legacy-phase=4",
   "offline-legacy-transfer=1",
   "offline-legacy-cpu-present=1",
-  "offline-legacy-verdict=1",
   # offline-legacy-dump-at is gone. It gated native_legacy_dump_state(), which was removed when
   # the cell painter replaced the panic dump, so the argument had been a dead key: present on the
   # command line, read by nothing. The text channel below replaces it properly.
