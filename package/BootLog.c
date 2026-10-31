@@ -1030,7 +1030,7 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // whether any user client can open the driver at all (uc 0/0 vs uc 16/19).
   if (&native_gpu_rows && native_gpu_rows[0][0]) {
     static const int gpuRows[] = {0, 23, 24, 25, 31};
-    char row[170];
+    char row[200];   // a GPU row is now up to 160 bytes, plus "GPUROWnn " and the NUL
     for (unsigned r = 0; r < sizeof gpuRows / sizeof gpuRows[0]; ++r) {
       const char *text = native_gpu_rows[gpuRows[r]];
       if (!text[0]) continue;
