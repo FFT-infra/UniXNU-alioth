@@ -1728,7 +1728,10 @@ int dramRead32(uint64_t physical, uint32_t *value) {
 // same sequence cpStart() runs, minus the buffer allocation. Linux's a6xx_recover does reset + hw_init +
 // a6xx_cp_init; the ring's restart(completed) clears the ring and reprograms RB/WPTR/RPTR first.
 extern "C" IOReturn nativeGpuRestart(void *cookie, NativeAdrenoRing *ring, uint32_t completed) {
-    if (!cookie || !ring || !gCpInit) return kIOReturnNotReady;
+    /* `cookie` is the driver's own opaque pointer and it passes null (NativeAdrenoPublish.cpp installs the
+     * hook with a null cookie), so it must not be a condition: the first version of this hook returned
+     * kIOReturnNotReady at once and [gpu restart step] stayed 0. */
+    if (!ring || !gCpInit) return kIOReturnNotReady;
     native_gpu_restart_count = native_gpu_restart_count + 1;
     hwInit();
     gw64(0x830, gNb[0].iova);
