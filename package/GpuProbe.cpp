@@ -1268,12 +1268,16 @@ int ucRound(IOService *svc) {
                  * three-write IB completes every round and the client's 736-byte one never does;
                  * this is the smallest difference between them that can be varied alone. */
                 uint32_t words[13];
-                bool built = AdrenoPM4Type7(0x26, 0, &words[0]) == AdrenoPM4Success;
+                bool built = true;
                 for (unsigned i = 0; i < 3; ++i) {
-                    built = built && AdrenoPM4Type7(0x3d, 3, &words[i * 4 + 1]) == AdrenoPM4Success;
-                    words[i * 4 + 2] = uint32_t(tgtIova + i * 4); words[i * 4 + 3] = uint32_t(tgtIova >> 32);
-                    words[i * 4 + 4] = values[i];
+                    built = built && AdrenoPM4Type7(0x3d, 3, &words[i * 4]) == AdrenoPM4Success;
+                    words[i * 4 + 1] = uint32_t(tgtIova + i * 4); words[i * 4 + 2] = uint32_t(tgtIova >> 32);
+                    words[i * 4 + 3] = values[i];
                 }
+                /* The same packet at the end instead of the start: fix28 put it first and both rounds
+                 * timed out at step 15 with the CP raising CP_HW_ERROR, so this round tells whether the
+                 * opcode is refused anywhere or only as an IB's first packet. */
+                built = built && AdrenoPM4Type7(0x26, 0, &words[12]) == AdrenoPM4Success;
                 for (unsigned i = 0; i < 13; ++i) iw[i] = words[i];
                 __asm__ volatile("dsb sy" ::: "memory");
                 NativeAdrenoAbiSubmit submit{};
