@@ -81,6 +81,7 @@ extern volatile uint32_t native_adreno_stall[24] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_close_step[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_cp_aperture[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_table_switches[8] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_ttbr0_tlb[3] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_wfi_dropped __attribute__((weak_import));
 extern volatile uint32_t native_adreno_wfi_try[5] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_trace_stage __attribute__((weak_import));
@@ -1080,6 +1081,12 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_adreno_cp_aperture[0], native_adreno_cp_aperture[1], native_adreno_cp_aperture[2], native_adreno_cp_aperture[3],
              &native_adreno_table_switches ? native_adreno_table_switches[1] : 0u);
     at = put(out, at, cap, aprow, sizeof aprow);
+    if (&native_adreno_ttbr0_tlb && native_adreno_ttbr0_tlb[0]) {
+      char trow[72];
+      snprintf(trow, sizeof trow, "[gpu ttbr0] writes=%u asid=%u last=%x", native_adreno_ttbr0_tlb[0],
+               native_adreno_ttbr0_tlb[2], native_adreno_ttbr0_tlb[1]);
+      at = put(out, at, cap, trow, sizeof trow);
+    }
   }
   if (&native_adreno_wfi_try && native_adreno_wfi_try[0]) {
     char wrow[96];
