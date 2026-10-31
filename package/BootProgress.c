@@ -174,6 +174,7 @@ extern volatile uint32_t native_hid_touch_status __attribute__((weak_import));
 // The A650 probe's rows. Row 0 is its verdict line ("GPU m1 gcc=... cc=... smmu=... gpu=...
 // io=..."); the board does not render these on the page, so the console carries the first one.
 extern char native_gpu_rows[][160] __attribute__((weak_import));   // must match GpuProbe's definition
+extern volatile uint32_t native_adreno_close_step[8] __attribute__((weak_import));
 // Who opens the published GPU service apart from the probe, whether the two sandbox gates let
 // them in, and the last line each streamed. Without these the console only shows that clients
 // came and went (the LIVE row's uc counter), not which process or why it left.
@@ -1616,6 +1617,15 @@ static void ufs_time_report(unsigned now) {
       if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
     }
     gpuRowsSentAt = now;
+    // The close step also goes to the console: the persistent log is lost when the round
+    // hangs and the next boot writes over its window (fix14).
+    if (&native_adreno_close_step && native_adreno_close_step[0]) {
+      char close[112];
+      int c = snprintf(close, sizeof close, "[gpu close] step=%u pid=%u dev=%u prep=%u sys=%u spans=%u\n",
+                       native_adreno_close_step[0], native_adreno_close_step[1], native_adreno_close_step[2],
+                       native_adreno_close_step[3], native_adreno_close_step[4], native_adreno_close_step[5]);
+      if (c > 0) qcom_usb_debug_write(close, (size_t)c < sizeof(close) ? (size_t)c : sizeof(close) - 1);
+    }
     gpu_client_report();
     if (&native_gpu_addon3_stage) {
       char wall[96];
@@ -1704,6 +1714,15 @@ static void touch_time_report(unsigned now) {
       if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
     }
     gpuRowsSentAt = now;
+    // The close step also goes to the console: the persistent log is lost when the round
+    // hangs and the next boot writes over its window (fix14).
+    if (&native_adreno_close_step && native_adreno_close_step[0]) {
+      char close[112];
+      int c = snprintf(close, sizeof close, "[gpu close] step=%u pid=%u dev=%u prep=%u sys=%u spans=%u\n",
+                       native_adreno_close_step[0], native_adreno_close_step[1], native_adreno_close_step[2],
+                       native_adreno_close_step[3], native_adreno_close_step[4], native_adreno_close_step[5]);
+      if (c > 0) qcom_usb_debug_write(close, (size_t)c < sizeof(close) ? (size_t)c : sizeof(close) - 1);
+    }
     gpu_client_report();
     if (&native_gpu_addon3_stage) {
       char wall[96];
