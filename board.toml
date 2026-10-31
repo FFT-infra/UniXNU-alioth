@@ -139,6 +139,13 @@ archives = [
   # build/alioth-usb/libAliothUSBDevice.a unconditionally, so a tree without it fails at the
   # kernel link with "ld: file not found".
   "build-alioth-usb.py",
+  # IOUSBDeviceFamily is prelinked, so the kernel link (scripts/unixnu/kernel.py:204) runs
+  # before the kexts merge (:207) and IOUSBDeviceController's vtable and methods exist in no
+  # link input. This step binds the names the driver imports to their post-prelink absolute
+  # addresses and adds that object to the archive above, which is the only reason those calls
+  # resolve. It must run after the recipe that writes the object, and it refuses to archive a
+  # binding set that does not cover every import the object actually has.
+  "build-alioth-usb-bindings.py --component AliothUSBDevice --archive libAliothUSBDevice.a --directory build/alioth-usb",
 ]
 
 # The iOS USB device stack, so the host can reach usbmuxd/AFC instead of only the CDC-ACM
