@@ -1309,6 +1309,13 @@ bool selfTest() {
     native_gpu_publish[8] = uint32_t(ucRound(svc));
     native_gpu_step = 156;
     native_gpu_publish[9] = uint32_t(ucRound(svc));
+    // Row 24 belonged to metal(), which only runs when this test passes; that left the failing
+    // case with no row at all. The verdict goes here so a uc 0/0 round says what this test saw:
+    // the two round results, the first error and the step it happened at, and the step counters.
+    snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0],
+             "SELFTEST rounds %d %d first %x at %u steps %u/%u", int32_t(native_gpu_publish[8]),
+             int32_t(native_gpu_publish[9]), native_gpu_publish[5], native_gpu_publish[6], native_gpu_publish[3], native_gpu_publish[4]);
+    changed();
     const bool ok = native_gpu_publish[8] == 4 && native_gpu_publish[9] == 4;
     publishRow(ok ? "ok" : "self test failed");
     return ok;

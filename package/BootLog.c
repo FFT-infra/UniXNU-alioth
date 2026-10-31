@@ -30,7 +30,7 @@ extern unsigned native_ufs_store_gpt_check(void) __attribute__((weak_import));
 extern uint32_t cs_text_fixup_parsed __attribute__((weak_import));
 extern uint32_t cs_text_fixup_applied __attribute__((weak_import));
 extern char boot_progress_page_text[48][120] __attribute__((weak_import));
-extern char native_gpu_rows[][120] __attribute__((weak_import));
+extern char native_gpu_rows[][160] __attribute__((weak_import));   // must match GpuProbe's definition
 extern char boot_progress_banner_text[49][120] __attribute__((weak_import));
 extern volatile unsigned boot_progress_banner_rows __attribute__((weak_import));
 extern char boot_progress_ext[8][48] __attribute__((weak_import));
