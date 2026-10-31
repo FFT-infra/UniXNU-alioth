@@ -1306,7 +1306,14 @@ bool selfTest() {
     native_gpu_step = 155;
     IOService *svc = native_adreno_published_service();
     if (!svc) {publishRow("no service"); return false;}
+    // Written before each round as well: a row written only after both would leave a round that
+    // never returns with no row at all, which is what every parity round so far looked like.
+    snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0], "SELFTEST enter");
+    changed();
     native_gpu_publish[8] = uint32_t(ucRound(svc));
+    snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0], "SELFTEST round1 %d steps %u/%u first %x at %u",
+             int32_t(native_gpu_publish[8]), native_gpu_publish[3], native_gpu_publish[4], native_gpu_publish[5], native_gpu_publish[6]);
+    changed();
     native_gpu_step = 156;
     native_gpu_publish[9] = uint32_t(ucRound(svc));
     // Row 24 belonged to metal(), which only runs when this test passes; that left the failing
