@@ -72,3 +72,42 @@
 
 **下一步（离线可做）**：写一个探针模式，打印 vtable 每格的值，与头文件里 234 行声明逐行对齐，
 就能定出 11 个的槽号。
+
+---
+
+## 补：表里存的是「槽的内容」，不是槽的地址
+
+`build-alioth-usb-bindings.py` 里 `getAddress` 那条：
+
+```python
+('__ZNK21IOUSBDeviceController10getAddressEv', 0xfffffff00617db10, CODE, 171, 'slot content'),
+```
+
+槽 171 本身的地址是 `0xfffffff006e81da0 + 16 + 171*8 = 0xfffffff006e82308`，**而表里存的是
+`0xfffffff00617db10`**——那是槽里**指向的代码**。
+
+所以：
+
+| 已知 | 未知 |
+| --- | --- |
+| 26 个 `nativeSlot<N>` 的**槽号**（头文件逐行标了） | 每个槽里**指向哪段代码** |
+| 7 个有槽号的方法（`createPipe` 168 … `getDMACommand` 230） | 同上 |
+| 槽号公式 `0xfffffff006e81da0 + 16 + N*8` | 槽内容是运行时的值，**只能从板子读** |
+
+**结论：34 个缺失符号里有 33 个能定出槽号，但一个都定不出地址。** 剩下的 3 个
+（`setProperties`、`callPlatformFunction`、`readyForHost`）连槽号都没有：
+前两个是 `IOService` 的 override（槽在 0..167，槽号要从 `IOService` 的 vtable 查），
+`readyForHost` 是**非虚的 Family 入口**（`IOUSBDeviceController.h:133`），根本不在 vtable 里。
+
+## 所以这一步必须在板子上做
+
+在探针里加一个模式，把 `0xfffffff006e81da0` 起的 234 个槽逐格读出来，打印 `槽号: 值`。
+然后：
+
+1. 26 个 `nativeSlot<N>` 直接按槽号取；
+2. 7 个有槽号的同理；
+3. `setProperties`/`callPlatformFunction` 从 `IOService` 的 vtable（需要先知道它在哪）；
+4. `readyForHost` 要从调用它的地方反查（像 `D2Ev` 那样，`a5-entry-plan.md` 记过这条方法）。
+
+**这一轮不做上板**（板子留给 GPU 与 WiFi 那两条），所以 USB 线的收口是：
+**表保持 20 条、`archives` 保持关闭**，把上面这段写进 evidence，等下一轮补。
