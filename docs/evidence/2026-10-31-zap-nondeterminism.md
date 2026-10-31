@@ -54,3 +54,57 @@ GPUROW28 FAULTS cr0 260406 gfsr 0 syn 0/0/0 | cb0 fsr 400 syn 40c0e far 5e0be557
 
 若 3 次里只有 1 次到 21 以上，说明这是**竞态**（与开机时序、USB 枚举、电源轨稳定时间有关），
 而不是代码缺陷。下一步应该记录每次的 **boot_id + 探针启动时刻**，找相关性。
+
+---
+
+## 第二轮：第四次复跑（08:51），把「三种结果」变成分布
+
+| 轮次 | 时刻 | 最远行 | 行集合 | `GPUROW15` 次数 |
+| --- | --- | --- | --- | --- |
+| 1 | 05:18 | 20 | `0 3 6 7 13 14 15 17 18 19 20` | — |
+| 2 | 07:48 | **28** | `… 15 17 18 19 20 21 22 23 24 25 28` | 18 |
+| 3 | 08:36 | 15 | `0 3 6 7 13 14 15` | 13 |
+| 4 | 08:51 | 15 | `0 3 6 7 13 14 15` | 14 |
+
+（工具：`tmp/probe-depth.sh <console.log>`，把「最远行」变成一个可重复的读数。）
+
+### 关键：15 那两轮不是「没走远」，是**卡在 `gxOn()` 内部**
+
+`GPUROW17` 是 `gxOn()` 的第一行输出（`GpuProbe.cpp:530-545`）。15 那两轮
+**完全没有 `GPUROW17`**，而 `GPUROW15` 各重复 13/14 次——那是探针的 2 秒行周期，
+说明 `gxOn()` 被调用后一直没有返回。
+
+`gxOn()` 的调用条件（`GpuProbe.cpp:1533`）：`gMode >= 8 && gColdOk`。
+`gColdOk` 来自 GMU 冷启动（`:450`），而 `GPUROW14 LOAD` 显示 `phase 8`、`ready 11`、
+`hfi 1`、`cm3 1`——**冷启动是成功的**。所以 `gxOn()` 确实被调用了。
+
+`A650GmuPowerGx`（`kits/pipa/A650Gmu.c:334-356`）里有三个会阻塞的点：
+
+| 点 | 位置 | 阻塞方式 |
+| --- | --- | --- |
+| `AdrenoHfiExchange(hfi, 30, vote, 3, 1000, …)` | `:345` | HFI 30 号命令，超时 1000 ms |
+| `OOB_GPU_SET_REQUEST` 写 + `GMU2HOST_INTR_INFO` 轮询 | `:346-351` | 最多 100 次 × 100 µs = 10 ms |
+| `wait_us(100)` 每次轮询 | `:350` | 同上 |
+
+**三个点都不是无限循环**，所以「卡住」不是死等——更可能是 `wait_us` 本身没返回
+（`d->services.wait_us` 是板级注入的函数指针），或者 `AdrenoHfiExchange` 内部在等
+一个永不到来的 HFI 回复。
+
+### 这一轮推翻的与确立的
+
+**推翻**：`PLAN-EXEC §E0` 与 `progress/2026-10-31.md §5.4` 的「探针卡在 `zapLoad` 的
+`scmCall`」。07:48 那轮 `zapLoad` 成功（`init 0/0 mem 0/0 auth 0/0`，7 ms）。
+
+**确立**：四轮里两轮停在 `gxOn()`，一轮停在 `GPUROW20`（`CPSTATE` 之后），
+一轮走到 `GPUROW28`。**停点不同，不是同一个故障。**
+
+### 下一轮要的单变量
+
+不要改 `scmCall`，也不要在 `A650GmuPowerGx` 里猜。**先加三行打印**，让停点自己说话：
+
+1. `gxOn()` 入口一行：`GPUROW16 GX enter perf <n> cold <ok>`
+2. `AdrenoHfiExchange` 返回后一行：`GPUROW16a GX vote status <s> err <e> polls <n>`
+3. `A650GmuPowerGx` 返回后一行：`GPUROW17 …`（已有）
+
+三行都在 `GpuProbe.cpp` 里加，`kRowGx` 是同一个槽，用不同的 `native_gpu_step`
+区分。**只改打印，不改逻辑**——这样下一轮无论停在哪，都能知道它过了哪一步。
