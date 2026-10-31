@@ -134,7 +134,10 @@ archives = [
   # catalog entries in the shared base repository. Its header is reconstructed from this board's
   # own kernelcache and the recipe refuses to archive a vtable that is not the 234-slot layout.
   # A-3 is in progress: only createIOBuffer does real work so far, the other pure slots are still
-  # fixed values, and nothing enables it — qcom-usb-debug keeps the controller until A-5.
+  # fixed values, and nothing enables it -- qcom-usb-debug keeps the controller until A-5.
+  # The step stays in the list regardless: build-xnu-4k-baseline.sh force-loads
+  # build/alioth-usb/libAliothUSBDevice.a unconditionally, so a tree without it fails at the
+  # kernel link with "ld: file not found".
   "build-alioth-usb.py",
 ]
 
@@ -239,6 +242,24 @@ BUILDID_STRING = "alioth-research"
 # node from the DTS leaves the generated ADT byte for byte identical (same length, same sha256),
 # so the node documents the region but is not an input to anything. The copy the bootloader and
 # the firmware act on is the firmware DTB's.
+
+# The root images of this board's OS, which the owner policies sign and the boot manifest names.
+# scripts/unixnu/kernel.py:56-63 reads this table and exports XNU_OWNER_ROOT_VOLUME_UUID and
+# XNU_OWNER_CACHE_VOLUME_UUID; build-xnu-4k-baseline.sh:431 refuses to build the owner-data header
+# without the root UUID when CONFIG_XNU_OWNER_BOOT_MANIFEST is on (this board has it on). The
+# upstream profile for 27.0.1 carries the same four keys, so this is the board's half of that input.
+#
+# Both values are this image's own, measured and recorded by scripts/build-verified-root.py into
+# build/verified-root-<image>/verification.json, not taken from another board's profile:
+#   os       volume_uuid 04769D26-2CA0-4825-B443-E2E5F88300F2  image_sha256 e5634d04a8ac...
+#   systemos volume_uuid 8846FE78-2910-4297-AF97-D59BB6F8FC16  image_sha256 b4908cde41d2...
+# os_volume_uuid is the same UUID [payload.adt] root_match_volume_uuid already carries; it is
+# repeated here because that key feeds the ADT and this one feeds the kernel.
+[root]
+os_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
+os_image_sha256 = "e5634d04a8ac35f024845f583394e0a35deb26a04cb0c00286a8674e25a9a4f2"
+systemos_volume_uuid = "8846FE78-2910-4297-AF97-D59BB6F8FC16"
+systemos_image_sha256 = "b4908cde41d23e6bc05e6af51a2c9eeb00cf0f863a6a18b1600c96a3fd70414f"
 
 [payload]
 volume = "ALIOTHESP"
