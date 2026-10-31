@@ -96,7 +96,7 @@ volatile uint64_t native_gpu_idle_sleeps, native_gpu_idle_spins;
 #include "NativeAdrenoTimer.h"
 #include "NativeAdrenoABI.h"
 #include "NativeAdrenoUserClient.h"
-static void resetDramMap();   // frees the page dramRead32 holds; defined with its map below
+extern "C" void native_gpu_dram_map_reset();   // frees the page dramRead32 holds; defined with its map below
 extern "C" {
 NativeAdrenoVm *NativeAdrenoGpuContextVm();
 IOReturn native_adreno_publish(NativeAdrenoVm *, NativeAdrenoSubmit *, NativeAdrenoRing *, const NativeAdrenoRingClock *,
@@ -1320,7 +1320,7 @@ int ucRound(IOService *svc) {
     /* The page dramRead32 mapped for this submission's IB is a page of the BO this close is about to
      * free. Dropping that map first is what keeps XNU's pmap_assert_free from finding a live kernel
      * PTE under a page being returned to the VM. */
-    resetDramMap();
+    native_gpu_dram_map_reset();
     mark("clientClose");
     step(uc->clientClose());
     mark("uc release");
@@ -1651,7 +1651,7 @@ extern "C" {extern int (*native_adreno_dram_read32)(uint64_t physical, uint32_t 
 namespace {
 OSSharedPtr<IOMemoryMap> gDramPageMap;
 uint64_t gDramPage = ~uint64_t(0);
-static void resetDramMap() {gDramPageMap = OSSharedPtr<IOMemoryMap>(); gDramPage = ~0ull;}
+extern "C" void native_gpu_dram_map_reset() {gDramPageMap = OSSharedPtr<IOMemoryMap>(); gDramPage = ~0ull;}
 int dramRead32(uint64_t physical, uint32_t *value) {
     if (!value) return -1;
     const uint64_t page = physical & ~uint64_t(0xfff);
