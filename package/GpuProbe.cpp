@@ -1543,7 +1543,38 @@ void gpuThread(void *, wait_result_t) {
 }
 }  // namespace
 
+// The board hook the driver asks for by name (NativeAdrenoVm.h:30): "reads one aligned word of
+// physical memory through a fresh uncached mapping; 0 on success". NativeAdrenoVm::peekWords uses
+// it for a mapping with no kernel CPU view (an imported BO), and dramWord returns false at once
+// when the pointer is null; peekWords then returns kIOReturnUnsupported and leaves its output at
+// the zeros it wrote on entry. Nothing in this repository assigned the pointer, so every
+// peekWords on an imported BO failed silently, and the 2026-10-31 rounds read the third
+// submission's IB as 736 bytes of zeros -- the failure default, not a reading
+// (docs/evidence/2026-10-31-ib-log.md). This assigns it.
+// A declaration, not a definition: NativeAdrenoVm.cpp:5 defines this pointer (zero-initialised).
+extern "C" {extern int (*native_adreno_dram_read32)(uint64_t physical, uint32_t *value);}
+namespace {
+OSSharedPtr<IOMemoryMap> gDramPageMap;
+uint64_t gDramPage = ~uint64_t(0);
+int dramRead32(uint64_t physical, uint32_t *value) {
+    if (!value) return -1;
+    const uint64_t page = physical & ~uint64_t(0xfff);
+    if (page != gDramPage || !gDramPageMap) {
+        IODeviceMemory *memory = IODeviceMemory::withRange(page, 0x1000);
+        if (!memory) return -1;
+        gDramPageMap = OSSharedPtr<IOMemoryMap>(memory->map(kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
+        memory->release();
+        if (!gDramPageMap) return -1;
+        gDramPage = page;
+    }
+    *value = reinterpret_cast<volatile uint32_t *>(gDramPageMap->getVirtualAddress())[(physical - page) / 4];
+    return 0;
+}
+}  // namespace
+
 extern "C" void native_gpu_probe(void) {
+    // Before the thread below submits anything: the submission's diagnostics read through it.
+    native_adreno_dram_read32 = dramRead32;
     unsigned mode = 0;
     const boolean_t parsed = PE_parse_boot_argn("pipa-gpu", &mode, sizeof mode);
     // Before the early return, so this prints whichever path the call takes: a boot that reports
