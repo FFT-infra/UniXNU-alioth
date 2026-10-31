@@ -173,7 +173,7 @@ extern volatile int native_hid_matching_load_status __attribute__((weak_import))
 extern volatile uint32_t native_hid_touch_status __attribute__((weak_import));
 // The A650 probe's rows. Row 0 is its verdict line ("GPU m1 gcc=... cc=... smmu=... gpu=...
 // io=..."); the board does not render these on the page, so the console carries the first one.
-extern char native_gpu_rows[][120] __attribute__((weak_import));
+extern char native_gpu_rows[][160] __attribute__((weak_import));   // must match GpuProbe's definition
 // Who opens the published GPU service apart from the probe, whether the two sandbox gates let
 // them in, and the last line each streamed. Without these the console only shows that clients
 // came and went (the LIVE row's uc counter), not which process or why it left.

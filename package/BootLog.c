@@ -221,7 +221,7 @@ extern struct boot_log_msgbuf *msgbufp;
 enum {LogBlock = 4096, LogMsgFirst = 1, LogMsgBlocks = 32,
       LogFrozenFirst = 33, LogFrozenBlocks = 32, LogFrozenAtS = 100,
       LogSlotFirst = LogFrozenFirst + LogFrozenBlocks,          /* 33 + 32 = 65 */
-      LogSlotBlocks = 16, LogPeriodMs = 2000, LogMaxErrors = 3,
+      LogSlotBlocks = 16, LogPeriodMs = 2000, LogMaxErrors = 3, LogRetryMs = 10000,
       LogExportStage = 64};   // export bytes staged per write: 256 KiB
 struct boot_log_header {
   char magic[8];                 // "SHLOG001"
@@ -1250,15 +1250,20 @@ static void writer(void *arg, wait_result_t result) {
   for (;;) {
     const unsigned now = (unsigned)((log_ticks() - start) / f);
     int ok = 1;
-    // Text slot, then the message buffer, then the header that makes both visible.
+    unsigned bad = 0;
+    // Text slot, then the message buffer, then the header that makes both visible. `bad` is the
+    // first step that failed, in the same numbering as log_phase (1 slot, 3 message buffer,
+    // 5 header, 7 sync), so a failed round can name it on the console.
     memset(boot_log_buffer, 0, LogSlotBlocks * LogBlock);
     compose((char *)boot_log_buffer, LogSlotBlocks * LogBlock, h.slots_written, now);
     log_phase = 1;
     ok &= native_ufs_log_write(LogSlotFirst + (uint64_t)(h.slots_written % slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer);
+    if (!ok && !bad) bad = 1;
     log_phase = 2;
     h.msg_bytes = copy_msgbuf(boot_log_buffer);
     log_phase = 3;
     ok &= native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
+    if (!ok && !bad) bad = 3;
     /* Take the frozen early-boot snapshot exactly once, while the boot-time IOLog is still inside
      * the kernel ring. copy_msgbuf always returns the newest 131072 bytes, so a copy taken at
      * t=LogFrozenAtS covers t=0..LogFrozenAtS. Writing it to LogFrozenFirst and never touching that
@@ -1302,13 +1307,34 @@ static void writer(void *arg, wait_result_t result) {
     memcpy(boot_log_buffer, &h, sizeof h);
     log_phase = 5;
     ok &= native_ufs_log_write(0, 1, boot_log_buffer);
+    if (!ok && !bad) bad = 5;
     log_phase = 6;
     log_phase = 7;
     ok &= native_ufs_log_sync();
+    if (!ok && !bad) bad = 7;
     log_phase = 8;
     if (ok) __atomic_fetch_add(&log_sync_seq, 1, __ATOMIC_RELAXED);
-    if (!ok) {boot_log_errors = ++errors;} else errors = 0;
-    if (errors >= LogMaxErrors) {boot_log_state = 3; return;}
+    // A round that fails says so on the console, where the console is the only channel left once
+    // the medium has stopped taking writes: the step that failed (1 slot, 3 message buffer,
+    // 5 header, 7 sync) and the consecutive-failure count.
+    if (!ok) {
+      boot_log_errors = ++errors;
+      if (&qcom_usb_debug_write) {
+        char line[72];
+        const int n = snprintf(line, sizeof line, "BLLOGFAIL round=%u step=%u errors=%u\n", boot_log_rounds, bad, errors);
+        if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+      }
+    } else errors = 0;
+    // Three consecutive failures used to end the writer for the rest of the boot. A medium that is
+    // busy while the Data store attaches is exactly the case that recovers, so the writer keeps
+    // trying at a slower cadence and records state 3 for as long as it is failing.
+    if (errors >= LogMaxErrors) {
+      boot_log_state = 3;
+      IOSleep(LogRetryMs);
+      errors = 0;
+      continue;
+    }
+    boot_log_state = 2;
     if (h.gpt_last != h.gpt_open) {boot_log_state = 4; return;}
     log_phase = 9;
     IOSleep(LogPeriodMs);
