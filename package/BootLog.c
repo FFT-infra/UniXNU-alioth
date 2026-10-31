@@ -1080,7 +1080,7 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   }
   if (&native_adreno_wfi_try && native_adreno_wfi_try[0]) {
     char wrow[96];
-    snprintf(wrow, sizeof wrow, "[gpu wfi] scan=%u nomap=%u nocpu=%u dropped=%u last=%x",
+    snprintf(wrow, sizeof wrow, "[gpu wfi] scan=%u nomap=%u noview=%u dropped=%u last=%x",
              native_adreno_wfi_try[0], native_adreno_wfi_try[1], native_adreno_wfi_try[2],
              &native_adreno_wfi_dropped ? native_adreno_wfi_dropped : 0u, native_adreno_wfi_try[4]);
     at = put(out, at, cap, wrow, sizeof wrow);
