@@ -1166,8 +1166,9 @@ uint32_t native_gpu_publish[16];   // submit attach, timer attach, publish, user
 void publishRow(const char *what) {
     const uint32_t *p = native_gpu_publish;
     snprintf(native_gpu_rows[kRowPublish], sizeof native_gpu_rows[0],
-             "PUBLISH %s submit %x timer %x publish %x | uc %u/%u first %x at %u cpumap %x | rounds %d %d",
-             what, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], int32_t(p[8]), int32_t(p[9]));
+             "PUBLISH %s submit %x timer %x publish %x | uc %u/%u first %x at %u cpumap %x | rounds %d %d | tgt %x %x %x %x",
+             what, p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], int32_t(p[8]), int32_t(p[9]),
+             p[10], p[11], p[12], p[13]);
     changed();
 }
 
@@ -1293,9 +1294,10 @@ int ucRound(IOService *svc) {
                     if (completed)
                         matched = (tw[0] == values[0]) + (tw[1] == values[1]) + (tw[2] == values[2]) + (tw[3] == 0xdeadbeef);
                     else
-                        snprintf(native_gpu_rows[kRowMetal], sizeof native_gpu_rows[0],
-                                 "SELFTEST fence %llu timed out; target %x %x %x %x frozen %x",
-                                 static_cast<unsigned long long>(sr.fence), tw[0], tw[1], tw[2], tw[3], tw[0x3ff]);
+                        /* Into the publish row, which every later round prints: the teardown markers
+                         * write row 24 and would hide this one. */
+                        native_gpu_publish[10] = tw[0]; native_gpu_publish[11] = tw[1];
+                        native_gpu_publish[12] = tw[2]; native_gpu_publish[13] = tw[3];
                 }
                 NativeAdrenoAbiTimestamp ts{};
                 step(ucCall(uc, NativeAdrenoMethodGetTimestamp, nullptr, &ts));
@@ -1313,11 +1315,12 @@ int ucRound(IOService *svc) {
     for (auto *m : maps) if (m) m->release();
     mark("release descs");
     for (auto *d : desc) if (d) d->release();
-    mark("clientClose");
-    step(uc->clientClose());
-    mark("uc release");
-    uc->release();
-    mark("round done");
+    /* The close is what hangs (GPUROW24 "SELFTEST clientClose", and [gpu close] stops inside
+     * descriptor_->release() with the timed-out fence's job still outstanding). One round skips it
+     * so the self-test can return and the accelerator registration behind it can be checked; the
+     * client is left open on purpose, and native_adreno_publish's opened count shows it. */
+    mark("close skipped");
+    return matched;
     return matched;
 }
 // Two rounds: the second proves the client slot and the IOVAs recycle after clientClose. pipa-gpu-selftest=0 skips them.
