@@ -80,6 +80,7 @@ extern volatile uint32_t native_adreno_fence_wait[8] __attribute__((weak_import)
 extern volatile uint32_t native_adreno_stall[24] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_close_step[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_cp_aperture[4] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_table_switches[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_wfi_dropped __attribute__((weak_import));
 extern volatile uint32_t native_adreno_wfi_try[5] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_trace_stage __attribute__((weak_import));
@@ -1072,10 +1073,12 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // table in the ring (needs the aperture SCM call to be available), 1 the CPU writes TTBR0
   // with the GPU idle. A client IB in its own address space is only translatable if the
   // table the CP runs under is that client's.
-  if (&native_adreno_cp_aperture && native_adreno_cp_aperture[0]) {
+  if (&native_adreno_cp_aperture && native_adreno_cp_aperture[3]) {
     char aprow[96];
-    snprintf(aprow, sizeof aprow, "[gpu aperture] avail=%x res=%x check=%x mode=%u",
-             native_adreno_cp_aperture[0], native_adreno_cp_aperture[1], native_adreno_cp_aperture[2], native_adreno_cp_aperture[3]);
+    // switches[1] counts the CPU's TTBR0 writes: zero after client submissions means the table never moved.
+    snprintf(aprow, sizeof aprow, "[gpu aperture] avail=%x res=%x check=%x mode=%u tbbr0_writes=%u",
+             native_adreno_cp_aperture[0], native_adreno_cp_aperture[1], native_adreno_cp_aperture[2], native_adreno_cp_aperture[3],
+             &native_adreno_table_switches ? native_adreno_table_switches[1] : 0u);
     at = put(out, at, cap, aprow, sizeof aprow);
   }
   if (&native_adreno_wfi_try && native_adreno_wfi_try[0]) {
