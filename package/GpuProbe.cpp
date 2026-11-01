@@ -1506,13 +1506,17 @@ bool metal() {
 }
 #endif
 
+/* The same map-read-unmap the driver's board hook installs below (dramRead32). Declared here because the hang row reads the
+ * fence page through it, and the definition sits past this function. */
+int dramRead32(uint64_t physical, uint32_t *value);
+
 // Where the CP stands when it stops moving. Once a submission is outstanding and RPTR, IB1 base and IB1 remaining dwords are the
 // same as one beat (2 s) before, the rows are refreshed (the ring itself may be drained: RPTR passes an IB's packet when the CP
 // fetches it, before the IB runs; 2026-10-24's hang left RPTR = WPTR). The first row: RBBM_STATUS..STATUS3 (0x210..0x213), CP_RB_RPTR/WPTR,
 // IB1 and IB2 base and remaining dwords (0x928/0x92a, 0x92b/0x92d), CP_HW_FAULT 0x821, CP_INTERRUPT_STATUS 0x823,
-// CP_PROTECT_STATUS 0x824. The second: the SQE PC and the header of the packet it is on (CP_SQE_STAT_ADDR 0x908 = 0, then
-// CP_SQE_STAT_DATA 0x909 twice, as crashdec reads them), context bank 0 FSR, FAR and FSYNR0, and the IB positions of the first
-// beat that saw the stall, so two log periods tell a stuck CP from a slow one.
+// CP_PROTECT_STATUS 0x824, then CP_SQE_STAT (0x908/0x909) indices 0..2, CP_ROQ_THRESHOLDS_2's ROQ size, CP_STATUS_1 and
+// the fence page's word 0. The second row: context bank 0 FSR, FAR and FSYNR0, and the IB positions of the first beat that
+// saw the stall, so two log periods tell a stuck CP from a slow one.
 void hangRows(unsigned t) {
     static unsigned firstT;
     static uint64_t firstIb1, firstIb2;
@@ -1521,17 +1525,33 @@ void hangRows(unsigned t) {
     const uint64_t ib1 = gpuRead(0x928) | uint64_t(gpuRead(0x929)) << 32, ib2 = gpuRead(0x92b) | uint64_t(gpuRead(0x92c)) << 32;
     const uint32_t rem1 = gpuRead(0x92a), rem2 = gpuRead(0x92d);
     if (!seen) {seen = true; firstT = t; firstIb1 = ib1; firstIb2 = ib2; firstRem1 = rem1; firstRem2 = rem2;}
-    snprintf(native_gpu_rows[kRowHang], sizeof native_gpu_rows[0],
-        "HANG st%08x %x/%x/%x r%x/%x | ib1 %llx+%x ib2 %llx+%x | hw%x cpi%x prot%x", gpuRead(0x210), gpuRead(0x211),
-        gpuRead(0x212), gpuRead(0x213), gpuRead(0x806), gpuRead(0x807), (unsigned long long)ib1, rem1, (unsigned long long)ib2, rem2,
-        gpuRead(0x821), gpuRead(0x823), gpuRead(0x824));
+    /* CP_SQE_STAT (0x908 addr / 0x909 data): index 0 is the microcode's program counter, index 1 the opcode the SQE is on
+     * (a6xx_cp_hw_err_irq reads index 1 for "possible opcode"; crashdec reads index 0 as the PC). Read in the first row, with
+     * the ROQ size and CP_STATUS_1, so one hang answers "where in the microcode" and "was the IB queue ever consumed".
+     * CP_ROQ_THRESHOLDS_2's [31:14] is the ROQ size in quad-dwords (a6xx_get_cp_roq_size). CP_STATUS_1 (0x825) is the AHB
+     * register group's other member (a6xx_gpu_state.h:313). scr0 is the fence page's word 0, the RPTR shadow the CP writes
+     * when NO_UPDATE is clear. Everything goes in one row (26): the second row (27) is the DDR vote's, and a hang used to
+     * overwrite it. A 256-byte row holds all of it. */
     gw(0x908, 0);
-    const uint32_t pc = gpuRead(0x909), op = gpuRead(0x909);
+    const uint32_t pc = gpuRead(0x909);
+    gw(0x908, 1);
+    const uint32_t op = gpuRead(0x909);
+    gw(0x908, 2);
+    const uint32_t st2 = gpuRead(0x909);
+    const uint32_t roq2 = gpuRead(0x8c2), status1 = gpuRead(0x825);
+    /* Word 0 of the fence page, through the uncached page read the IB dumps use: the RPTR shadow the CP writes when
+     * CP_RB_CNTL.NO_UPDATE is clear. If it holds the same value as CP_RB_RPTR, the CP's own shadow agrees that the ring
+     * was consumed; if it stays at 0 the register reading is the only evidence. */
+    uint32_t shadow = 0xffffffffu;
+    if (gNb[2].physical) (void)dramRead32(gNb[2].physical, &shadow);
     const uint32_t bank0 = smmuBank0();
-    snprintf(native_gpu_rows[kRowHang2], sizeof native_gpu_rows[0],
-        "HANG sqe pc%x op%08x | fsr%x far%08x%08x fsynr%x | first t%u ib1 %llx+%x ib2 %llx+%x", pc, op, smmuRead(bank0 + 0x58),
-        smmuRead(bank0 + 0x64), smmuRead(bank0 + 0x60), smmuRead(bank0 + 0x68), firstT, (unsigned long long)firstIb1, firstRem1,
-        (unsigned long long)firstIb2, firstRem2);
+    snprintf(native_gpu_rows[kRowHang], sizeof native_gpu_rows[0],
+        "HANG st%08x %x/%x/%x r%x/%x | ib1 %llx+%x ib2 %llx+%x | hw%x cpi%x prot%x | sqe pc%x op%08x st2%x | roq2 %x st1 %x scr0 %x"
+        " | fsr%x far%08x%08x fsynr%x | first t%u ib1 %llx+%x",
+        gpuRead(0x210), gpuRead(0x211), gpuRead(0x212), gpuRead(0x213), gpuRead(0x806), gpuRead(0x807),
+        (unsigned long long)ib1, rem1, (unsigned long long)ib2, rem2, gpuRead(0x821), gpuRead(0x823), gpuRead(0x824),
+        pc, op, st2, roq2, status1, shadow, smmuRead(bank0 + 0x58), smmuRead(bank0 + 0x64), smmuRead(bank0 + 0x60),
+        smmuRead(bank0 + 0x68), firstT, (unsigned long long)firstIb1, firstRem1);
     changed();
 }
 
