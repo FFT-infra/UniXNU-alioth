@@ -78,6 +78,10 @@ extern unsigned long vm_kernel_slide;
 extern volatile uint64_t native_gop_wait_stats[7] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_fence_wait[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall[24] __attribute__((weak_import));
+/* CP_RB_WPTR writes and their GMU AHB fence: [0] writes, [1] writes that needed a repeat, [2] repeats, [3] writes still
+ * not fenced after 200 tries. A write whose fence never clears is the board's own evidence for "the CP's AHB path is
+ * not answering", which is the one hypothesis every round since fix54 has assumed and never measured. */
+extern volatile uint32_t native_adreno_wptr_fence[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_close_step[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_cp_aperture[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_table_switches[8] __attribute__((weak_import));
@@ -1125,6 +1129,12 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_adreno_close_step[1], &native_adreno_trace_stage ? native_adreno_trace_stage : 0u,
              native_adreno_close_step[2], native_adreno_close_step[3], native_adreno_close_step[4], native_adreno_close_step[5]);
     at = put(out, at, cap, closerow, sizeof closerow);
+  }
+  if (&native_adreno_wptr_fence && native_adreno_wptr_fence[0]) {
+    char row[128];
+    snprintf(row, sizeof row, "[gpu wptr] writes=%u retried=%u repeats=%u unfenced=%u", native_adreno_wptr_fence[0],
+             native_adreno_wptr_fence[1], native_adreno_wptr_fence[2], native_adreno_wptr_fence[3]);
+    at = put(out, at, cap, row, sizeof row);
   }
   if (&native_adreno_stall && native_adreno_stall[0]) {
     char row[240];    int n = snprintf(row, sizeof row, "[gpu stall] fence=%u n=%u", native_adreno_stall[0], native_adreno_stall[1]);
