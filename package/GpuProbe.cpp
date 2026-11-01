@@ -1541,7 +1541,7 @@ void hangRows(unsigned) {
     const uint32_t bank0 = smmuBank0();
     snprintf(native_gpu_rows[kRowHang], sizeof native_gpu_rows[0],
         "HANG st%08x %x/%x/%x r%x/%x ib1 %llx+%x ib2 %llx+%x hw%x cpi%x prot%x"
-        " | sqe pc%x pkt%08x $00 %08x $01 %08x $02 %08x $03 %08x $04 %08x | roq2 %x st1 %x scr0 %x | fsr%x far%08x%08x",
+        " | sqe pc%x $01 %08x $02 %08x $03 %08x $04 %08x $05 %08x $06 %08x | roq2 %x st1 %x scr0 %x | fsr%x far%08x%08x",
         gpuRead(0x210), gpuRead(0x211), gpuRead(0x212), gpuRead(0x213), gpuRead(0x806), gpuRead(0x807),
         (unsigned long long)ib1, rem1, (unsigned long long)ib2, rem2, gpuRead(0x821), gpuRead(0x823), gpuRead(0x824),
         pc, stat[1], stat[2], stat[3], stat[4], stat[5], stat[6], roq2, status1, shadow,
