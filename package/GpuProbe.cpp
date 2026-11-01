@@ -1256,8 +1256,11 @@ int ucRound(IOService *svc) {
          * Same IB, same writes, only the address changes: if this completes, the stop was page-table coverage. */
         unsigned lowIova = 0;
         PE_parse_boot_argn("pipa-gpu-lowiova", &lowIova, sizeof lowIova);
-        const uint64_t ibIova = lowIova ? 0x300000ull : 0x20004000ull;
-        const uint64_t tgtIova = lowIova ? 0x301000ull : 0x20005000ull;
+        /* 0x310000, not 0x300000: 0x300000..0x302fff are the GPU context's own memptrs/pwrup/scratch buffers, so a
+         * BO mapped there is refused as Busy (fix70 measured e00002d5 at step 7). 0x310000 is the first free page
+         * above them and still inside the range cpStart's CP_MEM_WRITE reaches. */
+        const uint64_t ibIova = lowIova ? 0x310000ull : 0x20004000ull;
+        const uint64_t tgtIova = lowIova ? 0x311000ull : 0x20005000ull;
         NativeAdrenoAbiBoMap mapIb{ib.handle, ibIova, 1, 0, 2, 0}, mapTgt{tgt.handle, tgtIova, 3, 0, 2, 0};
         NativeAdrenoAbiBoMapReply r{};
         NativeAdrenoAbiBoCpuMap cmIb{ib.handle}, cmTgt{tgt.handle};
