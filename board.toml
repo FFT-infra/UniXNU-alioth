@@ -390,7 +390,6 @@ kernel_args = [
   "serial=3",
   "debug=0x14e",
   "kt_fixed_zones=120",
-  "armcpu-diagnostics=1",
   # Secondary CPUs. Without these the kernel runs uniprocessor: ArmCpu.cpp only issues a PSCI
   # CPU_ON when sheng-smp is non-zero, and the panel has been reporting
   # "SMP req=0 run=0 cond=0 boot=0" on every boot so far, so all 146 processes of the startup
