@@ -1517,27 +1517,21 @@ int dramRead32(uint64_t physical, uint32_t *value);
 // CP_PROTECT_STATUS 0x824, then CP_SQE_STAT (0x908/0x909) indices 0..2, CP_ROQ_THRESHOLDS_2's ROQ size, CP_STATUS_1 and
 // the fence page's word 0. The second row: context bank 0 FSR, FAR and FSYNR0, and the IB positions of the first beat that
 // saw the stall, so two log periods tell a stuck CP from a slow one.
-void hangRows(unsigned t) {
-    static unsigned firstT;
-    static uint64_t firstIb1, firstIb2;
-    static uint32_t firstRem1, firstRem2;
-    static bool seen;
+void hangRows(unsigned) {
     const uint64_t ib1 = gpuRead(0x928) | uint64_t(gpuRead(0x929)) << 32, ib2 = gpuRead(0x92b) | uint64_t(gpuRead(0x92c)) << 32;
     const uint32_t rem1 = gpuRead(0x92a), rem2 = gpuRead(0x92d);
-    if (!seen) {seen = true; firstT = t; firstIb1 = ib1; firstIb2 = ib2; firstRem1 = rem1; firstRem2 = rem2;}
-    /* CP_SQE_STAT (0x908 addr / 0x909 data): index 0 is the microcode's program counter, index 1 the opcode the SQE is on
-     * (a6xx_cp_hw_err_irq reads index 1 for "possible opcode"; crashdec reads index 0 as the PC). Read in the first row, with
-     * the ROQ size and CP_STATUS_1, so one hang answers "where in the microcode" and "was the IB queue ever consumed".
+    /* CP_SQE_STAT (0x908 addr / 0x909 data). Its window is read as crashdec reads it (a6xx_gpu_state.h:430-431, count 0x33):
+     * one write of 0 to the address, then consecutive reads pop index 0, 1, 2, ... Index 0 is the microcode's program
+     * counter; index 1 is the PM4 packet header the SQE holds; indices 2.. are the SQE's register file $00, $01, ... So
+     * "which register does the branch at the PC test" needs no second round.
      * CP_ROQ_THRESHOLDS_2's [31:14] is the ROQ size in quad-dwords (a6xx_get_cp_roq_size). CP_STATUS_1 (0x825) is the AHB
      * register group's other member (a6xx_gpu_state.h:313). scr0 is the fence page's word 0, the RPTR shadow the CP writes
-     * when NO_UPDATE is clear. Everything goes in one row (26): the second row (27) is the DDR vote's, and a hang used to
-     * overwrite it. A 256-byte row holds all of it. */
+     * when NO_UPDATE is clear. Everything goes in row 26: row 27 is the DDR vote's, and a hang used to overwrite it. */
     gw(0x908, 0);
-    const uint32_t pc = gpuRead(0x909);
-    gw(0x908, 1);
-    const uint32_t op = gpuRead(0x909);
-    gw(0x908, 2);
-    const uint32_t st2 = gpuRead(0x909);
+    uint32_t stat[8] = {};
+    for (unsigned i = 0; i < 8; ++i) stat[i] = gpuRead(0x909);
+    /* Index 0 is the PC; index 1 is the packet header the SQE holds, not a register. */
+    const uint32_t pc = stat[0];
     const uint32_t roq2 = gpuRead(0x8c2), status1 = gpuRead(0x825);
     /* Word 0 of the fence page, through the uncached page read the IB dumps use: the RPTR shadow the CP writes when
      * CP_RB_CNTL.NO_UPDATE is clear. If it holds the same value as CP_RB_RPTR, the CP's own shadow agrees that the ring
@@ -1546,12 +1540,12 @@ void hangRows(unsigned t) {
     if (gNb[2].physical) (void)dramRead32(gNb[2].physical, &shadow);
     const uint32_t bank0 = smmuBank0();
     snprintf(native_gpu_rows[kRowHang], sizeof native_gpu_rows[0],
-        "HANG st%08x %x/%x/%x r%x/%x | ib1 %llx+%x ib2 %llx+%x | hw%x cpi%x prot%x | sqe pc%x op%08x st2%x | roq2 %x st1 %x scr0 %x"
-        " | fsr%x far%08x%08x fsynr%x | first t%u ib1 %llx+%x ib2 %llx+%x",
+        "HANG st%08x %x/%x/%x r%x/%x ib1 %llx+%x ib2 %llx+%x hw%x cpi%x prot%x"
+        " | sqe pc%x pkt%08x $00 %08x $01 %08x $02 %08x $03 %08x $04 %08x | roq2 %x st1 %x scr0 %x | fsr%x far%08x%08x",
         gpuRead(0x210), gpuRead(0x211), gpuRead(0x212), gpuRead(0x213), gpuRead(0x806), gpuRead(0x807),
         (unsigned long long)ib1, rem1, (unsigned long long)ib2, rem2, gpuRead(0x821), gpuRead(0x823), gpuRead(0x824),
-        pc, op, st2, roq2, status1, shadow, smmuRead(bank0 + 0x58), smmuRead(bank0 + 0x64), smmuRead(bank0 + 0x60),
-        smmuRead(bank0 + 0x68), firstT, (unsigned long long)firstIb1, firstRem1, (unsigned long long)firstIb2, firstRem2);
+        pc, stat[1], stat[2], stat[3], stat[4], stat[5], stat[6], roq2, status1, shadow,
+        smmuRead(bank0 + 0x58), smmuRead(bank0 + 0x64), smmuRead(bank0 + 0x60));
     changed();
 }
 
