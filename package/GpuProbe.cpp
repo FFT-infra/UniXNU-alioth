@@ -1250,7 +1250,14 @@ int ucRound(IOService *svc) {
     IOMemoryDescriptor *desc[2] = {};
     IOMemoryMap *maps[2] = {};
     if (step(ucCall(uc, NativeAdrenoMethodBoAlloc, &alloc, &ib)) && step(ucCall(uc, NativeAdrenoMethodBoAlloc, &alloc, &tgt))) {
-        const uint64_t ibIova = 0x20004000, tgtIova = 0x20005000;   // inside the client window of kDeviceInfo
+        /* fix70: the default is the client window kDeviceInfo advertises. pipa-gpu-lowiova=1 moves both into the
+         * range the kernel context already proved reachable: cpStart's own CP_MEM_WRITE lands at 0x302000 and
+         * completes every round (GPUROW19 marker a6500c0d), so 0x300000 is inside the table the CP actually uses.
+         * Same IB, same writes, only the address changes: if this completes, the stop was page-table coverage. */
+        unsigned lowIova = 0;
+        PE_parse_boot_argn("pipa-gpu-lowiova", &lowIova, sizeof lowIova);
+        const uint64_t ibIova = lowIova ? 0x300000ull : 0x20004000ull;
+        const uint64_t tgtIova = lowIova ? 0x301000ull : 0x20005000ull;
         NativeAdrenoAbiBoMap mapIb{ib.handle, ibIova, 1, 0, 2, 0}, mapTgt{tgt.handle, tgtIova, 3, 0, 2, 0};
         NativeAdrenoAbiBoMapReply r{};
         NativeAdrenoAbiBoCpuMap cmIb{ib.handle}, cmTgt{tgt.handle};
