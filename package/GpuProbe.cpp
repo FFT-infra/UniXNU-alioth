@@ -635,7 +635,9 @@ bool gpuContext() {
     // Write-combined BOs stay the default, as on the pinned source (native_adreno_wc_enabled defaults to 1 there).
     // The coherence path is opt-in behind sheng-gpu-owned-coherent and needs the board's IO-coherence proof, which
     // this board has not run, so it stays off here.
-    native_adreno_wc_enabled = 1;
+    unsigned wc = 0;
+    PE_parse_boot_argn("sheng-gpu-wc", &wc, sizeof wc);
+    native_adreno_wc_enabled = wc ? 1 : 0;
     native_adreno_owned_coherent = 0;
     // There is no fixed BO pool on this pin: user BOs come from the system and fall back to pageable pages, so
     // pipa-gpu-pool and pipa-gpu-ro-own no longer exist as knobs. The Metal frontend still cleans the read-only
