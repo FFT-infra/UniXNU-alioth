@@ -555,7 +555,7 @@ kernel_args = [
   # offline-legacy-dump-at is gone. It gated native_legacy_dump_state(), which was removed when
   # the cell painter replaced the panic dump, so the argument had been a dead key: present on the
   # command line, read by nothing. The text channel below replaces it properly.
-  "sheng-vsync=60",
+  "sheng-vsync=120",
   # sheng-lite and sheng-disable-watchdogd come from the working port. Both are parsed by
   # package/BootWatchdogPolicy.c, whose only call site is inside `#if XNU_BOOT_PROGRESS` in
   # load_init_program, so they did nothing until alioth_defconfig turned that option on.
