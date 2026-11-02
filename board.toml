@@ -711,6 +711,13 @@ kernel_args = [
   # (sc) has not moved without it, so the desktop may be compositing and never presenting.
   # The tag is shortened to u208 because the command line is at 983 of its 1000 bytes.
   "sheng-fb-gpu=1",
+  # Direct scanout and its colour order. These two are not optional: fix159 booted without them
+  # and the digitizer reported power=01 (monitor) with contacts=0 all run, while fix160, the same
+  # kernel with these two arguments, reached the desktop and answered touch. They were dropped
+  # from the round script when the commands moved to unixnu build payload, and every image from
+  # fix156 to fix159 lost touch with them.
+  "sheng-fb-bgra=1",
+  "sheng-dpu-scanout=2",
   # pipa-metal-withhold=none was tried on 2026-10-29: SpringBoard stops trapping but the
   # compositor then sends swaps with no surface (reason 1), so nothing draws. The default
   # withholds the Apple GPU families, which is the configuration where the desktop appears.
