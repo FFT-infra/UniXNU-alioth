@@ -9,7 +9,7 @@ commit = "a6e7e36caab58f5b9a5625dbdb8da2bf290fa5cc"
 name = "ShengUfs"
 kind = "driver"
 git = "https://github.com/FFT-infra/NativeUfs-alioth"
-commit = "ab5405905a1892da03a9a53e0fa3dcd255d04055"
+commit = "f7612e0a3a32caed8a20f4378cfc900e5bccad3b"
 
 # Board forks of shared drivers, owned here rather than by the main repository's submodules
 # (porting/device-repository: device repositories own board driver submodules). Each carries a
@@ -33,4 +33,4 @@ commit = "18bcc385bc0c97ff38343a83040f19711392867b"
 name = "Adreno740"
 kind = "driver"
 git = "https://github.com/FFT-infra/Adreno650"
-commit = "619a5ba400e9e9c145ab989f7f063789de4a4a56"
+commit = "70771a71795d7e1a78afdb82badd7943adb0a3a0"

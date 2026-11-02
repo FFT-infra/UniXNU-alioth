@@ -17,7 +17,20 @@ kit = "alioth"
 # same (scripts/build-gop-legacy-display.py). Selecting it here as well would run the recipe a
 # second time on its own, where it cannot find the reference candidate alias or Homebrew's
 # llvm, and its output is never archived by the generic pipeline anyway.
-include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "ShengUfs", "ShengHidInput", "VirtioMmioBlock", "RamBlock", "GopFramebuffer", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState", "QcomXnuUsbDebug"]
+# ArmSmmu4K, AdrenoPM4 and AdrenoFirmware are selected so the tree carries their sources at
+# kits/<name>, where scripts/build-adreno650.py compiles them into the board's GPU archive.
+# They are "embedded" kits with no build of their own, so selecting them adds no archive and
+# no second copy. Without them the device repository needed three symbolic links into
+# ../../UniXNU/kits, which resolved in this workspace only.
+include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "ShengUfs", "ShengHidInput", "VirtioMmioBlock", "RamBlock", "GopFramebuffer", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState", "QcomXnuUsbDebug", "ArmSmmu4K", "AdrenoPM4", "AdrenoFirmware"]
+
+[package]
+# docs/porting/packaging.md: scripts/package.sh is copied unchanged from the UniXNU
+# repository's templates/ and reads this one board value itself.
+unixnu = "../UniXNU"
+
+[package.defconfig]
+"ipados-17.7.11-21H461" = "alioth_defconfig"
 
 [ipsw]
 # The donor image, described by the board instead of only inherited from the OS profile. The

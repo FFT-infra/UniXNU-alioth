@@ -37,7 +37,10 @@ KITS = Path(os.environ.get('ADRENO650_KITS', str(ROOT / 'kits')))
 sources = sorted(KITS.joinpath('ArmSmmu4K').glob('ArmSmmu4K*.c')) + [KITS / 'AdrenoPM4' / 'AdrenoPM4.c']
 # The HFI kit and the A650 cold start that uses it.
 sources += [KITS / 'AdrenoFirmware' / (name + '.c') for name in ('AdrenoFirmware', 'AdrenoHfi', 'AdrenoHfiStartup', 'AdrenoHfiVotes')]
-sources += [KITS / 'pipa' / 'A650Gmu.c']
+# A650Gmu.c is board code, so it travels with the board package (package/pipa), not with
+# the shared kits. The device repository used to carry kits/pipa and three symbolic links
+# into ../../UniXNU/kits; the links resolved in this workspace only and broke every clean
+# checkout, so the three kits are selected components now and this file comes from package/.
 # The GPU half of NativeAdreno and the GMU's SMMU context. Left out: sheng's GMU platform nodes and service
 # (NativeAdrenoService.cpp, NativeAdrenoGmuService/Platform/Config) and the accelerator.
 sources += [driver / (name + '.cpp') for name in (
@@ -48,7 +51,17 @@ sources += [driver / (name + '.cpp') for name in (
 # The board probe and its firmware: both are package files. The probe exports
 # native_gpu_probe(), which the late display probe calls; the firmware object defines the
 # three arrays it weak-imports.
-PACKAGE = Path(os.environ.get('ADRENO650_PACKAGE', str(ROOT / 'package')))
+# The board package: in the assembled tree the device package appears at kits/<board.kit>,
+# while tree/package is the base repository's own package. In the device repository itself
+# it is package/. Find it by a file only this board's package has, so no environment
+# variable has to name it.
+BOARD = next((p.parent for p in sorted((ROOT / 'kits').glob('*/GpuProbe.cpp'))), ROOT / 'package')
+PACKAGE = Path(os.environ.get('ADRENO650_PACKAGE', str(BOARD)))
+# A650Gmu.c is board code and travels with the board package. In the assembled tree the
+# package appears at kits/<board.kit>; in the device repository itself it is package/pipa.
+# Find either, so no environment variable has to name it.
+PIPA = next(iter(sorted((ROOT / 'kits').glob('*/pipa/A650Gmu.c'))), PACKAGE / 'pipa' / 'A650Gmu.c')
+sources += [PIPA]
 sources += [PACKAGE / 'GpuProbe.cpp', PACKAGE / 'GpuFirmwareA650.c', PACKAGE / 'alioth_pcie.c']
 objects = []
 for source in sources:
@@ -70,12 +83,16 @@ for source in sources:
             command.append(value)
         i += 1
     command += ['-I', str(ROOT / 'kits/AdrenoPM4'), '-I', str(ROOT / 'kits/ArmSmmu4K'), '-I', str(ROOT / 'kits/AdrenoFirmware'),
-                '-I', str(KITS / 'pipa'), '-I', str(KITS / 'AdrenoFirmware'), '-I', str(KITS / 'AdrenoPM4'), '-I', str(KITS / 'ArmSmmu4K'), '-I', str(ROOT / '.cache/xnu-work/osfmk'),
+                '-I', str(PIPA.parent), '-I', str(KITS / 'AdrenoFirmware'), '-I', str(KITS / 'AdrenoPM4'), '-I', str(KITS / 'ArmSmmu4K'), '-I', str(ROOT / '.cache/xnu-work/osfmk'),
                 '-I', str(driver), '-I', str(PACKAGE), '-Wall', '-Wextra', '-Werror',
                 '-Wno-unused-parameter', '-Wno-incompatible-sysroot', '-Wno-c99-designator',
                 # alioth_pcie.c leaves struct fields implicit on purpose (the ios-sweet tree
                 # compiled it without -Werror); the kernel's record turns that into an error.
                 '-Wno-missing-field-initializers',
+                # clang-24 split the designated-initializer half of that warning out. The fork's
+                # kalloc_type_view initializers predate the upstream field additions, and the
+                # remaining designators are the ones that matter.
+                '-Wno-missing-designated-field-initializers',
                 '-Wno-reorder-init-list', '-Wno-deprecated-enum-enum-conversion',
                 '-Wno-unnecessary-virtual-specifier']
     # Mode 12: the staged AGXAccelerator registers the IOAcceleratorES service that the original
@@ -123,7 +140,10 @@ while i < len(cxx_recipe['arguments']):
     i += 1
 command += ['-I', str(Path('.cache/xnu-work/osfmk')), '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
             '-Wno-unnecessary-virtual-specifier', '-Wno-c99-designator', '-Wno-reorder-init-list',
-            '-Wno-deprecated-enum-enum-conversion', '-Wno-overloaded-virtual']
+            '-Wno-deprecated-enum-enum-conversion', '-Wno-overloaded-virtual',
+            # The fork's kalloc_type_view initializers predate upstream's new field; clang-24
+            # reports every omitted designator as an error under -Werror.
+            '-Wno-missing-designated-field-initializers']
 result = subprocess.run(command, cwd=cxx_recipe['directory'], capture_output=True, text=True)
 if result.returncode:
     sys.exit('NativeAdrenoAccelerator.cpp:\n' + result.stderr[-2500:])

@@ -1260,7 +1260,7 @@ uint32_t gReplayWords;
 int gReplayResult;
 uint32_t native_gpu_publish[20];
 uint32_t native_gpu_restart_count;
-uint32_t native_gpu_restart_step;   // 1 ring restart failed, 2 past it, 3 CP init failed, 4 past it
+uint32_t native_gpu_restart_step __attribute__((unused));   // 1 ring restart failed, 2 past it, 3 CP init failed, 4 past it. BootLog.c reads it; this translation unit only writes it, so clang-24 reports it set but not used without the attribute.
 }
 void publishRow(const char *what) {
     const uint32_t *p = native_gpu_publish;
