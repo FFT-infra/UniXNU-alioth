@@ -7,6 +7,10 @@
 #include <sys/sysproto.h>
 #include <sys/fcntl.h>
 #include <sys/stat.h>
+#include <sys/vnode.h>
+#include <sys/uio.h>
+#include <sys/dirent.h>
+#include <IOKit/IOLib.h>
 #include <pexpert/pexpert.h>
 
 static const char policy_head[] =
@@ -64,21 +68,69 @@ static int sheng_boot_setup_reset(proc_t p,uint64_t scratch) {
  * sheng-wallpaper-reset=1 removes the stored configuration once, so this boot builds it again from the collection and the overlay.
  * [0] is how many candidates there are; [i+1] records the unlink of candidate i: 0 removed, ENOENT (2) absent, else the errno. */
 volatile int32_t sheng_wallpaper_reset[8] = {0};
+extern vfs_context_t vfs_context_kernel(void);
+
+static int sheng_unlink_one(proc_t p, uint64_t scratch, const char *file) {
+ int32_t result = 0;
+ int error = copyout(file, scratch, strlen(file) + 1);
+ if (error) return error;
+ struct unlink_args rm = {.path = scratch};
+ error = unlink(p, &rm, &result);
+ return error ? error : 0;
+}
+
 static int sheng_wallpaper_reset_files(proc_t p, uint64_t scratch) {
- static const char *const files[]={
-  "/private/var/mobile/Containers/Data/Application/21211B1B-49C3-4486-803E-7E7ABCD864ED/Library/Preferences/com.apple.PosterBoard.plist",
-  "/private/var/mobile/Library/Preferences/com.apple.PosterBoard.plist",
-  "/private/var/mobile/Library/Preferences/com.apple.PaperBoard.plist",
-  "/private/var/mobile/Library/Preferences/com.apple.paperboard.plist"};
- sheng_wallpaper_reset[0]=(int32_t)(sizeof(files)/sizeof(files[0]));
- for(unsigned i=0;i<sizeof(files)/sizeof(files[0]);++i) {
-  int32_t result=0;
-  int error=copyout(files[i],scratch,strlen(files[i])+1);
-  if(error)return error;
-  struct unlink_args rm={.path=scratch};
-  error=unlink(p,&rm,&result);
-  sheng_wallpaper_reset[1+i]=error?error:0;
- } return 0;
+ int count = 0;
+ sheng_wallpaper_reset[1 + count] = sheng_unlink_one(p, scratch, "/private/var/mobile/Library/Preferences/com.apple.PosterBoard.plist");
+ count++;
+ sheng_wallpaper_reset[1 + count] = sheng_unlink_one(p, scratch, "/private/var/mobile/Library/Preferences/com.apple.PaperBoard.plist");
+ count++;
+ sheng_wallpaper_reset[1 + count] = sheng_unlink_one(p, scratch, "/private/var/mobile/Library/Preferences/com.apple.paperboard.plist");
+ count++;
+
+ vfs_context_t ctx = vfs_context_kernel();
+ vnode_t dir = NULLVP;
+ if (!vnode_lookup("/private/var/mobile/Containers/Data/Application", 0, &dir, ctx)) {
+  if (vnode_vtype(dir) == VDIR) {
+   char *buffer = (char *)IOMallocData(4096);
+   if (buffer) {
+    off_t offset = 0;
+    for (int eof = 0; !eof;) {
+     uio_t uio = uio_create(1, offset, UIO_SYSSPACE, UIO_READ);
+     if (!uio) break;
+     uio_addiov(uio, CAST_USER_ADDR_T(buffer), 4096);
+     int nentries = 0;
+     int error = VNOP_READDIR(dir, uio, 0, &eof, &nentries, ctx);
+     const size_t got = 4096 - (size_t)uio_resid(uio);
+     offset = uio_offset(uio);
+     uio_free(uio);
+     if (error || !got) break;
+     for (size_t at = 0; at + offsetof(struct dirent, d_name) <= got;) {
+      const struct dirent *d = (const struct dirent *)(buffer + at);
+      if (!d->d_reclen) { eof = 1; break; }
+      at += d->d_reclen;
+      if (!d->d_ino || (d->d_namlen == 1 && d->d_name[0] == '.') || (d->d_namlen == 2 && d->d_name[0] == '.' && d->d_name[1] == '.')) continue;
+      if (d->d_type == DT_DIR && d->d_namlen > 10) {
+       char target[256];
+       snprintf(target, sizeof target, "/private/var/mobile/Containers/Data/Application/%.*s/Library/Preferences/com.apple.PosterBoard.plist", (int)d->d_namlen, d->d_name);
+       int rc = sheng_unlink_one(p, scratch, target);
+       if (rc != ENOENT && count < 6) sheng_wallpaper_reset[1 + count++] = rc;
+       snprintf(target, sizeof target, "/private/var/mobile/Containers/Data/Application/%.*s/Library/Application Support/PRBPosterExtensionDataStore/SelectedConfigurationIdentifier.plist", (int)d->d_namlen, d->d_name);
+       rc = sheng_unlink_one(p, scratch, target);
+       if (rc != ENOENT && count < 6) sheng_wallpaper_reset[1 + count++] = rc;
+       snprintf(target, sizeof target, "/private/var/mobile/Containers/Data/Application/%.*s/Library/Application Support/PosterBoard/SelectedConfigurationIdentifier.plist", (int)d->d_namlen, d->d_name);
+       rc = sheng_unlink_one(p, scratch, target);
+       if (rc != ENOENT && count < 6) sheng_wallpaper_reset[1 + count++] = rc;
+      }
+     }
+    }
+    IOFreeData(buffer, 4096);
+   }
+  }
+  vnode_put(dir);
+ }
+ sheng_wallpaper_reset[0] = count;
+ return 0;
 }
 
 /* Which wallpaper the desktop actually picks. PosterBoard stores its choice in this plist, so its bytes name the collection and

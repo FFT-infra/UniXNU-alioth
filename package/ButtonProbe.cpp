@@ -55,6 +55,7 @@
 #include "ButtonsCore.h"
 
 extern "C" int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint32_t *, uint64_t *) __attribute__((weak_import));
+extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
 
 // BootLog.c already composes this row, in sheng's wording:
 //   [0] stage (1 mapped, 2 configured, 3 armed, negative: the step that failed)
@@ -321,6 +322,13 @@ void buttonsThread(void *, wait_result_t) {
             native_buttons_stats[3] = (int32_t)mask;
             void (*sink)(void *, uint32_t) = __atomic_load_n(&gSink, __ATOMIC_ACQUIRE);
             if (sink) {sink(gSinkContext, mask); native_buttons_stats[2] = native_buttons_stats[2] + 1;}
+            if (&qcom_usb_debug_write) {
+                char row[64];
+                int n = snprintf(row, sizeof row, "BUTTON mask=%u (pwr=%u vup=%u vdown=%u) rep=%d\n",
+                                 (unsigned)mask, (unsigned)((mask >> 1) & 1), (unsigned)((mask >> 2) & 1),
+                                 (unsigned)((mask >> 3) & 1), (int)native_buttons_stats[2]);
+                if (n > 0) qcom_usb_debug_write(row, (size_t)n < sizeof row ? (size_t)n : sizeof row - 1);
+            }
         }
         // Poll every kPollMs (50 ms). Reliable sleep keeps polling alive without waitq stalls.
         IOSleep(kPollMs);
