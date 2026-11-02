@@ -138,7 +138,7 @@ while i < len(cxx_recipe['arguments']):
     elif not value.startswith('-W') and value not in ('-MD', '-MP'):
         command.append(value)
     i += 1
-command += ['-I', str(Path('.cache/xnu-work/osfmk')), '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
+command += ['-I', str(Path('.cache/xnu-work/osfmk')), '-I', str(ROOT / 'drivers'), '-Wall', '-Wextra', '-Werror', '-Wno-unused-parameter',
             '-Wno-unnecessary-virtual-specifier', '-Wno-c99-designator', '-Wno-reorder-init-list',
             '-Wno-deprecated-enum-enum-conversion', '-Wno-overloaded-virtual',
             # The fork's kalloc_type_view initializers predate upstream's new field; clang-24
