@@ -1576,9 +1576,22 @@ static void writer(void *arg, wait_result_t result) {
     const unsigned now = (unsigned)((log_ticks() - start) / f);
     int ok = 1;
     unsigned bad = 0;
-    // Text slot, then the message buffer, then the header that makes both visible. `bad` is the
-    // first step that failed, in the same numbering as log_phase (1 slot, 3 message buffer,
-    // 5 header, 7 sync), so a failed round can name it on the console.
+    // The header goes out FIRST, before the slot and the message buffer, and it names the round
+    // that is about to run. A round that hangs inside one of the writes after this point leaves
+    // the medium saying "round N started, uptime T" instead of the last round that happened to
+    // finish -- which is the only way a reader can tell a stalled round from a stalled system.
+    // slots_written and rounds are not incremented here, so a reader still sees the last complete
+    // round; uptime_s is the round's own start time, and that is what names the stall.
+    h.uptime_s = now; h.state = boot_log_state;
+    memset(boot_log_buffer, 0, LogBlock);
+    memcpy(boot_log_buffer, &h, sizeof h);
+    log_phase = 5;
+    if (h.rounds < 3) log_say(2, h.rounds, 5);   // before the header write
+    { const int w = native_ufs_log_write(0, 1, boot_log_buffer);
+      if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
+      ok &= w != 0; if (!ok && !bad) bad = 5; }
+    // Text slot, then the message buffer. `bad` keeps its numbering: 1 slot, 3 message buffer,
+    // 5 header, 7 sync, so a failed round can name it on the console.
     if (h.rounds < 3) log_say(2, h.rounds, 1);   // before compose
     memset(boot_log_buffer, 0, LogSlotBlocks * LogBlock);
     compose((char *)boot_log_buffer, LogSlotBlocks * LogBlock, h.slots_written, now);
@@ -1595,6 +1608,17 @@ static void writer(void *arg, wait_result_t result) {
     { const int w = native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
       if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
       ok &= w != 0; if (!ok && !bad) bad = 3; }
+    // The header lands again after the slot and the message buffer are in, so the round that
+    // finished is durable too; the first write above only named the round that started.
+    h.rounds = ++boot_log_rounds;
+    if (ok) ++h.slots_written;
+    else ++h.write_errors;
+    __atomic_store_n(&boot_log_slots_hint, h.slots_written, __ATOMIC_RELAXED);
+    memset(boot_log_buffer, 0, LogBlock);
+    memcpy(boot_log_buffer, &h, sizeof h);
+    { const int w = native_ufs_log_write(0, 1, boot_log_buffer);
+      if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
+      ok &= w != 0; if (!ok && !bad) bad = 5; }
     /* Take the frozen early-boot snapshot exactly once, while the boot-time IOLog is still inside
      * the kernel ring. copy_msgbuf always returns the newest 131072 bytes, so a copy taken at
      * t=LogFrozenAtS covers t=0..LogFrozenAtS. Writing it to LogFrozenFirst and never touching that
@@ -1618,9 +1642,6 @@ static void writer(void *arg, wait_result_t result) {
       log_phase = 3;
     }
     log_phase = 4;
-    if (ok) ++h.slots_written;
-    else ++h.write_errors;
-    __atomic_store_n(&boot_log_slots_hint, h.slots_written, __ATOMIC_RELAXED);
     // The newest complete export is already on the medium; the header names it.
     IOLockLock(export_lock);
     h.export_generation = export_ready; h.export_bytes = export_ready_bytes; h.export_first = export_ready_first;
@@ -1632,16 +1653,8 @@ static void writer(void *arg, wait_result_t result) {
       if (kernel_thread_start_priority(diag_thread, NULL, MINPRI_KERNEL, &diag) == KERN_SUCCESS) thread_deallocate(diag);
       else boot_diag_status = -10;
     }
-    h.uptime_s = now; h.rounds = ++boot_log_rounds; h.state = boot_log_state;
     // Every 30 rounds the GPT is read back; any change stops the writer for good.
     if (&native_ufs_store_gpt_check && !(h.rounds % 30)) h.gpt_last = native_ufs_store_gpt_check();
-    memset(boot_log_buffer, 0, LogBlock);
-    memcpy(boot_log_buffer, &h, sizeof h);
-    log_phase = 5;
-    if (h.rounds < 3) log_say(2, h.rounds, 5);   // before the header write
-    { const int w = native_ufs_log_write(0, 1, boot_log_buffer);
-      if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
-      ok &= w != 0; if (!ok && !bad) bad = 5; }
     log_phase = 6;
     log_phase = 7;
     if (h.rounds < 3) log_say(2, h.rounds, 6);   // before the flush
