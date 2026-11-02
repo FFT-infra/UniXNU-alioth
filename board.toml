@@ -706,7 +706,13 @@ kernel_args = [
   # The PCIe controller steps; step 1 only reads, criterion gcc pcie_0_gdscr = 0x22f001.
   # Mounts the payload addon; the wallpaper overlay arrives through it.
   "sheng-gpu-addon=1",
-  "sheng-wallpaper-reset=1",
+  # sheng-wallpaper-reset=1 was a default from 2026-11-02 18:45 (b0b1be9) to fix186, and it stopped
+  # the desktop from compositing: it removes com.apple.PosterBoard.plist on every boot, PosterBoard
+  # then rebuilds the poster each time, its two extensions fault with SIGBUS, and SpringBoard waits
+  # on the wallpaper and submits no frame. Measured with the same board in one night: fix160 (no
+  # reset) flipped 136 frames, fix184 (reset) flipped 0, fix187 (reset removed) flipped 9 and mapped
+  # 3 surfaces. Keep it out of the defaults. Pass it as a one-off maintenance action
+  # (--kernel-arg sheng-wallpaper-reset=1) when the stored poster must be rebuilt.
   # The display hand-off (NativeGOPPresenter.cpp:94): with it the composited frame is offered to
   # the privileged GPU client instead of being copied by the CPU. The live row's swap counter
   # (sc) has not moved without it, so the desktop may be compositing and never presenting.
