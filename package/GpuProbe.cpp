@@ -566,7 +566,7 @@ NativeAdrenoGmuContextReport native_gpu_context;
 uint32_t native_gpu_cp[24];
 }
 constexpr unsigned kGpuBank = 0, kGpuAsid = 2, kGpuSlots[4] = {0, 1, 4, 5}, kGpuSids[4] = {0, 1, 0x400, 0x401};
-NativeAdrenoGpuBuffer gNb[5];
+NativeAdrenoGpuBuffer gNb[16];
 OSSharedPtr<IOMemoryMap> gNbMaps[5];
 volatile uint8_t *gNbCpu[5];
 NativeAdrenoRing *gRing;
