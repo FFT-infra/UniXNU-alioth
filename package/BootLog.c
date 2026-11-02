@@ -1689,6 +1689,21 @@ static void writer(void *arg, wait_result_t result) {
     log_phase = 9;
     IOSleep(LogPeriodMs);
     log_phase = 10;   // woke; anything still at 9 is inside the sleep, anything at 10 is compose
+    boot_log_tick((unsigned)((log_ticks() - start) / f));
+  }
+}
+
+// An independent kernel thread driving the autoreset supervisor so the board returns to
+// fastboot even if monitor() yields or stalls after display handoff.
+static void autoreset_supervisor(void *arg, wait_result_t result) {
+  (void)arg; (void)result;
+  thread_set_thread_name(current_thread(), "autoreset");
+  uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
+  const uint64_t start = log_ticks();
+  while (!tick_reset_tried) {
+    IOSleep(1000);
+    const unsigned now = (unsigned)((log_ticks() - start) / f);
+    boot_log_tick(now);
   }
 }
 
@@ -1713,6 +1728,9 @@ void boot_log_tick(unsigned now) {
       if (&boot_reset_probe) (void)boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text);
       if (&boot_reset_mark_bootloader) boot_reset_mark_bootloader(boot_log_reset_mark, sizeof boot_log_reset_mark);
       if (&boot_reset_watchdog) boot_reset_watchdog(autoreset + 60, boot_log_reset_watchdog, sizeof boot_log_reset_watchdog);
+      thread_t rth;
+      if (kernel_thread_start_priority(autoreset_supervisor, 0, BASEPRI_KERNEL, &rth) == KERN_SUCCESS)
+        thread_deallocate(rth);
     }
     uint32_t mode = 0;
     if (PE_parse_boot_argn("sheng-log", &mode, sizeof mode) && mode == 1 &&

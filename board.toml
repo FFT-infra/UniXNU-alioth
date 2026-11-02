@@ -706,6 +706,7 @@ kernel_args = [
   # The PCIe controller steps; step 1 only reads, criterion gcc pcie_0_gdscr = 0x22f001.
   # Mounts the payload addon; the wallpaper overlay arrives through it.
   "sheng-gpu-addon=1",
+  "sheng-wallpaper-reset=1",
   # The display hand-off (NativeGOPPresenter.cpp:94): with it the composited frame is offered to
   # the privileged GPU client instead of being copied by the CPU. The live row's swap counter
   # (sc) has not moved without it, so the desktop may be compositing and never presenting.

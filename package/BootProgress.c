@@ -1220,8 +1220,7 @@ static void pulse_monitor(void *arg, wait_result_t result) {
       }
       bp_pulse_leave(&pulse);
     }
-    assert_wait_timeout((event_t)&pulse_worker_status,THREAD_UNINT,1000,NSEC_PER_MSEC);
-    thread_block(THREAD_CONTINUE_NULL);
+    delay_for_interval(1000, NSEC_PER_MSEC);
   }
 }
 static void process_monitor(void *arg, wait_result_t result) {
@@ -1812,8 +1811,7 @@ static void monitor(void *arg, wait_result_t result) {
       capture_attempt=attempt;process_capture_age=capturing?now-capture_at:0;
     }
     refresh(seconds());
-    assert_wait_timeout((event_t)&thread_count,THREAD_UNINT,1000,NSEC_PER_MSEC);
-    thread_block(THREAD_CONTINUE_NULL);
+    delay_for_interval(1000, NSEC_PER_MSEC);
   }
 }
 // The boot core is a little A510, and the scheduler, which sees equal cores, hands it work first (lowest idle core number). A
@@ -1866,8 +1864,7 @@ static void log_only_monitor(void *arg, wait_result_t result) {
     // instrument reads exactly like a screen that stopped changing.
     framebufferSample();
     gpu_rows_report(now);
-    assert_wait_timeout((event_t)&thread_count,THREAD_UNINT,1000,NSEC_PER_MSEC);
-    thread_block(THREAD_CONTINUE_NULL);
+    delay_for_interval(1000, NSEC_PER_MSEC);
   }
 }
 void boot_progress_start(void) {
