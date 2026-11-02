@@ -61,6 +61,13 @@ extern volatile int32_t sheng_wallpaper_scan[4] __attribute__((weak_import));
 extern unsigned sheng_wallpaper_walked __attribute__((weak_import));
 extern volatile uint64_t boot_progress_monitor_ticks __attribute__((weak_import));
 extern volatile unsigned boot_progress_monitor_step __attribute__((weak_import));
+extern volatile unsigned boot_progress_display_owned __attribute__((weak_import));
+// The display's own swap counters, read by the supervisor's console line so a boot whose monitor and writer have both
+// stopped still says whether any client ever submitted a frame.
+extern volatile uint32_t native_legacy_swap_validation_calls __attribute__((weak_import));
+extern volatile uint32_t native_legacy_swap_accepted_count __attribute__((weak_import));
+extern volatile uint32_t native_legacy_swap_rejected_count __attribute__((weak_import));
+extern volatile uint32_t native_legacy_prepare_calls __attribute__((weak_import));
 /* [0] status, [1] bytes, [2..] the bytes of the PosterBoard wallpaper choice. */
 extern volatile int32_t sheng_wallpaper_cfg[130] __attribute__((weak_import));
 extern volatile int native_gpu_addon2_status __attribute__((weak_import));
@@ -1774,10 +1781,20 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
     boot_log_super_elapsed = elapsed;
     if (boot_log_super_runs - reported >= 10) {
       reported = boot_log_super_runs;
-      char line[128];
-      const int n = snprintf(line, sizeof line, "SUPER t=%us runs=%u calls=%u mon=%llu\n", elapsed,
+      char line[192];
+      // Everything the answer to "did the desktop come up" needs, from a thread that does not share the monitor's or the
+      // writer's work: the display's swap counters (a client submitted / acceptance), the boot page's ownership flag, the
+      // pre-write hook, and the Data store's state (3 fresh, 2 resumed, 7 kept). A boot that draws no frame has swap=0
+      // here; a boot that draws has it climbing.
+      const int n = snprintf(line, sizeof line, "SUPER t=%us runs=%u calls=%u mon=%llu sw=%u/%u/%u own=%u prep=%u data=%u\n", elapsed,
                              boot_log_super_runs, boot_log_tick_calls,
-                             &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL);
+                             &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL,
+                             &native_legacy_swap_validation_calls ? native_legacy_swap_validation_calls : 0u,
+                             &native_legacy_swap_accepted_count ? native_legacy_swap_accepted_count : 0u,
+                             &native_legacy_swap_rejected_count ? native_legacy_swap_rejected_count : 0u,
+                             &boot_progress_display_owned ? boot_progress_display_owned : 0u,
+                             &native_legacy_prepare_calls ? native_legacy_prepare_calls : 0u,
+                             &native_data_persist_state ? (unsigned)__atomic_load_n(&native_data_persist_state, __ATOMIC_RELAXED) : 0u);
       if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
     }
     if (!tick_autoreset || elapsed < tick_autoreset + ResetSyncGrace) continue;
