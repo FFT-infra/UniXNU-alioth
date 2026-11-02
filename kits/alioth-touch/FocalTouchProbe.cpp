@@ -161,7 +161,15 @@ void wr32(uintptr_t base, uint32_t reg, uint32_t value) {
 }
 
 void ioDelayUs(void *, unsigned us) {
-    if (us > 50) {IODelay(us); return;}
+    /* Spin for anything short, IODelay for the rest. IODelay is not a fine-grained wait on this
+     * board: delay_for_interval only spins when the interval is below the CPU's idle latency, and
+     * the device tree carries no powergate-latency, so that latency is 0 and every IODelay lands
+     * on a whole timer tick, about 830 us (measured; AliothRpmhPort.cpp records the same number).
+     * exchange() asks for 150 us after each SPI transfer, which used to become 830 us -- more than
+     * the 6 ms frame period's worth of jitter on the first frame after a touch. The threshold is
+     * above that 150 us so the protocol's own inter-transfer delay is the interval it asked for,
+     * and below the reset timings (1200 us and 9000 us), which really do want to sleep. */
+    if (us > 500) {IODelay(us); return;}
     uint64_t frequency = 0, start = 0, now = 0;
     __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(frequency));
     __asm__ volatile("isb\n\tmrs %0, cntpct_el0" : "=r"(start));
