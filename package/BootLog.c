@@ -242,6 +242,7 @@ extern int boot_reset_probe(char *, unsigned) __attribute__((weak_import));
 extern int boot_reset_bootloader(char *, unsigned) __attribute__((weak_import));
 extern int boot_reset_mark_bootloader(char *, unsigned) __attribute__((weak_import));
 extern int boot_reset_watchdog(uint32_t, char *, unsigned) __attribute__((weak_import));
+void boot_log_tick(unsigned now);
 extern volatile uint64_t native_adreno_import_diag[10] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_import_stage __attribute__((weak_import));
 extern volatile uint64_t native_adreno_import_live[3 + 8 * 4] __attribute__((weak_import));
