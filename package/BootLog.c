@@ -1747,6 +1747,14 @@ void boot_log_tick(unsigned now) {
   // header still names the last complete round either way.
   if (now - tick_seen_at > ResetSyncGrace && elapsed < tick_autoreset + ResetSyncGrace) return;
   tick_reset_tried = 1;
+  // The deadline is reached, and that fact has to leave the kernel even when the reset then
+  // works or is refused silently: the console is the only channel that survives both, and the
+  // disk cannot report an attempt that never completed a round.
+  if (&qcom_usb_debug_write) {
+    char line[72];
+    const int n = snprintf(line, sizeof line, "AUTORESET deadline %us reached at %us\n", tick_autoreset, now);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
   if (!&boot_reset_bootloader) {
     strlcpy(boot_log_reset_result, "autoreset skipped: no reset entry point", sizeof boot_log_reset_result);
     return;
@@ -1755,4 +1763,11 @@ void boot_log_tick(unsigned now) {
   const int rc = boot_reset_bootloader(boot_log_reset_result, sizeof boot_log_reset_result);
   char tail[24]; snprintf(tail, sizeof tail, " (returned %d)", rc);
   strlcat(boot_log_reset_result, tail, sizeof boot_log_reset_result);
+  // Reaching this line at all means the reset did not take the part down. Say why on the console,
+  // where it is readable while the board is still running.
+  if (&qcom_usb_debug_write) {
+    char line[160];
+    const int n = snprintf(line, sizeof line, "AUTORESET refused: %s\n", boot_log_reset_result);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
 }
