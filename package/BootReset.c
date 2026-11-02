@@ -68,6 +68,24 @@ static uint64_t psci(uint64_t fid, uint64_t a1) {
   return x0;
 }
 
+// The Qualcomm SCM atomic call, the secure world's own restart path. The vendor's msm-poweroff.c
+// deasserts PS_HOLD through SCM_SIP_FNID(SCM_SVC_PWR=0x9, SCM_IO_DEASSERT_PS_HOLD=2), which is the
+// only thing that actually releases the PMIC's power hold; the direct write to 0x0c264000 is its
+// fallback and, measured on this board, does not restart the part. The function id carries the
+// 64-bit convention (bit 30, SMC64_MASK) and the atomic convention (bit 31), exactly as
+// scm_call2_atomic builds it: fnid | BIT(SMC_ATOMIC_SYSCALL) | SMC64_MASK. The register file is
+// x0=fnid, x1=arginfo (SCM_ARGS(1) = 1), x2=args[0], x3=0.
+static uint64_t scm_pwr(uint64_t cmd, uint64_t arg) {
+  const uint64_t fnid = 0x02000000u | ((0x9u & 0xff) << 8) | (cmd & 0xff);
+  register uint64_t x0 __asm__("x0") = fnid | 0x80000000u | 0x40000000u;
+  register uint64_t x1 __asm__("x1") = 1, x2 __asm__("x2") = arg, x3 __asm__("x3") = 0;
+  __asm__ volatile("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3) :: "memory", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
+                   "x14", "x15", "x16", "x17");
+  return x0;
+}
+
+
+
 static volatile uint32_t *map_imem(void) {
   return (volatile uint32_t *)ml_io_map_unmappable((vm_offset_t)ImemBase, (vm_size_t)ImemSize, 7);
 }
@@ -251,19 +269,29 @@ int boot_reset_bootloader(char *text, unsigned cap) {
   const int pon_rc = pon_mark_bootloader(pon, sizeof(pon));
   snprintf(text, cap, "reset: %08x -> %08x rc=%d | %s pon_rc=%d", before, after, rc, pon, pon_rc);
   if (rc) return 10 + rc;
+  // The vendor's restart order (msm-poweroff.c do_msm_restart): halt the SPMI PMIC arbiter, then
+  // deassert PS_HOLD through the secure world. The direct write to 0x0c264000 is only the fallback
+  // and, measured on fix164, does not restart this part. Each SCM return is recorded: 0 means the
+  // secure world accepted the call, and a board that still did not restart after an accepted
+  // deassert names the next thing to check.
+  const uint64_t arb = scm_pwr(0x1 /* SCM_IO_DISABLE_PMIC_ARBITER */, 0);
+  const uint64_t psr = scm_pwr(0x2 /* SCM_IO_DEASSERT_PS_HOLD */, 0);
   psci(PsciSystemReset, 0);
   // PSCI never resets on this firmware, so the SMC above returns at once. Dropping PS_HOLD is
-  // what actually restarts the PMIC, in the shim's order: reason written, dsb, SMC, PS_HOLD=0.
-  // A write that lands kills power inside the call, so the sleep below is reached only when the
-  // part is still running, and returning is then the honest answer for the log to carry.
+  // the fallback, in the shim's order: reason written, dsb, SCM deassert, PS_HOLD=0.
   volatile uint32_t *pshold = (volatile uint32_t *)ml_io_map_unmappable((vm_offset_t)PsHoldBase, (vm_size_t)PsHoldSize, 7);
   if (pshold) {
     *pshold = 0;
     __asm__ volatile("dsb sy" ::: "memory");
     ml_io_unmap((vm_offset_t)pshold, PsHoldSize);
   }
+  // Re-emit the text with the SCM results, because this line is the only record a refused reset
+  // leaves: the console may already be silent and the log writer may have stopped.
+  snprintf(text, cap, "reset: %08x -> %08x rc=%d | %s pon_rc=%d | scm arb=%llx psr=%llx",
+           before, after, rc, pon, pon_rc,
+           (unsigned long long)arb, (unsigned long long)psr);
   IOSleep(2000);
-  return 99;   // neither the SMC nor PS_HOLD restarted the part
+  return 99;   // neither the SCM deassert nor the PS_HOLD write restarted the part
 }
 
 // The APSS watchdog (qcom,wdt@17c10000, bark-time 0x4e20 = 20 s, pet-time 0x3a98 = 15 s,
