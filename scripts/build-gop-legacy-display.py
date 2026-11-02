@@ -387,6 +387,14 @@ command += suppressions
 run(command, cwd=record['directory'])
 (OUT / 'probe-compile-command.json').write_text(json.dumps(command, indent=2) + '\n')
 
+# What the boot loader left in the display controller (DpuProbe.cpp, boot argument native-dpu=1). It is C++ and it defines
+# native_dpu_stats/native_dpu_pipes, so it is compiled here, with the C++ command line, and archived into this archive -- the one
+# the kernel link force-loads. It used to sit in build-boot-progress.py, whose command is `-xc`, and failed there.
+dpu_source = packages[0].parent / 'DpuProbe.cpp'
+dpu_obj = OUT / 'DpuProbe.o'
+dpu_command = [str(dpu_obj) if x == str(probe_obj) else str(dpu_source) if x == str(probe_source) else x for x in command]
+run(dpu_command, cwd=record['directory'])
+
 # The board's HID start-up call, compiled with the same recorded flags so it matches the kernel.
 # It is what starts the statically linked publisher: an IOHIDDevice compiled into the kernel has
 # no personality, so IOKit never matches it and the board has to invoke it, which is the second
@@ -538,7 +546,7 @@ require(hid.returncode == 0, 'build-sheng-hid-input.py failed: ' + (hid.stderr o
 
 archive = OUT / 'libNativeLegacyDisplay.late.a'
 archive.unlink(missing_ok=True)
-run(['xcrun', 'ar', 'rcs', archive, late, OUT / 'original-bindings.o', probe_obj, hid_probe_obj, cpufreq_obj,
+run(['xcrun', 'ar', 'rcs', archive, late, OUT / 'original-bindings.o', probe_obj, dpu_obj, hid_probe_obj, cpufreq_obj,
      presenter_late, hid_dir / 'NativeHidInput.late.o', hid_dir / 'hid-original-bindings.o',
      keystore_probe_obj, keystore_late, *service_objects])
 

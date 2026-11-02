@@ -240,6 +240,9 @@ extern volatile uint32_t native_legacy_swap_reason_counts[8] __attribute__((weak
 // The framebuffer itself: a checksum over every 4096th dword says whether anything writes pixels,
 // whether or not a swap carried a surface. A static screen keeps one value, a drawing one does not.
 extern volatile uint64_t native_legacy_gop_virtual __attribute__((weak_import));
+/* 4 once direct scanout has flipped at least once (NativeLegacyDisplay's stage counter): the panel then reads the compositor's
+ * surface, so the GOP buffer this row hashes is no longer the one on screen. */
+extern volatile uint32_t native_legacy_direct_stage __attribute__((weak_import));
 extern volatile uint64_t native_legacy_gop_bytes __attribute__((weak_import));
 extern volatile uint32_t native_legacy_gop_width __attribute__((weak_import));
 extern volatile uint32_t native_legacy_gop_height __attribute__((weak_import));
@@ -256,6 +259,10 @@ static void framebufferSample(void) {
 // Alongside the hash, how much of the panel is not black and how bright it is: a black desktop
 // and one with a wallpaper differ by orders of magnitude here, without a person at the panel.
 static uint32_t framebufferNonBlack, framebufferLuma;
+/* Per-channel means over the same samples, so a red/blue exchange is visible without reading the panel back. A frame whose
+ * channels are swapped keeps its luma only when it is grey; on a coloured frame luma moves too, but this row says which way.
+ * [0] red mean, [1] green mean, [2] blue mean, [3] samples that are strongly one-sided (one channel at least twice the others). */
+static uint32_t framebufferChannels[4];
 static uint32_t framebufferChecksum(void) {
   if (!&native_legacy_gop_virtual || !native_legacy_gop_bytes) return 0;
   const volatile uint32_t *base = (const volatile uint32_t *)(uintptr_t)native_legacy_gop_virtual;
@@ -263,18 +270,32 @@ static uint32_t framebufferChecksum(void) {
   const uint64_t dwords = native_legacy_gop_bytes / 4;
   uint32_t hash = 2166136261u;
   uint32_t samples = 0, lit = 0;
-  uint64_t luma = 0;
+  uint64_t luma = 0, redSum = 0, greenSum = 0, blueSum = 0, oneSided = 0;
   for (uint64_t i = 0; i < dwords; i += 4096) {
     const uint32_t pixel = base[i];
     hash ^= pixel;
     hash *= 16777619u;
-    const uint32_t r = pixel & 0xff, g = (pixel >> 8) & 0xff, b = (pixel >> 16) & 0xff;
+    // The scanout memory is B,G,R,X: the firmware declares 32 bpp as PixelBlueGreenRedReserved8BitPerColor
+    // (Silicon/Silicium/SiliciumPkg/Drivers/SimpleFbDxe/SimpleFb.c:182), and nativeBgra() accepts 'BGRA'/'&BGA'.
+    // Byte 0 is blue, byte 2 is red. Reading byte 0 as red (the order this function used until 2026-11-02) swapped the
+    // two, which skews the luma weight (299 against 114) on any frame that is not grey.
+    const uint32_t b = pixel & 0xff, g = (pixel >> 8) & 0xff, r = (pixel >> 16) & 0xff;
     if (r | g | b) lit = lit + 1;
     luma += (r * 299 + g * 587 + b * 114) / 1000;
+    redSum += r; greenSum += g; blueSum += b;
+    // A pixel where one channel is at least twice each of the other two, and at least 32, is strongly one-sided. Its channel
+    // identity is what a swap moves; counting them separately from the means keeps a mostly grey frame from hiding the answer.
+    if (r >= 32 && r >= 2u * (g > b ? g : b)) oneSided++;
+    else if (g >= 32 && g >= 2u * (r > b ? r : b)) oneSided++;
+    else if (b >= 32 && b >= 2u * (r > g ? r : g)) oneSided++;
     samples = samples + 1;
   }
   framebufferNonBlack = samples ? lit * 1000 / samples : 0;
   framebufferLuma = samples ? (uint32_t)(luma / samples) : 0;
+  framebufferChannels[0] = samples ? (uint32_t)(redSum / samples) : 0;
+  framebufferChannels[1] = samples ? (uint32_t)(greenSum / samples) : 0;
+  framebufferChannels[2] = samples ? (uint32_t)(blueSum / samples) : 0;
+  framebufferChannels[3] = samples ? (uint32_t)(oneSided * 1000 / samples) : 0;
   return hash;
 }
 extern volatile uint32_t native_gop_ready __attribute__((weak_import));
@@ -305,10 +326,15 @@ static void gpu_client_report(void) {
     static uint32_t lastChanges;
     const uint32_t delta = framebufferChanges - lastChanges;
     lastChanges = framebufferChanges;
-    n = snprintf(line, sizeof line, "GPUFB checksum %08x changes %u (+%u) nonblack %u/1000 luma %u width %u height %u bytes %llu\n",
+    // What this hashes is the firmware GOP buffer. Once direct scanout is on, the display reads the compositor's surface instead
+    // (its address is the [direct vig] row), so this buffer stops changing and "changes 0" means "not scanned out any more",
+    // not "the picture is frozen". The direct flag makes that explicit instead of leaving it to be misread.
+    n = snprintf(line, sizeof line, "GPUFB checksum %08x changes %u (+%u) nonblack %u/1000 luma %u rgb %u/%u/%u sided %u/1000 width %u height %u bytes %llu direct %u\n",
                  framebufferChecksum(), framebufferChanges, delta, framebufferNonBlack, framebufferLuma,
+                 framebufferChannels[0], framebufferChannels[1], framebufferChannels[2], framebufferChannels[3],
                  &native_legacy_gop_width ? native_legacy_gop_width : 0, &native_legacy_gop_height ? native_legacy_gop_height : 0,
-                 (unsigned long long)native_legacy_gop_bytes);
+                 (unsigned long long)native_legacy_gop_bytes,
+                 &native_legacy_direct_stage ? native_legacy_direct_stage : 0);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }  for (unsigned i = 0; &native_adreno_open_log && &native_adreno_open_log_count && i < native_adreno_open_log_count && i < 8; ++i) {
     const struct gpu_open_record *r = &native_adreno_open_log[i];
@@ -411,6 +437,7 @@ static void gpu_client_report(void) {
                  &native_gop_gpu_failures ? (unsigned long long)native_gop_gpu_failures : 0ull,
                  &native_gop_gpu_abandoned ? (unsigned long long)native_gop_gpu_abandoned : 0ull,
                  &native_legacy_surfaces ? native_legacy_surfaces[0] : 0, &native_legacy_surfaces ? native_legacy_surfaces[1] : 0);
+
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }
   if (&native_adreno_fence_wait) {
@@ -496,6 +523,9 @@ extern volatile int native_legacy_client_pid __attribute__((weak_import));
 extern volatile int native_legacy_client_status __attribute__((weak_import));
 extern char native_legacy_client_class[64] __attribute__((weak_import));
 extern volatile uint64_t native_legacy_gop_virtual __attribute__((weak_import));
+/* 4 once direct scanout has flipped at least once (NativeLegacyDisplay's stage counter): the panel then reads the compositor's
+ * surface, so the GOP buffer this row hashes is no longer the one on screen. */
+extern volatile uint32_t native_legacy_direct_stage __attribute__((weak_import));
 extern volatile uint64_t native_legacy_gop_physical __attribute__((weak_import));
 extern volatile uint64_t native_legacy_gop_bytes __attribute__((weak_import));
 extern volatile int native_legacy_transfer_status __attribute__((weak_import));

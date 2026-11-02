@@ -54,6 +54,9 @@ extern volatile int native_gpu_addon_error __attribute__((weak_import));
 extern volatile int native_gpu_addon_stage __attribute__((weak_import));
 extern volatile int native_gpu_addon_status __attribute__((weak_import));
 extern volatile int native_gpu_addon2_stage __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_reset[8] __attribute__((weak_import));
+/* [0] status, [1] bytes, [2..] the bytes of the PosterBoard wallpaper choice. */
+extern volatile int32_t sheng_wallpaper_cfg[130] __attribute__((weak_import));
 extern volatile int native_gpu_addon2_status __attribute__((weak_import));
 extern volatile int native_gpu_addon3_stage __attribute__((weak_import));
 extern volatile int native_gpu_addon3_status __attribute__((weak_import));
@@ -76,6 +79,30 @@ extern unsigned boot_ui_trace_role_rows(unsigned, char [][120], unsigned, unsign
 extern unsigned boot_ui_trace_hot_rows(char [][120], unsigned) __attribute__((weak_import));
 extern unsigned long vm_kernel_slide;
 extern volatile uint64_t native_gop_wait_stats[7] __attribute__((weak_import));
+/* Direct scanout (NativeLegacyDisplay.cpp): the fourteen counters the display keeps while the DPU pipelines read the compositor's
+ * surface instead of a copy of it. They were written from the start and never printed, so a boot that took the direct path and one
+ * that fell back to the GPU copy read the same from the log. Index meaning, from the increments in NativeLegacyDisplay.cpp:
+ *  [0] flips issued  [1] surfaces mapped into a slot  [2] slot map refused  [3] latches over 50 ms
+ *  [4] longest latch us  [5] total latch us  [6] slots recycled  [7] no free slot at flip time
+ *  [8] flips back to the boot loader's memory  [9] flips that had to wait for the GPU
+ *  [10] total wait-for-GPU us  [11] longest wait us  [12] wait-for-GPU given up at 250 ms  [13] waits of 8 ms or more */
+extern volatile uint32_t native_legacy_direct[14] __attribute__((weak_import));
+/* Where the direct path stopped when it did not run: 1 no request, 2 not primary, 3 waiting for the NativeUfs window, 4 window
+ * present, 5 mapped, 6 gave up. Printed whenever the request was made, so "never asked" and "asked and refused" are separable. */
+extern volatile uint32_t native_legacy_direct_stage __attribute__((weak_import));
+extern volatile uint32_t native_legacy_direct_flip_branch __attribute__((weak_import));
+/* Where the last flip() got to, and what CTL 0's CTL_TOP (0x14) and CTL_FLUSH (0x18) read. A hang inside a store leaves the
+ * stage at the step before it, which names the store that stopped. [0] CTL_TOP before the flush, [1] CTL_FLUSH read back after. */
+extern volatile uint32_t native_legacy_direct_flip_stage __attribute__((weak_import));
+extern volatile uint32_t native_legacy_direct_ctl[2] __attribute__((weak_import));
+/* After a flip: [0]/[1] VIG 0/1's SRC0_ADDR read back, [2]/[3] 1 when the store took. flips counts stores, not frames -- fix128
+ * flipped 550 times while the frame buffer's checksum stayed the same, so this says whether the register took the address. */
+extern volatile uint32_t native_legacy_direct_vig[4] __attribute__((weak_import));
+/* The swap queue's own gates (NativeLegacyDisplay.cpp stat(index)): [0] swaps validated, [1] kickOnce entered, [2] skipped because
+ * transferred, [3] a precondition failed, [4] no pending swap or it was not validated, [5] a latch was still outstanding, [9] a
+ * direct flip completed, [11] a retire completed, [15] the deepest validated queue. When flips stops growing, one of these is the
+ * gate that stopped it: fix118b read flips=99 for the last 104 s, and only [4] can explain a queue that simply went empty. */
+extern volatile uint32_t native_legacy_swapstat[16] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_fence_wait[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall[24] __attribute__((weak_import));
 /* CP_RB_WPTR writes and their GMU AHB fence: [0] writes, [1] writes that needed a repeat, [2] repeats, [3] writes still
@@ -125,6 +152,19 @@ extern int native_ufs_extra_fault(uint32_t *) __attribute__((weak_import));
 extern struct {uint32_t stage, scans, frames, beacons, bss_seen; int last_err;} nw_wifi_stats __attribute__((weak_import));
 extern volatile uint64_t nw_wifi_where[4] __attribute__((weak_import));
 extern volatile uint32_t native_dpu_stats[20] __attribute__((weak_import));
+/* DpuProbe.cpp's entry, called from the tick below. This is C, so the C++ side's extern "C" is spelled by the symbol itself:
+ * alioth_dpu_probe_tick is defined at C linkage there. Weak so the archive still links when the probe is not built. */
+extern void alioth_dpu_probe_tick(unsigned now) __attribute__((weak_import));
+/* The GPU frequency governor, once a second: [0] level in force, [1] changes, [2] submissions last second, [3] ticks. */
+extern void native_gpu_freq_tick(unsigned now) __attribute__((weak_import));
+extern volatile uint32_t native_gpu_freq[9] __attribute__((weak_import));
+/* The display bank's stage-1 window (NativeUfs's DpuWindow.h). native_ufs_dpu_state's bit 31 means the table was installed and
+ * survived the 50 ms fault watch; any other value is the step that refused, and 0 means the window was never attempted.
+ * Without this row a boot that took the direct path and one that refused it read the same, which is what made fix85's stop
+ * unattributable. native_ufs_dpu_smmu: [0] = bit31 read | valid SMRs << 8 | banks << 16, [4 + 9k] = SMR index | bank << 16
+ * for display stream k. */
+extern volatile uint32_t native_ufs_dpu_state __attribute__((weak_import));
+extern volatile uint32_t native_ufs_dpu_smmu[24] __attribute__((weak_import));
 extern volatile uint32_t native_touch_jitter[3] __attribute__((weak_import));
 extern volatile uint32_t native_touch_hold[14] __attribute__((weak_import));
 extern char native_lookup_log[160][112] __attribute__((weak_import));
@@ -137,6 +177,11 @@ extern volatile int32_t native_battery_stats[16] __attribute__((weak_import));
 extern volatile uint32_t native_swipe_stats[16] __attribute__((weak_import));
 extern volatile int32_t native_touch_extent[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_method_stats[20][4] __attribute__((weak_import));
+/* Where a submission's time goes, in mach_absolute_time ticks summed over the successful ones (NativeAdrenoSubmit.cpp:19-23):
+ * [0] validation, [1] the sweep of completed jobs, [2] the write-combine re-assertion and audit, [3] the BO publication (cache
+ * maintenance), [4] the coherence sample, [5] the IB record and the ring write, [6] the count. Divided by the count it names the
+ * part of a submission that costs milliseconds, which the [gpu methods] row cannot: that row has one number for the whole call. */
+extern volatile uint64_t native_adreno_submit_phase[7] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_vm_phase_us[2][8] __attribute__((weak_import));
 /* Per map kind: count, total us, total spans (NativeAdrenoVm.cpp:350-353, :400-404). kind 0 is driver memory, 1 an import
  * mapped exclusive, 2 an import that needed the full alias check. The porting guide asks for this row next to [vm map]. */
@@ -152,12 +197,14 @@ extern volatile uint64_t native_adreno_reassert_ticks __attribute__((weak_import
 extern volatile uint64_t native_adreno_cache_stats[5] __attribute__((weak_import));
 // NativeAdrenoPublish.cpp: per process name that opened the GPU, and the processes that asked the Metal discovery for its plugin.
 struct native_adreno_client_record {char name[20]; uint32_t opens, refused, closes, slot, peak_mib, last_refusal;};
-extern struct native_adreno_client_record native_adreno_client_log[8] __attribute__((weak_import));
+extern struct native_adreno_client_record native_adreno_client_log[16] __attribute__((weak_import));
 struct native_adreno_client_text {char name[20]; char text[2][64]; unsigned lines;};
-extern struct native_adreno_client_text native_adreno_client_text[4] __attribute__((weak_import));
+extern struct native_adreno_client_text native_adreno_client_text[8] __attribute__((weak_import));
+/* [0] the marker count, [1..16] the plugin's newest progress markers, from NativeAdrenoPublish.cpp. */
+extern volatile uint32_t native_adreno_metal_marks[17] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_mount_fail[4] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_window_overflow[4][3] __attribute__((weak_import));
-extern volatile uint32_t native_adreno_client_stats[5][6] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_client_stats[5][8] __attribute__((weak_import));
 struct native_adreno_asker_record {char name[20]; uint32_t reads;};
 extern struct native_adreno_asker_record native_adreno_metal_askers[12] __attribute__((weak_import));
 extern char native_gpu_coherence_row[120] __attribute__((weak_import));
@@ -428,6 +475,45 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              &native_gpu_addon3_status ? native_gpu_addon3_status : 0);
     at = put(out, at, cap, row, sizeof row);
   }
+  // sheng-wallpaper-reset=1: how far removing PosterBoard's stored wallpaper configuration got. [0] candidates, [i+1] each unlink
+  // (0 removed, 2 absent, else errno). A red test image in the mounted .ca changed nothing on screen (fix142), so the next question
+  // is whether the desktop reuses a stored configuration instead of reading the collection.
+  if (&sheng_wallpaper_reset && sheng_wallpaper_reset[0]) {
+    char wrow[120];
+    size_t n = (size_t)snprintf(wrow, sizeof wrow, "[wallpaper reset] n=%d", sheng_wallpaper_reset[0]);
+    for (unsigned i = 1; i <= (unsigned)sheng_wallpaper_reset[0] && i < 8 && n < sizeof wrow; ++i)
+      n += (size_t)snprintf(wrow + n, sizeof wrow - n, " %d", sheng_wallpaper_reset[i]);
+    at = put(out, at, cap, wrow, sizeof wrow);
+  }
+  // What PosterBoard stored as the desktop's wallpaper: the plist names the collection and the variant, so no experiment has to
+  // guess which .ca is drawn. Printed as text with non-printables as '.', 96 bytes to a row.
+  if (&sheng_wallpaper_cfg && sheng_wallpaper_cfg[0] == 0 && sheng_wallpaper_cfg[1] > 0) {
+    const int32_t total = sheng_wallpaper_cfg[1];
+    char crow[110];
+    for (int32_t at2 = 0; at2 < total; at2 += 96) {
+      int n = snprintf(crow, sizeof crow, "[wallpaper cfg] %03d ", at2);
+      for (int32_t i = at2; i < at2 + 96 && i < total && n < 100; ++i) {
+        const uint32_t w = (uint32_t)sheng_wallpaper_cfg[2 + i / 4];
+        const unsigned char c = (unsigned char)((w >> ((i % 4) * 8)) & 0xff);
+        crow[n++] = (c >= 0x20 && c < 0x7f) ? (char)c : '.';
+      }
+      crow[n] = 0;
+      at = put(out, at, cap, crow, sizeof crow);
+    }
+  } else if (&sheng_wallpaper_cfg && sheng_wallpaper_cfg[0]) {
+    char crow[60];
+    snprintf(crow, sizeof crow, "[wallpaper cfg] unreadable status=%d", sheng_wallpaper_cfg[0]);
+    at = put(out, at, cap, crow, sizeof crow);
+  }
+  // The GPU frequency the governor holds and what it saw: a boot that keeps level 1 while frames are drawn means the policy is
+  // reading no submissions, and a boot that never leaves 7 means it never got a quiet second.
+  if (&native_gpu_freq && native_gpu_freq[3]) {
+    char frow[120];
+    snprintf(frow, sizeof frow, "[gpu freq] level=%u changes=%u subs=%u ticks=%u want=%u vote=%u hfi=%u oob=%u err=%u",
+             native_gpu_freq[0], native_gpu_freq[1], native_gpu_freq[2], native_gpu_freq[3], native_gpu_freq[5], native_gpu_freq[4],
+             native_gpu_freq[6], native_gpu_freq[7], native_gpu_freq[8]);
+    at = put(out, at, cap, frow, sizeof frow);
+  }
   // The OS cryptex path (kern_exec.c native_cryptex_os_view; stage 5 = a WebKit extension found through /System/Cryptexes/OS) and the
   // removed MobileGestalt cache (0 removed, 2 none there).
   if (&native_cryptex_os_stage && &native_gestalt_cache_status) {
@@ -632,8 +718,29 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     for (unsigned m = 1; m < 20; ++m) {
       if (!native_adreno_method_stats[m][0]) continue;
       if (n > 100) {at = put(out, at, cap, row, sizeof row); n = snprintf(row, sizeof row, "[gpu methods+]");}
-      n += snprintf(row + n, sizeof row - n, " %u:%u/%u/%u", m, native_adreno_method_stats[m][0], native_adreno_method_stats[m][1], native_adreno_method_stats[m][3]);
+      // calls/failures/last status/us. The status is the one number that says why a call failed; it was recorded and never printed,
+      // so every round that saw failures could say how many but not what.
+      n += snprintf(row + n, sizeof row - n, " %u:%u/%u/%x/%u", m, native_adreno_method_stats[m][0], native_adreno_method_stats[m][1],
+                    native_adreno_method_stats[m][2], native_adreno_method_stats[m][3]);
     }
+    at = put(out, at, cap, row, sizeof row);
+  }
+  // Where a submission's time goes. Ticks are converted with cntfrq_el0, as the [wc] row does.
+  if (&native_adreno_submit_phase && native_adreno_submit_phase[6]) {
+    uint64_t f = 0;
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
+    if (!f) f = 19200000;
+    const uint64_t n = native_adreno_submit_phase[6];
+    char row[200];
+    snprintf(row, sizeof row,
+             "[submit phase] n=%llu us/call valid=%llu sweep=%llu wcaudit=%llu publish=%llu coherence=%llu ring=%llu",
+             (unsigned long long)n,
+             (unsigned long long)(native_adreno_submit_phase[0] * 1000000ull / f / n),
+             (unsigned long long)(native_adreno_submit_phase[1] * 1000000ull / f / n),
+             (unsigned long long)(native_adreno_submit_phase[2] * 1000000ull / f / n),
+             (unsigned long long)(native_adreno_submit_phase[3] * 1000000ull / f / n),
+             (unsigned long long)(native_adreno_submit_phase[4] * 1000000ull / f / n),
+             (unsigned long long)(native_adreno_submit_phase[5] * 1000000ull / f / n));
     at = put(out, at, cap, row, sizeof row);
   }
   if (&native_adreno_vm_phase_us && (native_adreno_vm_phase_us[0][0] || native_adreno_vm_phase_us[1][0])) {
@@ -672,14 +779,27 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   if (&native_adreno_client_log) {
     char row[400];
     size_t used = (size_t)snprintf(row, sizeof row, "[gpu clients]");
-    for (unsigned i = 0; i < 8 && native_adreno_client_log[i].name[0] && used < sizeof row; ++i) {
+    // 16 entries, wrapped onto as many rows as it takes. At 8 the wallpaper extension (CollectionsPoster, the one that draws the
+    // wallpaper) fell past the end and every reading of this row said it had never opened the device.
+    for (unsigned i = 0; i < 16 && native_adreno_client_log[i].name[0]; ++i) {
       const struct native_adreno_client_record *r = &native_adreno_client_log[i];
       char slot[8];
       if (r->slot < 8) snprintf(slot, sizeof slot, "%u", r->slot); else snprintf(slot, sizeof slot, "-");
-      used += (size_t)snprintf(row + used, sizeof row - used, " %.19s %u/%u/%u s%s %uM r%x", r->name, r->opens, r->refused, r->closes, slot,
-                               r->peak_mib, r->last_refusal);
+      const int wrote = snprintf(row + used, sizeof row - used, " %.19s %u/%u/%u s%s %uM r%x", r->name, r->opens, r->refused, r->closes,
+                                 slot, r->peak_mib, r->last_refusal);
+      if (wrote <= 0 || (size_t)wrote >= sizeof row - used) {at = put(out, at, cap, row, sizeof row); used = (size_t)snprintf(row, sizeof row, "[gpu clients+]"); continue;}
+      used += (size_t)wrote;
     }
     at = put(out, at, cap, row, sizeof row);
+  }
+  // The plugin's own progress markers (0x68xx/0x6Axx, NativeAdrenoMetalPlugin.mm). They were recorded from the start and never
+  // printed, so a process that read MetalPluginName but never opened the device could only be described as "reads 1" -- not where
+  // inside the plugin it stopped. The wallpaper extension is exactly that case.
+  if (&native_adreno_metal_marks && native_adreno_metal_marks[0]) {
+    char mrow[220];
+    size_t n = (size_t)snprintf(mrow, sizeof mrow, "[metal marks] n=%u", native_adreno_metal_marks[0]);
+    for (unsigned i = 1; i < 17 && n < sizeof mrow; ++i) n += (size_t)snprintf(mrow + n, sizeof mrow - n, " %x", native_adreno_metal_marks[i]);
+    at = put(out, at, cap, mrow, sizeof mrow);
   }
   // [gpu windows]: per client window the mappings that fell outside it (count, last size KiB, last end MiB), the latest failed mount (stage 1 no free
   // slot, 2 core open, 3 window scope; status; slot; count), then one line per process other than the render server: why its Metal device failed.
@@ -693,7 +813,7 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_adreno_mount_fail[0], native_adreno_mount_fail[1], native_adreno_mount_fail[2], native_adreno_mount_fail[3]);
     at = put(out, at, cap, row, sizeof row);
     if (&native_adreno_client_text)
-      for (unsigned i = 0; i < 4 && native_adreno_client_text[i].name[0]; ++i) {
+      for (unsigned i = 0; i < 8 && native_adreno_client_text[i].name[0]; ++i) {
         for (unsigned k = 0; k < 2; ++k) {
           if (!native_adreno_client_text[i].text[k][0]) continue;
           snprintf(row, sizeof row, "[gpu client text] %.19s: %.63s", native_adreno_client_text[i].name, native_adreno_client_text[i].text[k]);
@@ -747,10 +867,14 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f));
     if (!f) f = 19200000;
     char row[200];
-    snprintf(row, sizeof row, "[wc] audited=%u lines=%u dirty=%u reset=%u reassert_ms=%llu | maintenance passes=%llu ms=%llu MiB=%llu",
+    // wc_pages is how many pages are write-combined right now (cache_stats[4]). Read against [gpu objects]: when it is 0 the
+    // board is maintaining every BO on every submission because GpuProbe set native_adreno_wc_enabled=0 (a0ff4a7); when it
+    // tracks the live BO pages, the write-combine path is the one running and passes/ms say what the audit costs.
+    snprintf(row, sizeof row, "[wc] audited=%u lines=%u dirty=%u reset=%u reassert_ms=%llu | maintenance passes=%llu ms=%llu MiB=%llu | wc_pages=%llu",
              native_adreno_wc_audit[0], native_adreno_wc_audit[1], native_adreno_wc_audit[2], native_adreno_wc_audit[5],
              (unsigned long long)(native_adreno_reassert_ticks * 1000 / f), (unsigned long long)native_adreno_cache_stats[3],
-             (unsigned long long)(native_adreno_cache_stats[0] * 1000 / f), (unsigned long long)(native_adreno_cache_stats[1] >> 20));
+             (unsigned long long)(native_adreno_cache_stats[0] * 1000 / f), (unsigned long long)(native_adreno_cache_stats[1] >> 20),
+             (unsigned long long)native_adreno_cache_stats[4]);
     at = put(out, at, cap, row, sizeof row);
   }
   // CPU clusters and L3 as voted (CpuFreqProbe, refreshed every round) and the GPU's initial HFI perf/bandwidth vote.
@@ -907,22 +1031,45 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       }
     }
   }
-  // Display controller state (DisplayTimingProbe.cpp): per interface timing enable, config, counter enable, frame count then one second
-  // later, line count, vsync period, status; then every pipe's size/address/stride/format and the CTLs.
+  // What the boot loader left in the display controller (DpuProbe.cpp, boot argument native-dpu=1). The question this row answers
+  // is which SSPP base pair is live on THIS board: the SM8250 pipes sit at 0x5000/0x7000 and the SM8550 ones at 0x4000/0x6000, and
+  // both map inside the block, so writing the wrong pair touches unrelated registers without faulting. The live pair is the one
+  // whose source address equals the boot framebuffer. Format is printed because the direct scanout path only rewrites address and
+  // stride: every frame it flips inherits the firmware's source format, and a BGRA scanout with an RGB format programmed would show
+  // swapped channels with no other symptom.
   if (&native_dpu_stats && &native_dpu_pipes && native_dpu_stats[0]) {
-    char row[200];
+    char row[240];
     const volatile uint32_t *d = native_dpu_stats, *p = native_dpu_pipes;
-    snprintf(row, sizeof row, "[dpu] st=%d hw=%x us=%u i1 en=%x cfg=%x cnt=%x f=%u..%u ln=%u vp=%u s=%x i2 en=%x cfg=%x cnt=%x f=%u..%u ln=%u vp=%u s=%x",
-             (int)d[0], d[1], d[18], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15], d[16], d[17]);
+    snprintf(row, sizeof row, "[dpu] st=%d hw=%x fb=%x%08x | dispcc ahb=%x mdp=%x (bit1 set = gated) | gdscr=%x (bit31 PWR_ON, bit0 SW_COLLAPSE)",
+             (int)d[0], d[1], p[41], p[40], d[18], d[19], d[2]);
     at = put(out, at, cap, row, sizeof row);
-    for (int half = 0; half < 2; ++half) {
-      int n = snprintf(row, sizeof row, "[dpu pipes%d]", half);
-      for (int i = half * 5; i < half * 5 + 5 && n < (int)sizeof row; ++i)
-        n += snprintf(row + n, sizeof row - n, " %x/%x/%x/%x", p[4 * i], p[4 * i + 1], p[4 * i + 2], p[4 * i + 3]);
+    // size / src0 / stride0 / format / unpack, one line per candidate base.
+    static const char *const names[4] = {"0x4000(vig0)", "0x6000(vig1)", "0x3000(vig2?)", "0x5000(vig3?)"};
+    for (int i = 0; i < 4; ++i) {
+      // src1 and opmode decide whether rewriting SRC0_ADDR alone can change the picture: a pipe left in multirect keeps scanning
+      // its other rect from src1 (dpu_hw_sspp.c:472-496). opmode 0 means SOLO, which is what mainline clears it to.
+      snprintf(row, sizeof row, "[dpu pipe] %s size=%x src0=%x stride=%x fmt=%x unpack=%x src1=%x opmode=%x%s", names[i], p[4 * i],
+               p[4 * i + 1], p[4 * i + 2], p[4 * i + 3], p[16 + i], p[20 + i], p[24 + i],
+               p[4 * i + 1] && p[4 * i + 1] == p[40] ? " LIVE" : "");
       at = put(out, at, cap, row, sizeof row);
     }
-    snprintf(row, sizeof row, "[dpu ctl] fb=%x%08x %x/%x/%x %x/%x/%x %x/%x/%x %x/%x/%x", p[41], p[40], p[42], p[43], p[44], p[45], p[46], p[47],
-             p[48], p[49], p[50], p[51], p[52], p[53]);
+    snprintf(row, sizeof row, "[dpu ctl] 0x1000(ctl0) flush=%x top=%x | 0x1200(ctl1) flush=%x top=%x", p[42], p[43], p[44], p[45]);
+    at = put(out, at, cap, row, sizeof row);
+    // Every CTL of the SM8250 bank: CTL_FLUSH clears itself once a flush latches, so a zero there only means nothing was pending;
+    // CTL_TOP (0x14) is the word that names the layer mixers the CTL drives, which is what identifies a programmed CTL.
+    snprintf(row, sizeof row, "[dpu ctl6] top %x/%x/%x/%x/%x/%x flush %x/%x/%x/%x/%x/%x",
+             d[12], d[13], d[14], d[15], d[16], d[17], d[6], d[7], d[8], d[9], d[10], d[11]);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  /* The display bank's stage-1 window. Printed whenever the probe or the window ran, because the two questions -- which streams the
+   * SMR table routes, and whether the bank took our table -- are only separable with both halves in one row. */
+  if (&native_ufs_dpu_smmu && (native_ufs_dpu_smmu[0] || (&native_ufs_dpu_state && native_ufs_dpu_state))) {
+    char row[240];
+    snprintf(row, sizeof row, "[dpu window] state=%x idr0=%x groups=%u valid=%u banks=%u | stream0 slot/bank=%x smr=%x s2cr=%x | stream1 slot/bank=%x smr=%x s2cr=%x",
+             &native_ufs_dpu_state ? native_ufs_dpu_state : 0, native_ufs_dpu_smmu[2], native_ufs_dpu_smmu[0] & 0xff,
+             (native_ufs_dpu_smmu[0] >> 8) & 0xff, (native_ufs_dpu_smmu[0] >> 16) & 0xff,
+             native_ufs_dpu_smmu[4], native_ufs_dpu_smmu[5], native_ufs_dpu_smmu[6],
+             native_ufs_dpu_smmu[13], native_ufs_dpu_smmu[14], native_ufs_dpu_smmu[15]);
     at = put(out, at, cap, row, sizeof row);
   }
   // Touch noise before the fuzz filter: resting or slow frames, mean step (x + y) and largest single-axis step, in 0.1 px.
@@ -1028,8 +1175,11 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     int n = snprintf(row, sizeof row, "[gpu objects]");
     for (unsigned k = 0; k < 5; ++k)
       if (native_adreno_client_stats[k][1] || native_adreno_client_stats[k][2])
-        n += snprintf(row + n, sizeof row - n, " s%u %u/%u r%u %x/%u w%uM", k, native_adreno_client_stats[k][0], native_adreno_client_stats[k][1],
-                      native_adreno_client_stats[k][2], native_adreno_client_stats[k][3], native_adreno_client_stats[k][4], native_adreno_client_stats[k][5]);
+        // subs/ibs: what this slot actually submitted. [gpu clients] says a process opened the device; this says whether it rendered.
+        n += snprintf(row + n, sizeof row - n, " s%u %u/%u r%u %x/%u w%uM subs=%u ibs=%u", k, native_adreno_client_stats[k][0],
+                      native_adreno_client_stats[k][1], native_adreno_client_stats[k][2], native_adreno_client_stats[k][3],
+                      native_adreno_client_stats[k][4], native_adreno_client_stats[k][5], native_adreno_client_stats[k][6],
+                      native_adreno_client_stats[k][7]);
     at = put(out, at, cap, row, sizeof row);
   }
   if (&native_adreno_fence_wait && native_adreno_fence_wait[0]) {
@@ -1164,6 +1314,40 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_gop_wait_stats[1], native_gop_wait_stats[2], native_gop_wait_stats[3] / 1000, native_gop_wait_stats[4] / 1000,
              native_gop_wait_stats[5] / 1000, native_gop_wait_stats[1] ? native_gop_wait_stats[6] / native_gop_wait_stats[1] / 1000 : 0);
     at = put(out, at, cap, row, sizeof row);
+  }
+  /* Direct scanout, the zero-copy path. Absent when the display never entered it (startDirect needs sheng-dpu-scanout>=2 and a display
+   * bank window), so this row's presence is itself the answer to "did the direct path run". The upstream display guide asks for a
+   * "[direct scanout]" row carrying flips, mapped surfaces, latch time and the wait for the GPU; this is that row. */
+  if (&native_legacy_direct && (native_legacy_direct[0] || (&native_legacy_direct_stage && native_legacy_direct_stage))) {
+    char row[200];
+    const volatile uint32_t *d = native_legacy_direct;
+    snprintf(row, sizeof row,
+             "[direct scanout] stage=%u branch=%u flips=%u mapped=%u refused=%u recycle=%u noslot=%u boot=%u"
+             " | flipstep=%u ctl_top=%x ctl_flush=%x | latch late=%u max=%uus sum=%uus | gpu wait=%u sum=%uus max=%uus slow8ms=%u gaveup=%u",
+             &native_legacy_direct_stage ? native_legacy_direct_stage : 0,
+             &native_legacy_direct_flip_branch ? native_legacy_direct_flip_branch : 0,
+             d[0], d[1], d[2], d[6], d[7], d[8],
+             &native_legacy_direct_flip_stage ? native_legacy_direct_flip_stage : 0,
+             &native_legacy_direct_ctl ? native_legacy_direct_ctl[0] : 0,
+             &native_legacy_direct_ctl ? native_legacy_direct_ctl[1] : 0,
+             d[3], d[4], d[5], d[9], d[10], d[11], d[13], d[12]);
+    at = put(out, at, cap, row, sizeof row);
+    if (&native_legacy_direct_vig) {
+      char vrow[130];
+      snprintf(vrow, sizeof vrow, "[direct vig] src0_0=%x took0=%u src0_1=%x took1=%u", native_legacy_direct_vig[0],
+               native_legacy_direct_vig[2], native_legacy_direct_vig[1], native_legacy_direct_vig[3]);
+      at = put(out, at, cap, vrow, sizeof vrow);
+    }
+    /* The queue's gates. accept/enter/transferred/precond/no-request/latched/flipped/retired/deepest, so a stalled flip count names
+     * the gate that stopped it instead of leaving "flips stopped growing" unexplained. */
+    if (&native_legacy_swapstat) {
+      char qrow[170];
+      const volatile uint32_t *s = native_legacy_swapstat;
+      snprintf(qrow, sizeof qrow,
+               "[swap queue] accept=%u enter=%u transferred=%u precond=%u no-request=%u latched=%u flipped=%u retired=%u deepest=%u",
+               s[0], s[1], s[2], s[3], s[4], s[5], s[9], s[11], s[15]);
+      at = put(out, at, cap, qrow, sizeof qrow);
+    }
   }
   if (&native_adreno_view_diag && native_adreno_view_diag[0]) {
     char row[120];
@@ -1474,6 +1658,11 @@ void boot_log_tick(unsigned now) {
       }
     }
   }
+  /* The display controller as the boot loader left it (DpuProbe.cpp). It runs from this tick rather than from the display's start
+   * because the MDP block is unclocked at display start and reads return zero there; by the time the log has run for a few seconds
+   * the panel is powered and the registers answer. */
+  if (&alioth_dpu_probe_tick) alioth_dpu_probe_tick(now);
+  if (&native_gpu_freq_tick) native_gpu_freq_tick(now);
   /* Phase heartbeat: once a second is too much, once on every change plus every tenth second
    * otherwise. A writer that stops leaves its last phase on the console and nothing else. */
   static unsigned last_phase = ~0U, last_at;

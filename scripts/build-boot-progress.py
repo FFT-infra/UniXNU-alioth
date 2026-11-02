@@ -144,6 +144,8 @@ reset_source = PACKAGE / 'BootReset.c'
 reset_obj = OUT / 'BootReset.o'
 reset_command = [str(reset_source) if arg == str(source) else str(reset_obj) if arg == str(obj) else arg for arg in command]
 subprocess.run(reset_command, cwd=record['directory'], check=True, timeout=90)
+# DpuProbe.cpp is C++ (IOMemoryMap, PE_Video), so it is compiled and archived by build-gop-legacy-display.py, which has the C++
+# command line. This file's command is `-xc`.
 
 archive = OUT / 'libBootProgress.a'
 archive.unlink(missing_ok=True)

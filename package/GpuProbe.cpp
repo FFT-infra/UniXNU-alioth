@@ -571,6 +571,85 @@ OSSharedPtr<IOMemoryMap> gNbMaps[5];
 volatile uint8_t *gNbCpu[5];
 NativeAdrenoRing *gRing;
 NativeAdrenoCpInit *gCpInit;
+
+/* Dynamic GPU frequency, following sheng's governor (UniXNU-sheng package/GpuPowerProbe.cpp:1755-1830) instead of counting
+ * submissions: the GMU's XO power counter 0 counts 19.2 MHz ticks while the GPU is busy, which is real occupancy. Enable it the
+ * way Linux's a6xx_hw_init does (a6xx_gpu.c: GPU_GMU_AO_GPU_CX_BUSY_MASK 0xff000000, countable 5 on counter 0), then on each
+ * tick take the frequency that would have kept the window half busy (msm_gpu_devfreq's upthreshold 50), step up at once to the
+ * lowest level at or above it, step down one level after four quiet windows, and hold a floor of level 3 (348 MHz).
+ * A vote is one HFI GX_BW_PERF_VOTE and nothing else: a6xx_hfi.c:1003-1013 and sheng's gpuVote both send only that, while
+ * GMU_OOB_GPU_SET belongs to the power-on sequence -- bundling them is what made every re-vote time out before fix151.
+ * [0] level in force, [1] changes, [2] busy permille over the last window, [3] ticks, [4] last vote status, [5] level asked for. */
+extern "C" volatile uint32_t native_gpu_freq[9] = {7, 0, 0, 0, 0, 0, 0, 0, 0};
+namespace {
+constexpr uint32_t kGpuMHz[8] = {0, 305, 400, 441, 490, 525, 587, 670};   /* kona-v2-gpu.dtsi opp-hz, the order of gpu_level[] */
+constexpr uint32_t kGmuCxBusyMask = 0x23b0e, kGmuBusySel = 0x1f841, kGmuBusyCfg = 0x1f840, kGmuBusyLo = 0x1f844, kGmuBusyHi = 0x1f845;
+uint64_t gpuBusyTicks() {
+    uint32_t hi = 0, lo = 0, hi2 = 0;
+    if (gmuRead(nullptr, 0, kGmuBusyHi, &hi) || gmuRead(nullptr, 0, kGmuBusyLo, &lo) || gmuRead(nullptr, 0, kGmuBusyHi, &hi2)) return 0;
+    if (hi2 != hi) (void)gmuRead(nullptr, 0, kGmuBusyLo, &lo);
+    return ((uint64_t)hi2 << 32) | lo;
+}
+unsigned gpuLevelFor(uint32_t mhz) {
+    unsigned l = 1;
+    while (l < 7 && kGpuMHz[l] < mhz) ++l;
+    return l;
+}
+/* A650Gmu.c keeps its wait callback static, so this file carries its own: 100 us between polls, the same cadence. */
+int freqWait(void *cookie) {A650GmuDevice *d = static_cast<A650GmuDevice *>(cookie); return d->services.wait_us(d->services.cookie, 100);}
+bool gpuVote(unsigned level) {
+    const uint32_t vote[3] = {1, level, A650GmuDdrVote ? 1u : 0u};
+    uint32_t out[16]; size_t count = 0; uint32_t error = 0;
+    const AdrenoHfiStatus st = AdrenoHfiExchange(&gDevice.hfi, 30, vote, 3, 1000, freqWait, out, 16, &count, &error);
+    native_gpu_freq[4] = uint32_t(st);
+    native_gpu_freq[5] = level;
+    if (st == AdrenoHfiSuccess && !error) { native_gpu_freq[0] = level; native_gpu_freq[1] = native_gpu_freq[1] + 1; return true; }
+    return false;
+}
+bool gFreqStarted;
+}
+extern "C" void native_gpu_freq_tick(unsigned now) {
+    (void)now;
+    static int on = -1;
+    if (on < 0) {unsigned v = 1; PE_parse_boot_argn("sheng-gpu-dynfreq", &v, sizeof v); on = v ? 1 : 0;}
+    if (!on) return;
+    if (!gColdOk || !native_gpu_gx.gx_on) return;
+    if (!gFreqStarted) {
+        gFreqStarted = true;
+        uint32_t sel = 0;
+        (void)gmuWrite(nullptr, 0, kGmuCxBusyMask, 0xff000000u);
+        (void)gmuRead(nullptr, 0, kGmuBusySel, &sel);
+        (void)gmuWrite(nullptr, 0, kGmuBusySel, (sel & ~0xffu) | (1u << 5));
+        (void)gmuWrite(nullptr, 0, kGmuBusyCfg, 1);
+        (void)gDevice.io.barrier(gDevice.io.cookie);
+        native_gpu_freq[0] = 7;
+    }
+    static uint64_t lastBusy, lastT;
+    static unsigned down;
+    const uint64_t busy = gpuBusyTicks(), t = mach_absolute_time();
+    if (!lastT) {lastBusy = busy; lastT = t; native_gpu_freq[3] = native_gpu_freq[3] + 1; return;}
+    uint64_t ns = 0;
+    absolutetime_to_nanoseconds(t - lastT, &ns);
+    uint64_t busyNs = (busy - lastBusy) * 625 / 12;   /* 52.083 ns per 19.2 MHz XO tick */
+    if (busyNs > ns) busyNs = ns;
+    lastBusy = busy; lastT = t;
+    native_gpu_freq[3] = native_gpu_freq[3] + 1;
+    const uint32_t permille = ns ? (uint32_t)(busyNs * 1000 / ns) : 0;
+    native_gpu_freq[2] = permille;
+    const unsigned floor = 3;                          /* 348 MHz, sheng's default floor */
+    unsigned cur = native_gpu_freq[0] ? native_gpu_freq[0] : 7;
+    unsigned want = cur;
+    if (permille >= 850) {
+        want = 7; down = 0;                            /* over 85 %: the top at once */
+    } else if (permille >= 500) {
+        const uint32_t need = (uint32_t)((uint64_t)kGpuMHz[cur] * permille / 500);
+        want = gpuLevelFor(need); down = 0;
+    } else if (++down >= 4 && cur > floor) {
+        want = cur - 1; down = 0;
+    }
+    if (want < floor) want = floor;
+    if (want != cur) (void)gpuVote(want);
+}
 int naWrite(void *, uint32_t reg, uint32_t value) {
     if (reg >= GPB_GPU_WINDOW / 4 || !gVa[GPB_WIN_GPU]) return 1;
     *reinterpret_cast<volatile uint32_t *>(gVa[GPB_WIN_GPU] + reg * 4) = value;
@@ -632,10 +711,14 @@ bool gpuContext() {
     char *row = native_gpu_rows[kRowGpuCtx];
     const size_t cap = sizeof native_gpu_rows[0];
     native_gpu_step = 110;
-    // Write-combined BOs stay the default, as on the pinned source (native_adreno_wc_enabled defaults to 1 there).
-    // The coherence path is opt-in behind sheng-gpu-owned-coherent and needs the board's IO-coherence proof, which
-    // this board has not run, so it stays off here.
-    unsigned wc = 0;
+    // Write-combined BOs are ON, which is what the porting guide's memory-path table asks for ("a pageable IOBufferMemoryDescriptor
+    // with the cache mode write-combined") and what the pinned source defaults to (NativeAdrenoUserClient.cpp:7).
+    //
+    // a0ff4a7 set this to 0 on 2026-11-01 "to flush user BO caches", and fix119 (wc on) then failed -- but fix119 still carried the
+    // NO_UPDATE bit and the unconditional set_pagetable prologue, so the ring never drained and almost nothing reached the GPU. Its
+    // "rbbm 00800005 / tgt 0 0 0 0" says nothing about write-combining. Those two are fixed as of fix125 (8 clients, Submit 0 failures),
+    // so this is the first clean test. sheng-gpu-wc=0 restores the maintained-every-submission path.
+    unsigned wc = 1;
     PE_parse_boot_argn("sheng-gpu-wc", &wc, sizeof wc);
     native_adreno_wc_enabled = wc ? 1 : 0;
     native_adreno_owned_coherent = 0;
@@ -1465,14 +1548,25 @@ bool metal() {
     if (!accelerator) return stop(kIOReturnNoMemory);
     if (!accelerator->init()) {accelerator->release(); return stop(kIOReturnError);}
     accelerator->setProperty("MetalPluginName", "NativeAdrenoMetal");
-    accelerator->setProperty("NativeSandboxGrantProcess", "backboardd,iconservicesagent,Preferences");
+    // The wallpaper runs in PosterBoard's extensions, not in PosterBoard itself: without these two names the sandbox refuses their
+    // user client and they abort-loop. u276 showed the picture appears with CollectionsPoster reaching the GPU and no AegirPoster
+    // at all (GPUFB nonblack 1000/1000 luma 253), so CollectionsPoster is the one that matters. The names are the process names
+    // proc_selfname reports, which is what native_sandbox_grant compares (patches/xnu/zzw-native-adreno-sandbox-grant.patch).
+    accelerator->setProperty("NativeSandboxGrantProcess",
+        "backboardd,iconservicesagent,Preferences,CollectionsPoster,AegirPoster,KaleidoscopePoster,"
+        "PhotosPosterProvider,PosterBoard,WidgetRenderer_Default,mediaserverd,SpringBoard");
     accelerator->setProperty("MetalPluginClassName", "NativeAdrenoMetalDevice");
     // Turnip's options for this board, which replace the plugin's default "sysmem,nocb" (NativeAdrenoMetalPlugin.mm
     // applyBoardTurnipDebug). That default keeps every pass in system memory against a hang of the A740's concurrent binning (BV
     // and BR); the A650 has no concurrent binning, so by default Turnip picks tiled GMEM rendering with binning or system memory
     // per pass, as on Linux ("nocb" is a no-op here and keeps the variable non-empty). pipa-turnip-debug=<options> replaces it
     // for a round, e.g. pipa-turnip-debug=sysmem,nocb.
+    // sheng-fb-bgra=1 is what the plugin actually acts on (NativeAdrenoMetalPlugin.mm:299 sets TU_DEBUG from it); this row used
+    // to print only pipa-turnip-debug, so a boot with the flag on read "Turnip options nocb" and looked as if it had not applied.
+    // Print the plugin's own choice here so one log line answers both.
     char turnip[64] = "nocb";
+    unsigned fbBgra = 0;
+    if (PE_parse_boot_argn("sheng-fb-bgra", &fbBgra, sizeof fbBgra) && fbBgra) strlcpy(turnip, "sysmem,nocb", sizeof turnip);
     PE_parse_boot_arg_str("pipa-turnip-debug", turnip, sizeof turnip);
     // Canned Turnip option sets for a round, so an A/B on the GMEM input attachment bug (HANDOFF-pipa.md 10.14) fits in the
     // 1000-byte command line: pipa-tu=1..5 (8 bytes) instead of pipa-turnip-debug=<46 bytes>.

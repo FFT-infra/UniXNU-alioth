@@ -41,7 +41,8 @@ extern "C" void native_legacy_display_static_init(void) __asm__("__GLOBAL__sub_I
 extern "C" IOService *native_legacy_display_allocate(void);
 extern "C" void native_gop_presenter_static_init(void) __asm__("__GLOBAL__sub_I_NativeGOPPresenter.cpp");
 extern "C" IOService *native_gop_presenter_create(void);
-
+// The display controller's state as the boot loader left it (DpuProbe.cpp). Read before the display driver takes the controller
+// over: the direct scanout path inherits the SSPP base, source format and stride from those registers.
 static IOService *pendingLegacyDisplay;
 static IOService *activeGOPPresenter, *activeGOPNub;
 
@@ -1147,6 +1148,16 @@ void native_legacy_display_late_probe(void) {
 				}
 				if (attached) {
 					native_legacy_stage = 5;
+					// The display bank's stage-1 window, built here and not earlier: porting/ufs.md step 5 and drivers.md
+					// section 2 put storage before display, and the display's own startDirect() checks this window once and
+					// does not retry. Both symbols are weak, so a build without the storage driver or without the direct
+					// path still links and simply skips this.
+					extern uintptr_t native_ufs_smmu_base(void) __attribute__((weak_import));
+					extern int native_ufs_dpu_window_build(uintptr_t) __attribute__((weak_import));
+					if (&native_ufs_smmu_base && &native_ufs_dpu_window_build) {
+						uintptr_t smmu = native_ufs_smmu_base();
+						if (smmu) native_ufs_dpu_window_build(smmu);
+					}
 					started = display->start(nub);
 					native_legacy_start_result = started;
 				}

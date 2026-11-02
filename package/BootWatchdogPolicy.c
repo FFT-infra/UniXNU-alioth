@@ -29,8 +29,14 @@ static const char lite_jobs[]=
  // Crash or respawn loops seen on hardware (int-176): fairplayd.A2 is KeepAlive and exits at once (22 launches in 6 minutes), passd crashes,
  // obliteration is a data-wipe daemon with nothing to do here. iconservicesagent also dies in CI::GLContext::init, but disabling it leaves
  // the icons missing (seen on hardware), so it stays enabled.
+ //
+ // The two posters are the wallpaper extensions that fault with SIGBUS (ESR 0x82000007) on a userspace pointer every boot
+ // (fix76 CRASH p262/p263/p264, fix78 CRASH p267/p269). Their labels are the launchd ones the OS volume declares, read out of the
+ // running system's msgbuf: com.apple.NanoUniverse.AegirProxyApp.AegirPoster and com.apple.WatchFacesWallpaperSupport.KaleidoscopePoster.
+ // The short names com.apple.AegirPoster / com.apple.KaleidoscopePoster are the process names, not the labels, and a disabled key that
+ // names nothing disables nothing (b0c316f did exactly that and the crash stayed).
  "com.apple.fairplayd.A2,com.apple.passd,com.apple.mobile.obliteration,"
- "com.apple.AegirPoster,com.apple.KaleidoscopePoster";
+ "com.apple.NanoUniverse.AegirProxyApp.AegirPoster,com.apple.WatchFacesWallpaperSupport.KaleidoscopePoster";
 static char policy[2048],jobs[200];
 volatile int sheng_watchdog_policy_status=-1;
 
@@ -48,6 +54,63 @@ static int sheng_boot_setup_reset(proc_t p,uint64_t scratch) {
   error=unlink(p,&rm,&result);
   if(error && error!=ENOENT)return error;
  }
+ return 0;
+}
+
+/* The desktop's wallpaper is not re-read from the sealed .ca on every boot: PosterBoard keeps the chosen poster and a rendered
+ * snapshot in its own container and reuses them. This board's Data volume has been carried since before the wallpaper overlay
+ * existed, so a snapshot taken while the images could not be decoded outlives every later change to them. fix142 is that state:
+ * a solid red 2732x2732 J120.png was written into the mounted .ca (A files=15 wr=2, mount3=5/0) and the picture did not change.
+ * sheng-wallpaper-reset=1 removes the stored configuration once, so this boot builds it again from the collection and the overlay.
+ * [0] is how many candidates there are; [i+1] records the unlink of candidate i: 0 removed, ENOENT (2) absent, else the errno. */
+volatile int32_t sheng_wallpaper_reset[8] = {0};
+static int sheng_wallpaper_reset_files(proc_t p, uint64_t scratch) {
+ static const char *const files[]={
+  "/private/var/mobile/Containers/Data/Application/21211B1B-49C3-4486-803E-7E7ABCD864ED/Library/Preferences/com.apple.PosterBoard.plist",
+  "/private/var/mobile/Library/Preferences/com.apple.PosterBoard.plist",
+  "/private/var/mobile/Library/Preferences/com.apple.PaperBoard.plist",
+  "/private/var/mobile/Library/Preferences/com.apple.paperboard.plist"};
+ sheng_wallpaper_reset[0]=(int32_t)(sizeof(files)/sizeof(files[0]));
+ for(unsigned i=0;i<sizeof(files)/sizeof(files[0]);++i) {
+  int32_t result=0;
+  int error=copyout(files[i],scratch,strlen(files[i])+1);
+  if(error)return error;
+  struct unlink_args rm={.path=scratch};
+  error=unlink(p,&rm,&result);
+  sheng_wallpaper_reset[1+i]=error?error:0;
+ } return 0;
+}
+
+/* Which wallpaper the desktop actually picks. PosterBoard stores its choice in this plist, so its bytes name the collection and
+ * the variant without any guesswork. [0] status (0 read, else the errno, -1 no open), [1] bytes read, [2..] the bytes, four to a
+ * word, little endian as they sit in the file. A binary plist keeps its strings verbatim, so the identifier is readable in the
+ * dump. sheng-wallpaper-probe=1. */
+volatile int32_t sheng_wallpaper_cfg[2 + 128] = {0};
+static int sheng_wallpaper_read_cfg(proc_t p, uint64_t scratch) {
+ static const char path[] =
+  "/private/var/mobile/Containers/Data/Application/21211B1B-49C3-4486-803E-7E7ABCD864ED/Library/Preferences/com.apple.PosterBoard.plist";
+ int error=copyout(path,scratch,sizeof(path));
+ if(error)return error;
+ int32_t fd=-1,result=0;
+ struct open_args op={.path=scratch,.flags=O_RDONLY};
+ error=open(p,&op,&result);
+ if(error) {sheng_wallpaper_cfg[0]=error;return 0;}
+ fd=result;
+ user_ssize_t got_ss=0;
+ struct read_args rd={.fd=fd,.cbuf=scratch,.nbyte=512};
+ error=read(p,&rd,&got_ss);
+ struct close_args cl={.fd=fd};
+ (void)sys_close(p,&cl,&result);
+ if(error) {sheng_wallpaper_cfg[0]=error;return 0;}
+ const int32_t got=(int32_t)got_ss;
+ if(got<0) {sheng_wallpaper_cfg[0]=got;return 0;}
+ if(got>512) {sheng_wallpaper_cfg[0]=-2;return 0;}
+ unsigned char local[512];
+ error=copyin(scratch,local,sizeof local);
+ if(error)return error;
+ sheng_wallpaper_cfg[0]=0;
+ sheng_wallpaper_cfg[1]=got;
+ for(int32_t i=0;i<got;++i)sheng_wallpaper_cfg[2+i/4]|=(int32_t)((uint32_t)local[i]<<((i%4)*8));
  return 0;
 }
 
@@ -81,6 +144,19 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
   return error;
  }
  if(setup==1)printf("sheng setup flags reset: Hello page on this boot\n");
+ {
+  int wallpaper=0;
+  PE_parse_boot_argn("sheng-wallpaper-reset",&wallpaper,sizeof(wallpaper));
+  if(wallpaper==1) {
+   if((error=sheng_wallpaper_reset_files(p,scratch))) sheng_watchdog_policy_status=error;
+   else printf("sheng wallpaper configuration reset\n");
+  }
+  int wprobe=0;
+  PE_parse_boot_argn("sheng-wallpaper-probe",&wprobe,sizeof(wprobe));
+  if(wprobe==1) {
+   if((error=sheng_wallpaper_read_cfg(p,scratch))) sheng_watchdog_policy_status=error;
+  }
+ }
  if(!enabled && !jobs[0] && !lite)return 0;
  policy[0]=0;strlcat(policy,policy_head,sizeof(policy));
  if(enabled)strlcat(policy,policy_watchdogd,sizeof(policy));

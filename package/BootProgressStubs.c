@@ -230,8 +230,9 @@ __attribute__((weak)) uint64_t native_backlight_stats[16];
 __attribute__((weak)) uint64_t native_battery_stats[16];
 __attribute__((weak)) uint64_t native_buttons_stats[10];
 __attribute__((weak)) uint64_t native_cpufreq_row[120];
-__attribute__((weak)) uint64_t native_dpu_pipes[54];
-__attribute__((weak)) uint64_t native_dpu_stats[20];
+/* native_dpu_pipes/native_dpu_stats were declared here as uint64_t while BootLog.c read them as uint32_t, so every index past
+ * zero read the low half of a different element -- the same defect the HID counters had. DpuProbe.cpp defines both, at the
+ * width the reader uses, so they are no longer stubs. */
 __attribute__((weak)) uint64_t native_gop_wait_stats[7];
 __attribute__((weak)) uint64_t native_gpu_coherence_row[120];
 __attribute__((weak)) uint64_t native_gpu_perf_vote[2];

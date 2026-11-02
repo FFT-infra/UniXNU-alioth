@@ -331,6 +331,26 @@ static int hfi_wait(void *cookie) {A650GmuDevice *d = cookie; return d->services
  * copy moved 41 MB in 2.6 ms, about 16 GB/s, where the LPDDR5 reaches twice that). kgsl lets the GMU vote the same BCMs. 0 by default
  * (the host tests' table), the board sets it. */
 unsigned A650GmuDdrVote;
+/* A frequency change with GX already up. Linux sends only HFI_H2F_MSG_GX_BW_PERF_VOTE here (a6xx_hfi.c:1003-1013, ack_type 1
+ * blocking, the frequency index and the bandwidth index) and does NOT touch the out-of-band handshake: GMU_OOB_GPU_SET is the
+ * power-on request (a6xx_gmu.c:255-300). A650GmuPowerGx bundles the two, so a re-vote sent the HFI message -- which the GMU
+ * accepted, fix149 read hfi=0 -- and then waited 100 polls on an OOB ack nothing was going to raise (oob=101), returning
+ * A650GmuTimeout. That is why the level never left 7. This sends the vote alone, exactly as Linux does. */
+A650GmuStatus A650GmuSetFreq(A650GmuDevice *d, unsigned perf_index, A650GmuGxResult *r)
+{
+    if (!r) return A650GmuArgument;
+    *r = (A650GmuGxResult){0};
+    if (!d || perf_index < 1 || perf_index > 7) return A650GmuArgument;
+    if (d->poisoned || d->hfi.poisoned) return A650GmuPoisoned;
+    if (!d->startup.completed) return A650GmuStateMismatch;
+    const uint32_t vote[3] = {1, perf_index, A650GmuDdrVote ? 1u : 0u};
+    uint32_t out[16]; size_t count = 0;
+    r->vote_status = AdrenoHfiExchange(&d->hfi, 30, vote, 3, 1000, hfi_wait, out, 16, &count, &r->vote_error);
+    r->gx_on = 1;                    /* this path does not touch GX */
+    if (r->vote_status == AdrenoHfiSuccess) return A650GmuSuccess;
+    return r->vote_status == AdrenoHfiFirmwareError ? A650GmuProtocolError : A650GmuTimeout;
+}
+
 A650GmuStatus A650GmuPowerGx(A650GmuDevice *d, unsigned perf_index, A650GmuGxResult *r)
 {
     if (!r) return A650GmuArgument;
