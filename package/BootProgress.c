@@ -1788,21 +1788,39 @@ static void data_mount_report(void) {
   last_status = status;
   last_store = store;
 }
+// How many times the board monitor's loop has run, for the boot log's [tick] row. The monitor's loop is what usually drives
+// boot_log_tick, so a boot whose autoreset never fired has to say whether this loop was still turning: a still number is a stalled
+// monitor, a rising one with a still tick count is a tick that some other path stopped calling.
+volatile uint64_t boot_progress_monitor_ticks;
+// The step of the monitor's loop it last entered. The loop is what drives boot_log_tick, and a monitor that
+// stops is indistinguishable from a tick that stopped unless the loop says which call it never left. The
+// [tick] row prints this, in the same way the log writer's own phase names its stall.
+volatile unsigned boot_progress_monitor_step;
 static void monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
   unsigned capture_at=0,capture_attempt=~0U,named=0;
   for (;;) {
     __atomic_fetch_add(&thread_count,1,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&boot_progress_monitor_ticks,1,__ATOMIC_RELAXED);
+    boot_progress_monitor_step=1;
     boot_progress_poll();
     unsigned now=seconds();
+    boot_progress_monitor_step=2;
     framebufferSample();
     if(nprocs>0 && !named){thread_set_thread_name(current_thread(),"boot_progress");named=1;}
+    boot_progress_monitor_step=3;
     if(boot_process_snapshot)boot_process_snapshot();
+    boot_progress_monitor_step=4;
     if(boot_log_tick)boot_log_tick(now);
+    boot_progress_monitor_step=5;
     ufs_time_report(now);
+    boot_progress_monitor_step=6;
     data_mount_report();
+    boot_progress_monitor_step=7;
     touch_time_report(now);
+    boot_progress_monitor_step=8;
     if(sheng_cpufreq_poll)sheng_cpufreq_poll();
+    boot_progress_monitor_step=9;
     if(boot_ui_trace_snapshot)boot_ui_trace_snapshot(now);
     if(&boot_process_attempts && &boot_process_busy) {
       unsigned attempt=__atomic_load_n(&boot_process_attempts,__ATOMIC_RELAXED);
@@ -1810,7 +1828,9 @@ static void monitor(void *arg, wait_result_t result) {
       if(attempt!=capture_attempt || !capturing)capture_at=now;
       capture_attempt=attempt;process_capture_age=capturing?now-capture_at:0;
     }
+    boot_progress_monitor_step=10;
     refresh(seconds());
+    boot_progress_monitor_step=11;
     delay_for_interval(1000, NSEC_PER_MSEC);
   }
 }
@@ -1858,6 +1878,7 @@ static void gpu_rows_report(unsigned now) {
 static void log_only_monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
   for (;;) {
+    __atomic_fetch_add(&boot_progress_monitor_ticks,1,__ATOMIC_RELAXED);
     const unsigned now=seconds();
     if(boot_log_tick)boot_log_tick(now);
     // The page-off loop has to sample the framebuffer too, or GPUFB freezes and a frozen

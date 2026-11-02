@@ -57,6 +57,10 @@ extern volatile int native_gpu_addon_stage __attribute__((weak_import));
 extern volatile int native_gpu_addon_status __attribute__((weak_import));
 extern volatile int native_gpu_addon2_stage __attribute__((weak_import));
 extern volatile int32_t sheng_wallpaper_reset[8] __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_scan[4] __attribute__((weak_import));
+extern unsigned sheng_wallpaper_walked __attribute__((weak_import));
+extern volatile uint64_t boot_progress_monitor_ticks __attribute__((weak_import));
+extern volatile unsigned boot_progress_monitor_step __attribute__((weak_import));
 /* [0] status, [1] bytes, [2..] the bytes of the PosterBoard wallpaper choice. */
 extern volatile int32_t sheng_wallpaper_cfg[130] __attribute__((weak_import));
 extern volatile int native_gpu_addon2_status __attribute__((weak_import));
@@ -325,6 +329,10 @@ static unsigned tick_seen_seq, tick_seen_at;
 static int tick_reset_tried;
 static uint32_t tick_autoreset;
 static volatile unsigned log_sync_seq;
+// Instrumentation for the [tick] log row: the autoreset clock's own counters, so a boot that never returns names which part of it stood still.
+static volatile unsigned boot_log_tick_calls, boot_log_super_runs, boot_log_tick_elapsed, boot_log_super_returns, boot_log_super_elapsed;
+static volatile uint64_t boot_log_tick_ctr, boot_log_tick_freq;
+static volatile int boot_log_super_start = -1;
 /* Which step of a round the writer is in, for a round that never finishes. Every wait on that path
  * is supposed to be bounded (the SCSI commands carry deadlines and poison the controller on
  * timeout, which shows up as write_errors), so a writer that stops with write_errors still 0 is
@@ -486,10 +494,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // (0 removed, 2 absent, else errno). A red test image in the mounted .ca changed nothing on screen (fix142), so the next question
   // is whether the desktop reuses a stored configuration instead of reading the collection.
   if (&sheng_wallpaper_reset && sheng_wallpaper_reset[0]) {
-    char wrow[120];
+    char wrow[160];
     size_t n = (size_t)snprintf(wrow, sizeof wrow, "[wallpaper reset] n=%d", sheng_wallpaper_reset[0]);
     for (unsigned i = 1; i <= (unsigned)sheng_wallpaper_reset[0] && i < 8 && n < sizeof wrow; ++i)
       n += (size_t)snprintf(wrow + n, sizeof wrow - n, " %d", sheng_wallpaper_reset[i]);
+    // The container scan behind those unlinks: lookup result, last READDIR result, entries walked, containers matched. A row of
+    // "n=3 2 2 2" says only that the three fixed paths were absent; these four say why the dynamic ones were never tried.
+    if (&sheng_wallpaper_scan && n < sizeof wrow)
+      n += (size_t)snprintf(wrow + n, sizeof wrow - n, " | ent=%d dir=%d ctr=%d grp=%d rm=%u",
+                            sheng_wallpaper_scan[2], sheng_wallpaper_scan[3], sheng_wallpaper_scan[0],
+                            sheng_wallpaper_scan[1] & 0xff, &sheng_wallpaper_walked ? sheng_wallpaper_walked : 0u);
     at = put(out, at, cap, wrow, sizeof wrow);
   }
   // What PosterBoard stored as the desktop's wallpaper: the plist names the collection and the variant, so no experiment has to
@@ -1414,6 +1428,19 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              &native_ufs_log_skips ? native_ufs_log_skips : 0, (unsigned)log_phase, boot_log_state, boot_log_rounds);
     at = put(out, at, cap, row, sizeof row);
   }
+  // The autoreset clock itself: how many times boot_log_tick ran, the seconds it computes from cntpct, the raw counter it read, whether the
+  // supervisor thread started and how many times its loop ran. A boot that never resets is one of these five numbers standing still, and
+  // without them every reading of "the deadline did not fire" is a guess.
+  {
+    char row[128];
+    snprintf(row, sizeof row, "[tick] calls=%u mon=%llu step=%u super=%u/%u t=%u/%u start=%d ctr=%llx f=%llu",
+             boot_log_tick_calls, &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL,
+             &boot_progress_monitor_step ? boot_progress_monitor_step : 0,
+             boot_log_super_runs, boot_log_super_returns,
+             boot_log_tick_elapsed, boot_log_super_elapsed, boot_log_super_start,
+             (unsigned long long)boot_log_tick_ctr, (unsigned long long)boot_log_tick_freq);
+    at = put(out, at, cap, row, sizeof row);
+  }
   // Which processes were started and ended (BootProgress.c census) and the throw site of the last uncaught exception (kits BootFaultProbe.c).
   if (&boot_progress_spawn_rows) {
     static char spawn[16384];
@@ -1696,12 +1723,61 @@ static void writer(void *arg, wait_result_t result) {
 
 // An independent kernel thread driving the autoreset supervisor so the board returns to
 // fastboot even if monitor() yields or stalls after display handoff.
+// The reset, once the deadline is reached. Called from the deadline owners below, which are the board monitor and the supervisor.
+static void boot_log_fire_reset(unsigned elapsed) {
+  tick_reset_tried = 1;
+  // The deadline is reached, and that fact has to leave the kernel even when the reset then works or is
+  // refused silently: the console is the only channel that survives both.
+  if (&qcom_usb_debug_write) {
+    char line[72];
+    const int n = snprintf(line, sizeof line, "AUTORESET deadline %us reached at %us\n", tick_autoreset, elapsed);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
+  if (!&boot_reset_bootloader) {
+    strlcpy(boot_log_reset_result, "autoreset skipped: no reset entry point", sizeof boot_log_reset_result);
+    return;
+  }
+  const int rc = boot_reset_bootloader(boot_log_reset_result, sizeof boot_log_reset_result);
+  char tail[24]; snprintf(tail, sizeof tail, " (returned %d)", rc);
+  strlcat(boot_log_reset_result, tail, sizeof boot_log_reset_result);
+  if (&qcom_usb_debug_write) {
+    char line[160];
+    const int n = snprintf(line, sizeof line, "AUTORESET refused: %s\n", boot_log_reset_result);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
+  if (rc != 0) {
+    IOSleep(2000);
+    tick_reset_tried = 0;
+  }
+}
+
+// The deadline's own thread. It does NOT call boot_log_tick: that function runs the per-second probes
+// (DpuProbe, the GPU frequency reader) which were written for one caller, and two threads inside them at
+// once is what a boot with the monitor and this thread both ticking can do. The whole point of this
+// thread is to survive a monitor that stops, so it must not share the monitor's work; it measures its own
+// time from the hardware counter and fires the reset itself.
 static void autoreset_supervisor(void *arg, wait_result_t result) {
   (void)arg; (void)result;
   thread_set_thread_name(current_thread(), "autoreset");
+  uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
+  const uint64_t start = log_ticks();
+  unsigned reported = 0;
   while (!tick_reset_tried) {
     IOSleep(1000);
-    boot_log_tick(0);
+    boot_log_super_runs = boot_log_super_runs + 1;
+    boot_log_super_returns = boot_log_super_returns + 1;
+    const unsigned elapsed = (unsigned)((log_ticks() - start) / f);
+    boot_log_super_elapsed = elapsed;
+    if (boot_log_super_runs - reported >= 10) {
+      reported = boot_log_super_runs;
+      char line[128];
+      const int n = snprintf(line, sizeof line, "SUPER t=%us runs=%u calls=%u mon=%llu\n", elapsed,
+                             boot_log_super_runs, boot_log_tick_calls,
+                             &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL);
+      if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+    }
+    if (!tick_autoreset || elapsed < tick_autoreset + ResetSyncGrace) continue;
+    boot_log_fire_reset(elapsed);
   }
 }
 
@@ -1709,6 +1785,9 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
 void boot_log_tick(unsigned now) {
   uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
   const uint64_t cur_ticks = log_ticks();
+  boot_log_tick_freq = f;
+  boot_log_tick_ctr = cur_ticks;
+  boot_log_tick_calls = boot_log_tick_calls + 1;
   if (!boot_log_started) {
     boot_log_started = 1;
     tick_start_cntpct = cur_ticks;
@@ -1730,7 +1809,9 @@ void boot_log_tick(unsigned now) {
       if (&boot_reset_mark_bootloader) boot_reset_mark_bootloader(boot_log_reset_mark, sizeof boot_log_reset_mark);
       if (&boot_reset_watchdog) boot_reset_watchdog(autoreset + 60, boot_log_reset_watchdog, sizeof boot_log_reset_watchdog);
       thread_t rth;
-      if (kernel_thread_start_priority(autoreset_supervisor, 0, BASEPRI_KERNEL, &rth) == KERN_SUCCESS)
+      const kern_return_t sr = kernel_thread_start_priority(autoreset_supervisor, 0, BASEPRI_KERNEL, &rth);
+      boot_log_super_start = (int)sr;
+      if (sr == KERN_SUCCESS)
         thread_deallocate(rth);
     }
     uint32_t mode = 0;
@@ -1745,6 +1826,7 @@ void boot_log_tick(unsigned now) {
     }
   }
   const unsigned elapsed = cur_ticks >= tick_start_cntpct ? (unsigned)((cur_ticks - tick_start_cntpct) / f) : 0;
+  boot_log_tick_elapsed = elapsed;
   const unsigned cur_now = now ? now : elapsed;
   /* The display controller as the boot loader left it (DpuProbe.cpp). It runs from this tick rather than from the display's start
    * because the MDP block is unclocked at display start and reads return zero there; by the time the log has run for a few seconds
@@ -1779,32 +1861,5 @@ void boot_log_tick(unsigned now) {
   // none has, so an in-flight round gets its moment and a stopped writer costs only the grace. The
   // header still names the last complete round either way.
   if (elapsed - tick_seen_at > ResetSyncGrace && elapsed < tick_autoreset + ResetSyncGrace) return;
-  tick_reset_tried = 1;
-  // The deadline is reached, and that fact has to leave the kernel even when the reset then
-  // works or is refused silently: the console is the only channel that survives both, and the
-  // disk cannot report an attempt that never completed a round.
-  if (&qcom_usb_debug_write) {
-    char line[72];
-    const int n = snprintf(line, sizeof line, "AUTORESET deadline %us reached at %us\n", tick_autoreset, elapsed);
-    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
-  }
-  if (!&boot_reset_bootloader) {
-    strlcpy(boot_log_reset_result, "autoreset skipped: no reset entry point", sizeof boot_log_reset_result);
-    return;
-  }
-  // The text is only readable if the reset is refused; on success the tablet restarts into fastboot.
-  const int rc = boot_reset_bootloader(boot_log_reset_result, sizeof boot_log_reset_result);
-  char tail[24]; snprintf(tail, sizeof tail, " (returned %d)", rc);
-  strlcat(boot_log_reset_result, tail, sizeof boot_log_reset_result);
-  // Reaching this line at all means the reset did not take the part down. Say why on the console,
-  // where it is readable while the board is still running.
-  if (&qcom_usb_debug_write) {
-    char line[160];
-    const int n = snprintf(line, sizeof line, "AUTORESET refused: %s\n", boot_log_reset_result);
-    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
-  }
-  if (rc != 0) {
-    IOSleep(2000);
-    tick_reset_tried = 0;
-  }
+  boot_log_fire_reset(elapsed);
 }

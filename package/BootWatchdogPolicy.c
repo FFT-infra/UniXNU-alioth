@@ -68,6 +68,9 @@ static int sheng_boot_setup_reset(proc_t p,uint64_t scratch) {
  * sheng-wallpaper-reset=1 removes the stored configuration once, so this boot builds it again from the collection and the overlay.
  * [0] is how many candidates there are; [i+1] records the unlink of candidate i: 0 removed, ENOENT (2) absent, else the errno. */
 volatile int32_t sheng_wallpaper_reset[8] = {0};
+// The container scan's own reading: [0] vnode_lookup result, [1] last VNOP_READDIR result, [2] directory entries walked, [3] candidate
+// containers that matched. A scan that unlinks nothing is one of these numbers, and the row below says which.
+volatile int32_t sheng_wallpaper_scan[4] = {0};
 extern vfs_context_t vfs_context_kernel(void);
 
 static int sheng_unlink_one(proc_t p, uint64_t scratch, const char *file) {
@@ -77,6 +80,126 @@ static int sheng_unlink_one(proc_t p, uint64_t scratch, const char *file) {
  struct unlink_args rm = {.path = scratch};
  error = unlink(p, &rm, &result);
  return error ? error : 0;
+}
+
+// PosterBoard's store is not at a path this board can assume: the container UUID changes with the Data
+// volume, and the file that names the chosen poster is not one of the three fixed preferences. So find
+// the container by its own metadata, which names the identifier in every one, then walk that container
+// and remove the files that carry the selection by BASENAME. Measured on fix173: the Application
+// directory answers (157 entries, 157 directories) but all three fixed paths were ENOENT, so the
+// selection lives somewhere else in that container and only a walk finds it.
+static const char *const sheng_wallpaper_targets[] = {
+ "com.apple.PosterBoard.plist", "SelectedConfigurationIdentifier.plist", "com.apple.PaperBoard.plist"};
+static char sheng_scan_path[512];
+static char sheng_scan_buf[4096];
+volatile int32_t sheng_wallpaper_unlinked[8];
+volatile unsigned sheng_wallpaper_walked;
+
+static int sheng_read_head(proc_t p, uint64_t scratch, const char *path, char *buf, unsigned cap) {
+ if (copyout(path, scratch, strlen(path) + 1)) return -1;
+ struct open_args op = {.path = scratch, .flags = O_RDONLY};
+ int32_t result = 0;
+ int error = open(p, &op, &result);
+ if (error) return -error;
+ const int32_t fd = result;
+ user_ssize_t got = 0;
+ struct read_args rd = {.fd = fd, .cbuf = scratch, .nbyte = cap};
+ error = read(p, &rd, &got);
+ struct close_args cl = {.fd = fd};
+ int32_t close_result = 0;
+ (void)sys_close(p, &cl, &close_result);
+ if (error) return -error;
+ if (got < 0) return -1;
+ if ((unsigned)got > cap) got = (user_ssize_t)cap;
+ if (copyin(scratch, buf, (size_t)got)) return -1;
+ return (int)got;
+}
+
+static int sheng_has_text(const char *hay, int len, const char *needle) {
+ const int n = (int)strlen(needle);
+ for (int i = 0; i + n <= len; ++i) if (!memcmp(hay + i, needle, (size_t)n)) return 1;
+ return 0;
+}
+
+// Unlink every file below root whose basename is one of the targets. Depth-bounded and counted: the row
+// says how many the walk removed, so an empty walk is a reading and not a silent no-op.
+static void sheng_wallpaper_walk(proc_t p, uint64_t scratch, const char *root, unsigned depth, volatile unsigned *found) {
+ vfs_context_t ctx = vfs_context_kernel();
+ vnode_t dir = NULLVP;
+ if (vnode_lookup(root, 0, &dir, ctx)) return;
+ if (vnode_vtype(dir) != VDIR) {vnode_put(dir); return;}
+ off_t offset = 0;
+ for (int eof = 0; !eof;) {
+  uio_t uio = uio_create(1, offset, UIO_SYSSPACE, UIO_READ);
+  if (!uio) break;
+  uio_addiov(uio, CAST_USER_ADDR_T(sheng_scan_buf), sizeof sheng_scan_buf);
+  int nentries = 0;
+  const int error = VNOP_READDIR(dir, uio, 0, &eof, &nentries, ctx);
+  const size_t got = sizeof sheng_scan_buf - (size_t)uio_resid(uio);
+  offset = uio_offset(uio);
+  uio_free(uio);
+  if (error || !got) break;
+  for (size_t at = 0; at + offsetof(struct dirent, d_name) <= got;) {
+   const struct dirent *d = (const struct dirent *)(sheng_scan_buf + at);
+   if (!d->d_reclen) {eof = 1; break;}
+   at += d->d_reclen;
+   if (!d->d_ino || (d->d_namlen == 1 && d->d_name[0] == '.') ||
+       (d->d_namlen == 2 && d->d_name[0] == '.' && d->d_name[1] == '.')) continue;
+   if ((size_t)snprintf(sheng_scan_path, sizeof sheng_scan_path, "%s/%.*s", root, (int)d->d_namlen, d->d_name) >= sizeof sheng_scan_path) continue;
+   if (d->d_type == DT_DIR && depth > 1) {sheng_wallpaper_walk(p, scratch, sheng_scan_path, depth - 1, found); continue;}
+   if (d->d_type != DT_REG) continue;
+   for (unsigned t = 0; t < sizeof sheng_wallpaper_targets / sizeof sheng_wallpaper_targets[0]; ++t) {
+    const size_t n = strlen(sheng_wallpaper_targets[t]);
+    if ((size_t)d->d_namlen != n || memcmp(d->d_name, sheng_wallpaper_targets[t], n)) continue;
+    if (sheng_unlink_one(p, scratch, sheng_scan_path) == 0 && *found < 8) sheng_wallpaper_unlinked[(*found)++] = (int32_t)d->d_namlen;
+    break;
+   }
+  }
+ }
+ vnode_put(dir);
+}
+
+// Every container below containers_root whose metadata plist names com.apple.PosterBoard, walked for the
+// selection files. Returns how many containers matched.
+static unsigned sheng_wallpaper_containers(proc_t p, uint64_t scratch, const char *root) {
+ vfs_context_t ctx = vfs_context_kernel();
+ vnode_t dir = NULLVP;
+ if (vnode_lookup(root, 0, &dir, ctx)) return 0;
+ if (vnode_vtype(dir) != VDIR) {vnode_put(dir); return 0;}
+ unsigned matched = 0;
+ off_t offset = 0;
+ for (int eof = 0; !eof;) {
+  uio_t uio = uio_create(1, offset, UIO_SYSSPACE, UIO_READ);
+  if (!uio) break;
+  uio_addiov(uio, CAST_USER_ADDR_T(sheng_scan_buf), sizeof sheng_scan_buf);
+  int nentries = 0;
+  const int error = VNOP_READDIR(dir, uio, 0, &eof, &nentries, ctx);
+  const size_t got = sizeof sheng_scan_buf - (size_t)uio_resid(uio);
+  offset = uio_offset(uio);
+  uio_free(uio);
+  if (error || !got) break;
+  for (size_t at = 0; at + offsetof(struct dirent, d_name) <= got;) {
+   const struct dirent *d = (const struct dirent *)(sheng_scan_buf + at);
+   if (!d->d_reclen) {eof = 1; break;}
+   at += d->d_reclen;
+   if (!d->d_ino || (d->d_namlen == 1 && d->d_name[0] == '.') ||
+       (d->d_namlen == 2 && d->d_name[0] == '.' && d->d_name[1] == '.')) continue;
+   if (d->d_type != DT_DIR) continue;
+   if ((size_t)snprintf(sheng_scan_path, sizeof sheng_scan_path, "%s/%.*s", root, (int)d->d_namlen, d->d_name) >= sizeof sheng_scan_path) continue;
+   static const char meta[] = "/.com.apple.mobile_container_manager.metadata.plist";
+   if (strlen(sheng_scan_path) + sizeof meta >= sizeof sheng_scan_path) continue;
+   char container[512];
+   strlcpy(container, sheng_scan_path, sizeof container);
+   strlcat(sheng_scan_path, meta, sizeof sheng_scan_path);
+   char head[2048];
+   const int n = sheng_read_head(p, scratch, sheng_scan_path, head, sizeof head);
+   if (n <= 0 || !sheng_has_text(head, n, "com.apple.PosterBoard")) continue;
+   ++matched;
+   sheng_wallpaper_walk(p, scratch, container, 5, &sheng_wallpaper_walked);
+  }
+ }
+ vnode_put(dir);
+ return matched;
 }
 
 static int sheng_wallpaper_reset_files(proc_t p, uint64_t scratch) {
@@ -90,8 +213,10 @@ static int sheng_wallpaper_reset_files(proc_t p, uint64_t scratch) {
 
  vfs_context_t ctx = vfs_context_kernel();
  vnode_t dir = NULLVP;
- if (!vnode_lookup("/private/var/mobile/Containers/Data/Application", 0, &dir, ctx)) {
-  if (vnode_vtype(dir) == VDIR) {
+ int lookup = vnode_lookup("/private/var/mobile/Containers/Data/Application", 0, &dir, ctx);
+ sheng_wallpaper_scan[0] = lookup;
+ if (!lookup && vnode_vtype(dir) == VDIR) {
+  {
    char *buffer = (char *)IOMallocData(4096);
    if (buffer) {
     off_t offset = 0;
@@ -104,13 +229,16 @@ static int sheng_wallpaper_reset_files(proc_t p, uint64_t scratch) {
      const size_t got = 4096 - (size_t)uio_resid(uio);
      offset = uio_offset(uio);
      uio_free(uio);
+     sheng_wallpaper_scan[1] = error;
      if (error || !got) break;
      for (size_t at = 0; at + offsetof(struct dirent, d_name) <= got;) {
       const struct dirent *d = (const struct dirent *)(buffer + at);
       if (!d->d_reclen) { eof = 1; break; }
       at += d->d_reclen;
       if (!d->d_ino || (d->d_namlen == 1 && d->d_name[0] == '.') || (d->d_namlen == 2 && d->d_name[0] == '.' && d->d_name[1] == '.')) continue;
+      sheng_wallpaper_scan[2] = sheng_wallpaper_scan[2] + 1;
       if (d->d_type == DT_DIR && d->d_namlen > 10) {
+       sheng_wallpaper_scan[3] = sheng_wallpaper_scan[3] + 1;
        char target[256];
        snprintf(target, sizeof target, "/private/var/mobile/Containers/Data/Application/%.*s/Library/Preferences/com.apple.PosterBoard.plist", (int)d->d_namlen, d->d_name);
        int rc = sheng_unlink_one(p, scratch, target);
@@ -129,6 +257,10 @@ static int sheng_wallpaper_reset_files(proc_t p, uint64_t scratch) {
   }
   vnode_put(dir);
  }
+ // The paths above are guesses and measured ENOENT on fix173. Find PosterBoard's container by the identifier
+ // its metadata plist carries, then walk that container for the files that name the chosen poster.
+ sheng_wallpaper_scan[0] = (int32_t)sheng_wallpaper_containers(p, scratch, "/private/var/mobile/Containers/Data/Application");
+ sheng_wallpaper_scan[1] = (int32_t)(sheng_wallpaper_containers(p, scratch, "/private/var/mobile/Containers/Shared/AppGroup") + 0x100);
  sheng_wallpaper_reset[0] = count;
  return 0;
 }
