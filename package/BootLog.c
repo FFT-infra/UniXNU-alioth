@@ -320,7 +320,8 @@ static int boot_log_started;
 // deadline lived in its loop nothing restarted that board, so an unattended round never came
 // back. This runs from the board monitor's once-a-second tick instead, which does not share a
 // thread with the writer.
-static unsigned tick_first, tick_seen_seq, tick_seen_at;
+static uint64_t tick_start_cntpct;
+static unsigned tick_seen_seq, tick_seen_at;
 static int tick_reset_tried;
 static uint32_t tick_autoreset;
 static volatile unsigned log_sync_seq;
@@ -1690,7 +1691,6 @@ static void writer(void *arg, wait_result_t result) {
     log_phase = 9;
     IOSleep(LogPeriodMs);
     log_phase = 10;   // woke; anything still at 9 is inside the sleep, anything at 10 is compose
-    boot_log_tick((unsigned)((log_ticks() - start) / f));
   }
 }
 
@@ -1699,20 +1699,20 @@ static void writer(void *arg, wait_result_t result) {
 static void autoreset_supervisor(void *arg, wait_result_t result) {
   (void)arg; (void)result;
   thread_set_thread_name(current_thread(), "autoreset");
-  uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
-  const uint64_t start = log_ticks();
   while (!tick_reset_tried) {
     IOSleep(1000);
-    const unsigned now = (unsigned)((log_ticks() - start) / f);
-    boot_log_tick(now);
+    boot_log_tick(0);
   }
 }
 
 // Called by the board page's monitor once a second; starts the writer the first time when sheng-log=1.
 void boot_log_tick(unsigned now) {
+  uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
+  const uint64_t cur_ticks = log_ticks();
   if (!boot_log_started) {
     boot_log_started = 1;
-    tick_first = now; tick_seen_at = now;
+    tick_start_cntpct = cur_ticks;
+    tick_seen_at = 0;
     // An unattended run must come back however it ends: on the desktop past its deadline (int-229 first suspected) or in a panic seconds
     // after the start, before UFS and this log exist (int-229: a duplicate class at PE_lockdown_iokit). So the first tick, independent of
     // sheng-log, marks the cell (any restart is fastboot) and arms the hypervisor's watchdog, which bites a minute after the pings stop:
@@ -1744,23 +1744,25 @@ void boot_log_tick(unsigned now) {
       }
     }
   }
+  const unsigned elapsed = cur_ticks >= tick_start_cntpct ? (unsigned)((cur_ticks - tick_start_cntpct) / f) : 0;
+  const unsigned cur_now = now ? now : elapsed;
   /* The display controller as the boot loader left it (DpuProbe.cpp). It runs from this tick rather than from the display's start
    * because the MDP block is unclocked at display start and reads return zero there; by the time the log has run for a few seconds
    * the panel is powered and the registers answer. */
-  if (&alioth_dpu_probe_tick) alioth_dpu_probe_tick(now);
-  if (&native_gpu_freq_tick) native_gpu_freq_tick(now);
+  if (&alioth_dpu_probe_tick) alioth_dpu_probe_tick(cur_now);
+  if (&native_gpu_freq_tick) native_gpu_freq_tick(cur_now);
   /* Phase heartbeat: once a second is too much, once on every change plus every tenth second
    * otherwise. A writer that stops leaves its last phase on the console and nothing else. */
   static unsigned last_phase = ~0U, last_at;
   {
     const unsigned phase = __atomic_load_n(&log_phase, __ATOMIC_RELAXED);
-    if (phase != last_phase || now - last_at >= 10) {
-      last_phase = phase; last_at = now;
+    if (phase != last_phase || elapsed - last_at >= 10) {
+      last_phase = phase; last_at = elapsed;
       char row[128];
       // Round and slots as well as the phase: a writer that stops leaves its phase behind, and a
       // writer that keeps running but cannot write leaves the round count still while the phase
       // cycles. Without both numbers those two read the same on the console.
-      const int n = snprintf(row, sizeof row, "BLPHASE t=%us phase=%u round=%u slots=%u err=%u state=%u\n", now, phase,
+      const int n = snprintf(row, sizeof row, "BLPHASE t=%us phase=%u round=%u slots=%u err=%u state=%u\n", elapsed, phase,
                              boot_log_rounds, __atomic_load_n(&boot_log_slots_hint, __ATOMIC_RELAXED), boot_log_errors, boot_log_state);
       if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(row, (size_t)n < sizeof row ? (size_t)n : sizeof row - 1);
     }
@@ -1770,21 +1772,20 @@ void boot_log_tick(unsigned now) {
   // stopped, and it will not start again (boot_log_started is never cleared, and the loop has
   // returned on every exit path). Either way the board still has to come back.
   const unsigned seq = __atomic_load_n(&log_sync_seq, __ATOMIC_RELAXED);
-  if (seq != tick_seen_seq) {tick_seen_seq = seq; tick_seen_at = now;}
-  const unsigned elapsed = now - tick_first;
+  if (seq != tick_seen_seq) {tick_seen_seq = seq; tick_seen_at = elapsed;}
   if (elapsed < tick_autoreset) return;
   // log-capture section 6: the timeout covers the measured checkpoint and the log sync. Restart at
   // the deadline when a round has landed within the grace, and at the deadline plus the grace when
   // none has, so an in-flight round gets its moment and a stopped writer costs only the grace. The
   // header still names the last complete round either way.
-  if (now - tick_seen_at > ResetSyncGrace && elapsed < tick_autoreset + ResetSyncGrace) return;
+  if (elapsed - tick_seen_at > ResetSyncGrace && elapsed < tick_autoreset + ResetSyncGrace) return;
   tick_reset_tried = 1;
   // The deadline is reached, and that fact has to leave the kernel even when the reset then
   // works or is refused silently: the console is the only channel that survives both, and the
   // disk cannot report an attempt that never completed a round.
   if (&qcom_usb_debug_write) {
     char line[72];
-    const int n = snprintf(line, sizeof line, "AUTORESET deadline %us reached at %us\n", tick_autoreset, now);
+    const int n = snprintf(line, sizeof line, "AUTORESET deadline %us reached at %us\n", tick_autoreset, elapsed);
     if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
   }
   if (!&boot_reset_bootloader) {
@@ -1801,5 +1802,9 @@ void boot_log_tick(unsigned now) {
     char line[160];
     const int n = snprintf(line, sizeof line, "AUTORESET refused: %s\n", boot_log_reset_result);
     if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
+  if (rc != 0) {
+    IOSleep(2000);
+    tick_reset_tried = 0;
   }
 }

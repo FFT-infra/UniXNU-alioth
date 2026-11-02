@@ -290,7 +290,9 @@ int boot_reset_bootloader(char *text, unsigned cap) {
   snprintf(text, cap, "reset: %08x -> %08x rc=%d | %s pon_rc=%d | scm arb=%llx psr=%llx",
            before, after, rc, pon, pon_rc,
            (unsigned long long)arb, (unsigned long long)psr);
-  IOSleep(2000);
+  for (int i = 0; i < 30; ++i) {
+    IOSleep(100);
+  }
   return 99;   // neither the SCM deassert nor the PS_HOLD write restarted the part
 }
 
