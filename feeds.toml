@@ -34,3 +34,12 @@ name = "Adreno740"
 kind = "driver"
 git = "https://github.com/FFT-infra/Adreno650"
 commit = "70771a71795d7e1a78afdb82badd7943adb0a3a0"
+
+# The ARM CPU driver for this board. xVanTuring's pipa branch carries the SM8250 SMP and
+# IPI bring-up the base repository's copy does not have, so the board pins it here instead
+# of passing a --local-module on every build.
+[[source]]
+name = "ArmCpu"
+kind = "driver"
+git = "https://github.com/xVanTuring/ArmCpu"
+commit = "a9c4585dbb1b75b8594dd0ae54962cc59969d98f"
