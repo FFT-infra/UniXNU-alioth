@@ -1473,6 +1473,18 @@ static uint32_t copy_msgbuf(uint8_t *out) {
   return n;
 }
 
+// One line on the USB console. The medium cannot report its own silence, so the writer says what it
+// is doing on the only channel that is still live when it stops: an open refusal, a round it stood
+// down for, and every tenth round that landed.
+static void log_say(int kind, unsigned a, unsigned b)
+{
+  if (!&qcom_usb_debug_write) return;
+  char line[96];
+  const int n = kind == 0 ? snprintf(line, sizeof line, "BOOTLOG skip %u phase %u\n", a, b)
+                          : snprintf(line, sizeof line, "BOOTLOG round %u slots %u\n", a, b);
+  if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+}
+
 static void writer(void *arg, wait_result_t result) {
   (void)arg; (void)result;
   thread_set_thread_name(current_thread(), "boot_log");
@@ -1480,9 +1492,25 @@ static void writer(void *arg, wait_result_t result) {
   const char *why = "";
   boot_log_state = 1;
   // The window exists once NativeUfs has read the root layout; until then the open is refused ("no root layout").
+  // The refusal is also said on the USB console: fix157 ran a whole boot with working touch and wrote no header at
+  // all, and the medium cannot explain an absence, so the reason has to leave the kernel another way.
   while (!native_ufs_log_open(&first, &blocks, &why)) {
-    if (strcmp(why, "no root layout")) {boot_log_state = 3; return;}
+    if (strcmp(why, "no root layout")) {
+      boot_log_state = 3;
+      if (&qcom_usb_debug_write) {
+        char line[96];
+        const int n = snprintf(line, sizeof line, "BOOTLOG open refused: %s\n", why ? why : "?");
+        if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+      }
+      return;
+    }
     IOSleep(1000);
+  }
+  if (&qcom_usb_debug_write) {
+    char line[80];
+    const int n = snprintf(line, sizeof line, "BOOTLOG open first=%llu blocks=%llu\n",
+                           (unsigned long long)first, (unsigned long long)blocks);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
   }
   boot_log_first_lba = first;
   /* Put the previous run's log back on the console before the new header replaces it. An
@@ -1554,13 +1582,13 @@ static void writer(void *arg, wait_result_t result) {
     compose((char *)boot_log_buffer, LogSlotBlocks * LogBlock, h.slots_written, now);
     log_phase = 1;
     { const int w = native_ufs_log_write(LogSlotFirst + (uint64_t)(h.slots_written % slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer);
-      if (w == 2) {++boot_log_skips; log_phase = 12; IOSleep(LogPeriodMs); continue;}
+      if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
       ok &= w != 0; if (!ok && !bad) bad = 1; }
     log_phase = 2;
     h.msg_bytes = copy_msgbuf(boot_log_buffer);
     log_phase = 3;
     { const int w = native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
-      if (w == 2) {++boot_log_skips; log_phase = 12; IOSleep(LogPeriodMs); continue;}
+      if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
       ok &= w != 0; if (!ok && !bad) bad = 3; }
     /* Take the frozen early-boot snapshot exactly once, while the boot-time IOLog is still inside
      * the kernel ring. copy_msgbuf always returns the newest 131072 bytes, so a copy taken at
@@ -1606,12 +1634,12 @@ static void writer(void *arg, wait_result_t result) {
     memcpy(boot_log_buffer, &h, sizeof h);
     log_phase = 5;
     { const int w = native_ufs_log_write(0, 1, boot_log_buffer);
-      if (w == 2) {++boot_log_skips; log_phase = 12; IOSleep(LogPeriodMs); continue;}
+      if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
       ok &= w != 0; if (!ok && !bad) bad = 5; }
     log_phase = 6;
     log_phase = 7;
     { const int w = native_ufs_log_sync();
-      if (w == 2) {++boot_log_skips; log_phase = 12; IOSleep(LogPeriodMs); continue;}
+      if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
       ok &= w != 0; if (!ok && !bad) bad = 7; }
     log_phase = 8;
     if (ok) __atomic_fetch_add(&log_sync_seq, 1, __ATOMIC_RELAXED);
