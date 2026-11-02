@@ -322,15 +322,8 @@ void buttonsThread(void *, wait_result_t) {
             void (*sink)(void *, uint32_t) = __atomic_load_n(&gSink, __ATOMIC_ACQUIRE);
             if (sink) {sink(gSinkContext, mask); native_buttons_stats[2] = native_buttons_stats[2] + 1;}
         }
-        // Wait for an interrupt, but not forever. btn2/btn4/btn6 all read irq=0, so no
-        // interrupt has ever arrived: with a plain assert_wait the thread blocks on the first
-        // pass and never reads the levels again, and rep=1 is that single sample rather than
-        // a button being reported. A timeout makes the same thread a poller when the interrupt
-        // path is dead, which is what the three identical rounds were actually showing.
-        assert_wait_timeout((event_t)&gEvents, THREAD_UNINT, kPollMs, 1000 * NSEC_PER_USEC);
-        if (gEvents != seen) clear_wait(current_thread(), THREAD_AWAKENED);
-        else thread_block(THREAD_CONTINUE_NULL);
-        seen = gEvents;
+        // Poll every kPollMs (50 ms). Reliable sleep keeps polling alive without waitq stalls.
+        IOSleep(kPollMs);
         // rep alone cannot tell "the thread is blocked" from "the thread polls but the level
         // never changes": both leave rep at 1. This counts every pass through the loop, so a
         // round can separate them - [7] climbing means the thread is alive, and rep staying
