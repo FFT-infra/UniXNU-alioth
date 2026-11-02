@@ -283,7 +283,7 @@ evidence = [{ kind = "source", reference = "kits/alioth-touch/FocalTouchProtocol
 [[area]]
 id = "gpu"
 status = "implemented"
-components = ["Adreno650"]
+components = ["Adreno650", "ArmSmmu4K", "AdrenoPM4", "AdrenoFirmware"]
 paths = ["package/*Gpu*", "package/*Gmu*", "package/*Adreno*", "package/pipa/*", "scripts/*adreno*", "scripts/*gpu*", "scripts/*metal*", "scripts/*turnip*", "scripts/*air*"]
 inputs = [
   "Adreno 650 on SM8250-AC; chip id 0x06050002; blocks GPU 0x3d00000, GMU 0x3d6a000, GPUCC 0x3d90000, SMMU 0x3da0000.",
