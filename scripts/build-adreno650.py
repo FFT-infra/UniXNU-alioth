@@ -47,7 +47,7 @@ sources += [driver / (name + '.cpp') for name in (
     'NativeAdrenoGpuContext', 'NativeAdrenoSmmuContext', 'NativeAdrenoSmmuMemory',
     'NativeAdrenoMemory', 'NativeAdrenoCpu', 'NativeAdrenoVm', 'NativeAdrenoRing', 'NativeAdrenoSubmit', 'NativeAdrenoTimer',
     'NativeAdrenoUserClient', 'NativeAdrenoPublish', 'NativeAdrenoCpInit', 'NativeAdrenoIrq',
-    'NativeAdrenoGmuContext', 'NativeAdrenoGmuMemory')]
+    'NativeAdrenoGmuContext', 'NativeAdrenoGmuMemory', 'NativeAdrenoPreempt')]
 # The board probe and its firmware: both are package files. The probe exports
 # native_gpu_probe(), which the late display probe calls; the firmware object defines the
 # three arrays it weak-imports.
