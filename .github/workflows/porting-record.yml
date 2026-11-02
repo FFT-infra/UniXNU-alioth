@@ -1,10 +1,41 @@
-name: Device documentation
+name: Porting record
 
-on: [push, pull_request]
+# docs/porting/device-repository asks for this check. It runs the same script the reusable
+# workflow in the UniXNU repository runs, but checks out FFT-infra/UniXNU as the tools
+# repository: the board's catalog carries the QcomXnuUsbDebug component this repository
+# selects, and the upstream catalog does not have it yet. Switch the tools checkout back to
+# UniXNU/UniXNU, and the whole job back to the reusable workflow, once it is upstream.
+
+on:
+  push:
+  pull_request:
 
 permissions:
   contents: read
 
 jobs:
-  porting-record:
-    uses: UniXNU/UniXNU/.github/workflows/porting-record.yml@main
+  validate:
+    name: Porting record
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: device
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: FFT-infra/UniXNU
+          ref: main
+          path: tools
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate structure and changed areas
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
+            BASE="refs/remotes/origin/$DEFAULT_BRANCH"
+          fi
+          python3 tools/scripts/porting-record.py check --device device --base "$BASE"
