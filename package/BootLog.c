@@ -1481,7 +1481,8 @@ static void log_say(int kind, unsigned a, unsigned b)
   if (!&qcom_usb_debug_write) return;
   char line[96];
   const int n = kind == 0 ? snprintf(line, sizeof line, "BOOTLOG skip %u phase %u\n", a, b)
-                          : snprintf(line, sizeof line, "BOOTLOG round %u slots %u\n", a, b);
+              : kind == 1 ? snprintf(line, sizeof line, "BOOTLOG round %u slots %u\n", a, b)
+                          : snprintf(line, sizeof line, "BOOTLOG beat %u phase %u\n", a, b);
   if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
 }
 
@@ -1578,15 +1579,19 @@ static void writer(void *arg, wait_result_t result) {
     // Text slot, then the message buffer, then the header that makes both visible. `bad` is the
     // first step that failed, in the same numbering as log_phase (1 slot, 3 message buffer,
     // 5 header, 7 sync), so a failed round can name it on the console.
+    if (h.rounds < 3) log_say(2, h.rounds, 1);   // before compose
     memset(boot_log_buffer, 0, LogSlotBlocks * LogBlock);
     compose((char *)boot_log_buffer, LogSlotBlocks * LogBlock, h.slots_written, now);
     log_phase = 1;
+    if (h.rounds < 3) log_say(2, h.rounds, 2);   // before the slot write
     { const int w = native_ufs_log_write(LogSlotFirst + (uint64_t)(h.slots_written % slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer);
       if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
       ok &= w != 0; if (!ok && !bad) bad = 1; }
     log_phase = 2;
+    if (h.rounds < 3) log_say(2, h.rounds, 3);   // before the message-buffer copy
     h.msg_bytes = copy_msgbuf(boot_log_buffer);
     log_phase = 3;
+    if (h.rounds < 3) log_say(2, h.rounds, 4);   // before the message-buffer write
     { const int w = native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
       if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
       ok &= w != 0; if (!ok && !bad) bad = 3; }
@@ -1633,15 +1638,18 @@ static void writer(void *arg, wait_result_t result) {
     memset(boot_log_buffer, 0, LogBlock);
     memcpy(boot_log_buffer, &h, sizeof h);
     log_phase = 5;
+    if (h.rounds < 3) log_say(2, h.rounds, 5);   // before the header write
     { const int w = native_ufs_log_write(0, 1, boot_log_buffer);
       if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
       ok &= w != 0; if (!ok && !bad) bad = 5; }
     log_phase = 6;
     log_phase = 7;
+    if (h.rounds < 3) log_say(2, h.rounds, 6);   // before the flush
     { const int w = native_ufs_log_sync();
       if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
       ok &= w != 0; if (!ok && !bad) bad = 7; }
     log_phase = 8;
+    if (h.rounds < 3) log_say(2, h.rounds, 7);   // the round landed
     if (ok) __atomic_fetch_add(&log_sync_seq, 1, __ATOMIC_RELAXED);
     // A round that fails says so on the console, where the console is the only channel left once
     // the medium has stopped taking writes: the step that failed (1 slot, 3 message buffer,
