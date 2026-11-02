@@ -313,7 +313,7 @@ bool setup() {
 void buttonsThread(void *, wait_result_t) {
     thread_set_thread_name(current_thread(), "alioth-bt");
     if (!setup()) return;
-    uint32_t seen = gEvents, last = 0;
+    uint32_t last = 0;
     for (;;) {
         const uint32_t mask = pressed();
         if (mask != last) {
