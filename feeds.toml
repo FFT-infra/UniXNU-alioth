@@ -9,7 +9,7 @@ commit = "a6e7e36caab58f5b9a5625dbdb8da2bf290fa5cc"
 name = "ShengUfs"
 kind = "driver"
 git = "https://github.com/FFT-infra/NativeUfs-alioth"
-commit = "f7612e0a3a32caed8a20f4378cfc900e5bccad3b"
+commit = "d6bd207347cb9c870452ff7d2e6ae488b9b13feb"
 
 # Board forks of shared drivers, owned here rather than by the main repository's submodules
 # (porting/device-repository: device repositories own board driver submodules). Each carries a
@@ -18,7 +18,7 @@ commit = "f7612e0a3a32caed8a20f4378cfc900e5bccad3b"
 name = "GopFramebuffer"
 kind = "driver"
 git = "https://github.com/FFT-infra/GopFramebuffer"
-commit = "74ff4c4165c0d84bbca82b1ec732677d2d62a98b"
+commit = "d6bd207347cb9c870452ff7d2e6ae488b9b13feb"
 
 [[source]]
 name = "QcomXnuUsbDebug"

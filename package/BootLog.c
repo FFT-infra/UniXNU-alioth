@@ -26,6 +26,8 @@ extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_imp
 extern uint64_t native_ufs_export_blocks(void) __attribute__((weak_import));
 extern int native_ufs_export_write(uint64_t, uint32_t, const void *) __attribute__((weak_import));
 extern int native_ufs_log_sync(void) __attribute__((weak_import));
+// Rounds the storage path made the writer stand down for, because its host lock was held.
+extern volatile uint32_t native_ufs_log_skips __attribute__((weak_import));
 extern unsigned native_ufs_store_gpt_check(void) __attribute__((weak_import));
 extern uint32_t cs_text_fixup_parsed __attribute__((weak_import));
 extern uint32_t cs_text_fixup_applied __attribute__((weak_import));
@@ -306,6 +308,9 @@ struct boot_log_header {
 };
 // Writer state for the board page: 0 off, 1 waiting for the window, 2 writing, 3 stopped after errors, 4 stopped (GPT changed).
 volatile uint32_t boot_log_state, boot_log_rounds, boot_log_errors;
+// Rounds the writer stood down for because the storage path held the host lock. A skip is not an
+// error: the round is not counted, the slot index does not advance, and the next round is 2 s away.
+static volatile uint32_t boot_log_skips;
 volatile uint32_t boot_log_slots_hint;   // the writer's slots_written, for the console heartbeat
 volatile uint64_t boot_log_first_lba;
 static int boot_log_started;
@@ -1398,6 +1403,15 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     snprintf(row, sizeof row, "[text fixup] parsed=%u applied=%u", cs_text_fixup_parsed, cs_text_fixup_applied);
     at = put(out, at, cap, row, sizeof row);
   }
+  // Whether this writer is still getting its turns. A frozen slots_written alone cannot tell a stalled
+  // writer from a stalled system; these three numbers can. phase 12 is a round the storage path made us
+  // stand down for, and skips counts those rounds since boot.
+  {
+    char row[72];
+    snprintf(row, sizeof row, "[log] skips=%u phase=%u state=%u rounds=%u",
+             &native_ufs_log_skips ? native_ufs_log_skips : 0, (unsigned)log_phase, boot_log_state, boot_log_rounds);
+    at = put(out, at, cap, row, sizeof row);
+  }
   // Which processes were started and ended (BootProgress.c census) and the throw site of the last uncaught exception (kits BootFaultProbe.c).
   if (&boot_progress_spawn_rows) {
     static char spawn[16384];
@@ -1539,13 +1553,15 @@ static void writer(void *arg, wait_result_t result) {
     memset(boot_log_buffer, 0, LogSlotBlocks * LogBlock);
     compose((char *)boot_log_buffer, LogSlotBlocks * LogBlock, h.slots_written, now);
     log_phase = 1;
-    ok &= native_ufs_log_write(LogSlotFirst + (uint64_t)(h.slots_written % slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer);
-    if (!ok && !bad) bad = 1;
+    { const int w = native_ufs_log_write(LogSlotFirst + (uint64_t)(h.slots_written % slot_count) * LogSlotBlocks, LogSlotBlocks, boot_log_buffer);
+      if (w == 2) {++boot_log_skips; log_phase = 12; IOSleep(LogPeriodMs); continue;}
+      ok &= w != 0; if (!ok && !bad) bad = 1; }
     log_phase = 2;
     h.msg_bytes = copy_msgbuf(boot_log_buffer);
     log_phase = 3;
-    ok &= native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
-    if (!ok && !bad) bad = 3;
+    { const int w = native_ufs_log_write(LogMsgFirst, LogMsgBlocks, boot_log_buffer);
+      if (w == 2) {++boot_log_skips; log_phase = 12; IOSleep(LogPeriodMs); continue;}
+      ok &= w != 0; if (!ok && !bad) bad = 3; }
     /* Take the frozen early-boot snapshot exactly once, while the boot-time IOLog is still inside
      * the kernel ring. copy_msgbuf always returns the newest 131072 bytes, so a copy taken at
      * t=LogFrozenAtS covers t=0..LogFrozenAtS. Writing it to LogFrozenFirst and never touching that
@@ -1589,12 +1605,14 @@ static void writer(void *arg, wait_result_t result) {
     memset(boot_log_buffer, 0, LogBlock);
     memcpy(boot_log_buffer, &h, sizeof h);
     log_phase = 5;
-    ok &= native_ufs_log_write(0, 1, boot_log_buffer);
-    if (!ok && !bad) bad = 5;
+    { const int w = native_ufs_log_write(0, 1, boot_log_buffer);
+      if (w == 2) {++boot_log_skips; log_phase = 12; IOSleep(LogPeriodMs); continue;}
+      ok &= w != 0; if (!ok && !bad) bad = 5; }
     log_phase = 6;
     log_phase = 7;
-    ok &= native_ufs_log_sync();
-    if (!ok && !bad) bad = 7;
+    { const int w = native_ufs_log_sync();
+      if (w == 2) {++boot_log_skips; log_phase = 12; IOSleep(LogPeriodMs); continue;}
+      ok &= w != 0; if (!ok && !bad) bad = 7; }
     log_phase = 8;
     if (ok) __atomic_fetch_add(&log_sync_seq, 1, __ATOMIC_RELAXED);
     // A round that fails says so on the console, where the console is the only channel left once
