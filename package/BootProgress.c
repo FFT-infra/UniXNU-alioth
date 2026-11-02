@@ -1220,7 +1220,8 @@ static void pulse_monitor(void *arg, wait_result_t result) {
       }
       bp_pulse_leave(&pulse);
     }
-    delay_for_interval(1000, NSEC_PER_MSEC);
+    assert_wait_timeout((event_t)&pulse_worker_status,THREAD_UNINT,1000,NSEC_PER_MSEC);
+    thread_block(THREAD_CONTINUE_NULL);
   }
 }
 static void process_monitor(void *arg, wait_result_t result) {
@@ -1831,7 +1832,12 @@ static void monitor(void *arg, wait_result_t result) {
     boot_progress_monitor_step=10;
     refresh(seconds());
     boot_progress_monitor_step=11;
-    delay_for_interval(1000, NSEC_PER_MSEC);
+    // The original wait, restored. b0b1be9 replaced this with delay_for_interval to avoid a waitq stall, and the
+    // measurement says the replacement is the stall: fix178's monitor stopped with step=11 (inside this wait) and
+    // tstep=6 (the tick had returned), while the same delay_for_interval on the autoreset thread kept waking. A
+    // timeout wait on the loop's own event says exactly what this wait means and has one wake source.
+    assert_wait_timeout((event_t)&thread_count,THREAD_UNINT,1000,NSEC_PER_MSEC);
+    thread_block(THREAD_CONTINUE_NULL);
   }
 }
 // The boot core is a little A510, and the scheduler, which sees equal cores, hands it work first (lowest idle core number). A
@@ -1885,7 +1891,8 @@ static void log_only_monitor(void *arg, wait_result_t result) {
     // instrument reads exactly like a screen that stopped changing.
     framebufferSample();
     gpu_rows_report(now);
-    delay_for_interval(1000, NSEC_PER_MSEC);
+    assert_wait_timeout((event_t)&thread_count,THREAD_UNINT,1000,NSEC_PER_MSEC);
+    thread_block(THREAD_CONTINUE_NULL);
   }
 }
 void boot_progress_start(void) {

@@ -331,6 +331,10 @@ static uint32_t tick_autoreset;
 static volatile unsigned log_sync_seq;
 // Instrumentation for the [tick] log row: the autoreset clock's own counters, so a boot that never returns names which part of it stood still.
 static volatile unsigned boot_log_tick_calls, boot_log_super_runs, boot_log_tick_elapsed, boot_log_super_returns, boot_log_super_elapsed;
+// Which call inside boot_log_tick it last entered. The monitor was measured stopping with its own step at 4 (inside this
+// function), so this counter names the call inside it: 1 in, 2 after the one-time start, 3 before DpuProbe, 4 after it,
+// 5 after the GPU frequency tick, 6 after the phase heartbeat, 7 before the deadline.
+static volatile unsigned boot_log_tick_step;
 static volatile uint64_t boot_log_tick_ctr, boot_log_tick_freq;
 static volatile int boot_log_super_start = -1;
 /* Which step of a round the writer is in, for a round that never finishes. Every wait on that path
@@ -1433,12 +1437,12 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // without them every reading of "the deadline did not fire" is a guess.
   {
     char row[128];
-    snprintf(row, sizeof row, "[tick] calls=%u mon=%llu step=%u super=%u/%u t=%u/%u start=%d ctr=%llx f=%llu",
+    snprintf(row, sizeof row, "[tick] calls=%u mon=%llu step=%u tstep=%u super=%u/%u t=%u/%u start=%d f=%llu",
              boot_log_tick_calls, &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL,
-             &boot_progress_monitor_step ? boot_progress_monitor_step : 0,
+             &boot_progress_monitor_step ? boot_progress_monitor_step : 0, boot_log_tick_step,
              boot_log_super_runs, boot_log_super_returns,
              boot_log_tick_elapsed, boot_log_super_elapsed, boot_log_super_start,
-             (unsigned long long)boot_log_tick_ctr, (unsigned long long)boot_log_tick_freq);
+             (unsigned long long)boot_log_tick_freq);
     at = put(out, at, cap, row, sizeof row);
   }
   // Which processes were started and ended (BootProgress.c census) and the throw site of the last uncaught exception (kits BootFaultProbe.c).
@@ -1788,6 +1792,7 @@ void boot_log_tick(unsigned now) {
   boot_log_tick_freq = f;
   boot_log_tick_ctr = cur_ticks;
   boot_log_tick_calls = boot_log_tick_calls + 1;
+  boot_log_tick_step = 1;
   if (!boot_log_started) {
     boot_log_started = 1;
     tick_start_cntpct = cur_ticks;
@@ -1825,14 +1830,18 @@ void boot_log_tick(unsigned now) {
       }
     }
   }
+  boot_log_tick_step = 2;
   const unsigned elapsed = cur_ticks >= tick_start_cntpct ? (unsigned)((cur_ticks - tick_start_cntpct) / f) : 0;
   boot_log_tick_elapsed = elapsed;
   const unsigned cur_now = now ? now : elapsed;
   /* The display controller as the boot loader left it (DpuProbe.cpp). It runs from this tick rather than from the display's start
    * because the MDP block is unclocked at display start and reads return zero there; by the time the log has run for a few seconds
    * the panel is powered and the registers answer. */
+  boot_log_tick_step = 3;
   if (&alioth_dpu_probe_tick) alioth_dpu_probe_tick(cur_now);
+  boot_log_tick_step = 4;
   if (&native_gpu_freq_tick) native_gpu_freq_tick(cur_now);
+  boot_log_tick_step = 5;
   /* Phase heartbeat: once a second is too much, once on every change plus every tenth second
    * otherwise. A writer that stops leaves its last phase on the console and nothing else. */
   static unsigned last_phase = ~0U, last_at;
@@ -1849,6 +1858,7 @@ void boot_log_tick(unsigned now) {
       if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(row, (size_t)n < sizeof row ? (size_t)n : sizeof row - 1);
     }
   }
+  boot_log_tick_step = 6;
   if (!tick_autoreset || tick_reset_tried) return;
   // A round that landed recently means the medium is keeping up; one that did not means the writer
   // stopped, and it will not start again (boot_log_started is never cleared, and the loop has
