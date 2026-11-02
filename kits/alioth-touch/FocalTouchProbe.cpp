@@ -392,7 +392,11 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
     __asm__ volatile("dmb ish" ::: "memory");
     native_touch_seq = native_touch_seq + 1;
     if (count) {native_touch_last_x = xs[0]; native_touch_last_y = ys[0];}
-    if (void (*sink)(void *) = __atomic_load_n(&gTouchSink, __ATOMIC_ACQUIRE)) sink(gTouchSinkContext);
+    static unsigned lastReportedCount = 0;
+    if (count || lastReportedCount) {
+        lastReportedCount = count;
+        if (void (*sink)(void *) = __atomic_load_n(&gTouchSink, __ATOMIC_ACQUIRE)) sink(gTouchSinkContext);
+    }
 }
 
 // Program DFS level 0 (TCXO 19.2 MHz) of the SE4 RCG and confirm the divider.

@@ -635,7 +635,7 @@ kernel_args = [
   # kIOHIDDigitizerEventFromEdgeTip, which is the only thing UIKit reads to classify an edge
   # touch; without it the home-swipe and the switcher gestures are type 0 and never recognise.
   # Only the bottom edge is marked and an unfilled begin position is skipped (NativeHidInput.cpp).
-  "sheng-touch-edge=1",
+  "sheng-touch-edge=0",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
