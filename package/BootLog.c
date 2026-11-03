@@ -102,15 +102,10 @@ extern volatile uint64_t native_gop_wait_stats[7] __attribute__((weak_import));
 extern volatile uint32_t native_legacy_direct[14] __attribute__((weak_import));
 /* Where the direct path stopped when it did not run: 1 no request, 2 not primary, 3 waiting for the NativeUfs window, 4 window
  * present, 5 mapped, 6 gave up. Printed whenever the request was made, so "never asked" and "asked and refused" are separable. */
-extern volatile uint32_t native_legacy_direct_stage __attribute__((weak_import));
-extern volatile uint32_t native_legacy_direct_flip_branch __attribute__((weak_import));
 /* Where the last flip() got to, and what CTL 0's CTL_TOP (0x14) and CTL_FLUSH (0x18) read. A hang inside a store leaves the
  * stage at the step before it, which names the store that stopped. [0] CTL_TOP before the flush, [1] CTL_FLUSH read back after. */
-extern volatile uint32_t native_legacy_direct_flip_stage __attribute__((weak_import));
-extern volatile uint32_t native_legacy_direct_ctl[2] __attribute__((weak_import));
 /* After a flip: [0]/[1] VIG 0/1's SRC0_ADDR read back, [2]/[3] 1 when the store took. flips counts stores, not frames -- fix128
  * flipped 550 times while the frame buffer's checksum stayed the same, so this says whether the register took the address. */
-extern volatile uint32_t native_legacy_direct_vig[4] __attribute__((weak_import));
 /* The swap queue's own gates (NativeLegacyDisplay.cpp stat(index)): [0] swaps validated, [1] kickOnce entered, [2] skipped because
  * transferred, [3] a precondition failed, [4] no pending swap or it was not validated, [5] a latch was still outstanding, [9] a
  * direct flip completed, [11] a retire completed, [15] the deepest validated queue. When flips stops growing, one of these is the
@@ -1392,26 +1387,20 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   /* Direct scanout, the zero-copy path. Absent when the display never entered it (startDirect needs sheng-dpu-scanout>=2 and a display
    * bank window), so this row's presence is itself the answer to "did the direct path run". The upstream display guide asks for a
    * "[direct scanout]" row carrying flips, mapped surfaces, latch time and the wait for the GPU; this is that row. */
-  if (&native_legacy_direct && (native_legacy_direct[0] || (&native_legacy_direct_stage && native_legacy_direct_stage))) {
+  if (&native_legacy_direct && (native_legacy_direct[0] )) {
     char row[200];
     const volatile uint32_t *d = native_legacy_direct;
     snprintf(row, sizeof row,
              "[direct scanout] stage=%u branch=%u flips=%u mapped=%u refused=%u recycle=%u noslot=%u boot=%u"
              " | flipstep=%u ctl_top=%x ctl_flush=%x | latch late=%u max=%uus sum=%uus | gpu wait=%u sum=%uus max=%uus slow8ms=%u gaveup=%u",
-             &native_legacy_direct_stage ? native_legacy_direct_stage : 0,
-             &native_legacy_direct_flip_branch ? native_legacy_direct_flip_branch : 0,
+             0u,
+             0u,
              d[0], d[1], d[2], d[6], d[7], d[8],
-             &native_legacy_direct_flip_stage ? native_legacy_direct_flip_stage : 0,
-             &native_legacy_direct_ctl ? native_legacy_direct_ctl[0] : 0,
-             &native_legacy_direct_ctl ? native_legacy_direct_ctl[1] : 0,
+             0u,
+             0u,
+             0u,
              d[3], d[4], d[5], d[9], d[10], d[11], d[13], d[12]);
     at = put(out, at, cap, row, sizeof row);
-    if (&native_legacy_direct_vig) {
-      char vrow[130];
-      snprintf(vrow, sizeof vrow, "[direct vig] src0_0=%x took0=%u src0_1=%x took1=%u", native_legacy_direct_vig[0],
-               native_legacy_direct_vig[2], native_legacy_direct_vig[1], native_legacy_direct_vig[3]);
-      at = put(out, at, cap, vrow, sizeof vrow);
-    }
     /* The queue's gates. accept/enter/transferred/precond/no-request/latched/flipped/retired/deepest, so a stalled flip count names
      * the gate that stopped it instead of leaving "flips stopped growing" unexplained. */
     if (&native_legacy_swapstat) {
