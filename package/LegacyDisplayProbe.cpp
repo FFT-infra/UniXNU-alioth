@@ -329,6 +329,26 @@ extern "C" void native_legacy_swap_stage(unsigned stage) {
 }
 
 volatile uint32_t native_legacy_swap_reason_counts[8];
+// The last request's layer masks, background word and surface count. A rejection is a verdict
+// about these three, so they belong beside the reason code, not only in the request memory.
+volatile uint32_t native_legacy_swap_req[12];
+extern "C" void native_legacy_swap_request_state(uint32_t updated, uint32_t disabled,
+                                                 uint32_t background, uint32_t surfaces) {
+	native_legacy_swap_req[0] = updated;
+	native_legacy_swap_req[1] = disabled;
+	native_legacy_swap_req[2] = background;
+	native_legacy_swap_req[3] = surfaces;
+	native_legacy_swap_req[4] = native_legacy_swap_req[4] + 1;
+}
+// The geometry the verdict compared: the request's own dimensions and first rectangle, and the
+// display it was compared with. A reason 3 says these disagree, and only the numbers say which.
+extern "C" void native_legacy_swap_request_geometry(uint32_t rw, uint32_t rh, const uint32_t *rect,
+                                                    uint32_t dw, uint32_t dh) {
+	for (unsigned i = 0; i < 4; ++i) native_legacy_swap_req[5 + i] = rect ? rect[i] : 0;
+	native_legacy_swap_req[9] = rw;
+	native_legacy_swap_req[10] = rh;
+	native_legacy_swap_req[11] = (dw << 16) | (dh & 0xffff);
+}
 void native_legacy_swap_validation_observed(bool accepted, unsigned reason, const void *request, const void *surface) {
 	if (reason < 8) native_legacy_swap_reason_counts[reason] = native_legacy_swap_reason_counts[reason] + 1;
 	// Band 8: a client reached the backend and submitted a swap. Painted before the verdict, so
