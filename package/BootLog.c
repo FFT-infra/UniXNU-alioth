@@ -222,7 +222,10 @@ extern volatile uint64_t native_adreno_cache_stats[5] __attribute__((weak_import
 // NativeAdrenoPublish.cpp: per process name that opened the GPU, and the processes that asked the Metal discovery for its plugin.
 struct native_adreno_client_record {char name[20]; uint32_t opens, refused, closes, slot, peak_mib, last_refusal;};
 extern struct native_adreno_client_record native_adreno_client_log[16] __attribute__((weak_import));
-struct native_adreno_client_text {char name[20]; char text[2][64]; unsigned lines;};
+/* The driver's own layout: NativeAdrenoPublish.cpp declares `struct NativeAdrenoClientText
+ * {char name[20]; char text[64];}`. The reader used to add a second 64-byte line and a counter,
+ * so every entry after the first was read at the wrong stride. */
+struct native_adreno_client_text {char name[20]; char text[64];};
 extern struct native_adreno_client_text native_adreno_client_text[8] __attribute__((weak_import));
 /* [0] the marker count, [1..16] the plugin's newest progress markers, from NativeAdrenoPublish.cpp. */
 extern volatile uint32_t native_adreno_metal_marks[17] __attribute__((weak_import));
@@ -877,11 +880,9 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     at = put(out, at, cap, row, sizeof row);
     if (&native_adreno_client_text)
       for (unsigned i = 0; i < 8 && native_adreno_client_text[i].name[0]; ++i) {
-        for (unsigned k = 0; k < 2; ++k) {
-          if (!native_adreno_client_text[i].text[k][0]) continue;
-          snprintf(row, sizeof row, "[gpu client text] %.19s: %.63s", native_adreno_client_text[i].name, native_adreno_client_text[i].text[k]);
-          at = put(out, at, cap, row, sizeof row);
-        }
+        if (!native_adreno_client_text[i].text[0]) continue;
+        snprintf(row, sizeof row, "[gpu client text] %.19s: %.63s", native_adreno_client_text[i].name, native_adreno_client_text[i].text);
+        at = put(out, at, cap, row, sizeof row);
       }
   }
   if (&native_adreno_metal_askers) {
@@ -1865,6 +1866,78 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                  native_legacy_swap_req[7], native_legacy_swap_req[8], native_legacy_swap_req[11] >> 16,
                  native_legacy_swap_req[11] & 0xffff);
         if (m > 0) qcom_usb_debug_write(q, (size_t)m < sizeof q ? (size_t)m : sizeof q - 1);
+      }
+      // The GPU's client side, on the console. [gpu clients] and [gpu client text] live in the UFS
+      // slot, which is exactly what is unreachable on the boots that stop before the desktop: the
+      // question there is whether any process opened the accelerator, what the last mount refusal
+      // was, and what the first process that reached the bridge said. Answering it needs a reader.
+      {
+        unsigned named = 0;
+        const char *who = "-", *txt = "-";
+        if (&native_adreno_client_text)
+          for (unsigned i = 0; i < 8; ++i)
+            if (native_adreno_client_text[i].name[0]) {
+              if (!named) {
+                who = native_adreno_client_text[i].name;
+                txt = native_adreno_client_text[i].text[0] ? native_adreno_client_text[i].text : "-";
+              }
+              ++named;
+            }
+        unsigned askers = 0;
+        if (&native_adreno_metal_askers)
+          for (unsigned i = 0; i < 12; ++i) if (native_adreno_metal_askers[i].name[0]) ++askers;
+        // The plugin's own progress markers (0x68xx: entered, Turnip found, device made, no Turnip, no
+        // device). Nonzero means the bundle loaded and createDevice ran; zero with askers > 0 means the
+        // system found the plugin and never got an entry point out of it.
+        // The whole marker ring, not the last two slots: the ring's tail is empty until it wraps,
+        // so "last two" printed 0/0 on every boot that stopped early — exactly the case worth
+        // reading. Ring order is slot order; marks_total says which slot is newest.
+        char ring[96];
+        size_t rn = 0;
+        ring[0] = 0;
+        if (&native_adreno_metal_marks)
+          for (unsigned i = 1; i < 17 && rn + 8 < sizeof ring; ++i)
+            rn += (size_t)snprintf(ring + rn, sizeof ring - rn, " %x", native_adreno_metal_marks[i]);
+        char g[420];
+        int gn = snprintf(g, sizeof g, "GPUCLI clients=%u mountfail=%u/%x/%u askers=%u marks=%u%s txt=%s:%.60s\n",
+                          named,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[0] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[1] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[3] : 0u,
+                          askers,
+                          &native_adreno_metal_marks ? native_adreno_metal_marks[0] : 0u,
+                          ring,
+                          who, txt);
+        if (gn > 0 && &qcom_usb_debug_write)
+          qcom_usb_debug_write(g, (size_t)gn < sizeof g ? (size_t)gn : sizeof g - 1);
+      }
+      // Where the four traced processes sit, on the console: [stacks] lives in the slot, and the slot
+      // is what freezes on the boots that stop before the desktop. Two rows per role is the main
+      // thread's own frames.
+      if (elapsed % 30 == 0 && &boot_ui_trace_role_rows && &qcom_usb_debug_write) {
+        static char srows[64][120];
+        for (unsigned role = 0; role < 4; ++role) {
+          // Detail 0 is the only mode that prints the process's own name; detail 2 prints the
+          // registers, the peer and one row per thread group. Two calls, three rows: without the
+          // name the pids read like the xpcproxy that last held them.
+          unsigned printed = 0;
+          const unsigned named = boot_ui_trace_role_rows(role, srows, 64, 0);
+          if (named) {
+            char s[140];
+            const int sn = snprintf(s, sizeof s, "STK %.120s\n", srows[0]);
+            if (sn > 0) qcom_usb_debug_write(s, (size_t)sn < sizeof s ? (size_t)sn : sizeof s - 1);
+            printed = 1;
+          }
+          const unsigned n = boot_ui_trace_role_rows(role, srows, 64, 2);
+          for (unsigned i = 0; i < n && printed < 4; ++i) {
+            // "STKx NN ..." is a frame row: 8 addresses, no name and no peer.
+            if (srows[i][4] == ' ' && srows[i][5] >= '0' && srows[i][5] <= '9') continue;
+            char s[140];
+            const int sn = snprintf(s, sizeof s, "STK %.120s\n", srows[i]);
+            if (sn > 0) qcom_usb_debug_write(s, (size_t)sn < sizeof s ? (size_t)sn : sizeof s - 1);
+            ++printed;
+          }
+        }
       }
     }
     if (!tick_autoreset || elapsed < tick_autoreset + ResetSyncGrace) continue;
