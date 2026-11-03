@@ -38,6 +38,9 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
+// The USB console, when the board links it. File scope and before first use: a lambda body
+// cannot declare it (clang gives the block-scope extern internal linkage).
+extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
 #include <IOKit/IOUserClient.h>
 #include <IOKit/IOPlatformExpert.h>
 #include <libkern/c++/OSSharedPtr.h>
@@ -1093,6 +1096,21 @@ void zapRow(const char *what) {
 bool zapLoad() {
     int32_t *z = native_gpu_zap;
     auto stop = [&](int why) {z[0] = why; zapRow("stopped"); return false;};
+    /* The three PAS calls below run with interrupts masked, and a boot where one of them never
+     * returns is exactly a boot whose persistent log stops at its first round: the storage
+     * completion it needs is the interrupt that is masked. So each call announces itself on the
+     * USB console as well, which is captured live and does not depend on the log writer. */
+    auto scmEnter = [](const char *what) {
+        char line[64];
+        int n = snprintf(line, sizeof line, "ZAPSCM enter %s\n", what);
+        if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
+    };
+    auto scmDone = [](const char *what, int64_t a0, int64_t a1, int ms) {
+        char line[96];
+        int n = snprintf(line, sizeof line, "ZAPSCM done %s %llx/%llx %d ms\n", what,
+                         (unsigned long long)a0, (unsigned long long)a1, ms);
+        if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
+    };
     native_gpu_step = 130;
     z[0] = 1;
     // The region must not be memory XNU hands out: TrustZone locks it after authentication.
@@ -1142,15 +1160,21 @@ bool zapLoad() {
     cleanToPoc(meta, metaBytes);
     // qcom_scm_pas_init_image: ARGS(2, VAL, RW).
     z[0] = 3; native_gpu_step = 131;
+    zapRow("in init_image");   // written before the call: a boot that never returns from it says which one
+    scmEnter("init_image");
     uint64_t start = mach_absolute_time();
     ScmRes r = scmCall(kScmPil(0x01), 2 | (2u << 6), kGpuPasId, metaPhys, 0);
+    scmDone("init_image", r.a0, r.a1, int32_t(msSince(start)));
     z[1] = int32_t(r.a0); z[2] = int32_t(r.a1); z[8] = int32_t(msSince(start)); z[7] = int32_t(gScmResumes);
     if (r.a0 || r.a1) return stop(3);
     if (relocate) {
         // qcom_scm_pas_mem_setup: ARGS(3).
         z[0] = 4; native_gpu_step = 132;
+        zapRow("in mem_setup");
+        scmEnter("mem_setup");
         start = mach_absolute_time();
         r = scmCall(kScmPil(0x02), 3, kGpuPasId, kZapPhys, hi - lo);
+        scmDone("mem_setup", r.a0, r.a1, int32_t(msSince(start)));
         z[3] = int32_t(r.a0); z[4] = int32_t(r.a1); z[9] = int32_t(msSince(start));
         if (r.a0 || r.a1) return stop(4);
     }
@@ -1174,8 +1198,11 @@ bool zapLoad() {
     }   // the CPU view is gone before TrustZone takes the region
     // qcom_scm_pas_auth_and_reset: ARGS(1).
     z[0] = 6; native_gpu_step = 134;
+    zapRow("in auth_and_reset");
+    scmEnter("auth_and_reset");
     start = mach_absolute_time();
     r = scmCall(kScmPil(0x05), 1, kGpuPasId, 0, 0);
+    scmDone("auth_and_reset", r.a0, r.a1, int32_t(msSince(start)));
     z[5] = int32_t(r.a0); z[6] = int32_t(r.a1); z[10] = int32_t(msSince(start));
     if (r.a0 || r.a1) return stop(6);
     z[0] = 7;   // TrustZone authenticated the zap shader
