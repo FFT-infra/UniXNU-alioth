@@ -242,6 +242,7 @@ extern volatile uint32_t native_legacy_swap_reason_counts[8] __attribute__((weak
 extern volatile uint64_t native_legacy_gop_virtual __attribute__((weak_import));
 /* 4 once direct scanout has flipped at least once (NativeLegacyDisplay's stage counter): the panel then reads the compositor's
  * surface, so the GOP buffer this row hashes is no longer the one on screen. */
+extern volatile uint32_t native_legacy_direct_stage __attribute__((weak_import));
 extern volatile uint64_t native_legacy_gop_bytes __attribute__((weak_import));
 extern volatile uint32_t native_legacy_gop_width __attribute__((weak_import));
 extern volatile uint32_t native_legacy_gop_height __attribute__((weak_import));
@@ -333,7 +334,7 @@ static void gpu_client_report(void) {
                  framebufferChannels[0], framebufferChannels[1], framebufferChannels[2], framebufferChannels[3],
                  &native_legacy_gop_width ? native_legacy_gop_width : 0, &native_legacy_gop_height ? native_legacy_gop_height : 0,
                  (unsigned long long)native_legacy_gop_bytes,
-                 0u);
+                 &native_legacy_direct_stage ? native_legacy_direct_stage : 0);
     if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
   }  for (unsigned i = 0; &native_adreno_open_log && &native_adreno_open_log_count && i < native_adreno_open_log_count && i < 8; ++i) {
     const struct gpu_open_record *r = &native_adreno_open_log[i];
@@ -524,6 +525,7 @@ extern char native_legacy_client_class[64] __attribute__((weak_import));
 extern volatile uint64_t native_legacy_gop_virtual __attribute__((weak_import));
 /* 4 once direct scanout has flipped at least once (NativeLegacyDisplay's stage counter): the panel then reads the compositor's
  * surface, so the GOP buffer this row hashes is no longer the one on screen. */
+extern volatile uint32_t native_legacy_direct_stage __attribute__((weak_import));
 extern volatile uint64_t native_legacy_gop_physical __attribute__((weak_import));
 extern volatile uint64_t native_legacy_gop_bytes __attribute__((weak_import));
 extern volatile int native_legacy_transfer_status __attribute__((weak_import));
