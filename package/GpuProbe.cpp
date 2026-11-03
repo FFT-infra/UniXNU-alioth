@@ -41,6 +41,26 @@
 // The USB console, when the board links it. File scope and before first use: a lambda body
 // cannot declare it (clang gives the block-scope extern internal linkage).
 extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
+
+/* touchRegion: read one word of pil_gpu_region and say so on the console. The zap shader is loaded
+ * there, and a boot that stops inside that load cannot say whether the region itself is reachable.
+ * "before" is printed first, so a hang names its own call site. */
+void touchRegion(const char *where) {
+    extern size_t qcom_usb_debug_write(const void *, size_t);
+    char line[96];
+    IODeviceMemory *m = IODeviceMemory::withRange(0x8681a000ULL, 0x2000);
+    OSSharedPtr<IOMemoryMap> map;
+    if (m) {map = OSSharedPtr<IOMemoryMap>(m->map(kIOMapAnywhere | kIOMapWriteCombineCache), OSNoRetain); m->release();}
+    int n = !map ? snprintf(line, sizeof line, "ZAPREG %s nomap\n", where)
+                 : snprintf(line, sizeof line, "ZAPREG %s before\n", where);
+    if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
+    if (!map) return;
+    volatile uint32_t *w = reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress());
+    const uint32_t v = w[0];
+    n = snprintf(line, sizeof line, "ZAPREG %s read %08x\n", where, v);
+    if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
+}
+
 #include <IOKit/IOUserClient.h>
 #include <IOKit/IOPlatformExpert.h>
 #include <libkern/c++/OSSharedPtr.h>
@@ -1227,7 +1247,36 @@ bool zapLoad() {
 }
 // The zap shader, then CP_SET_SECURE_MODE(0) through the ring (hw_init after a6xx_zap_shader_init).
 bool leaveSecure() {
-    if (!zapLoad()) return false;
+    /* No PAS sequence by default: the bootloader has already loaded and authenticated the a650 zap
+     * before XNU runs, so the GPU is out of secure mode when this code starts. Measured 2026-11-03
+     * 14:32 on boot vz1, with nothing in the sequence run at all:
+     *     GPUROW ZAP nozap step 0 init 0/0 mem 0/0 auth 0/0
+     *     GPUROW IRQ  attach 0 readback a002 count 1>2 nop fence 1 seen 00100000
+     *     GPUROW METAL ok: accelerator registered (IOGPUFamily loaded, class size 136)
+     * and the desktop composited (SUPER t=80s sw=7/7/0 own=1). The sequence is not merely redundant:
+     * its segment copy into pil_gpu_region is what stalls the GPU thread on the boots where
+     * TrustZone already owns that region (2026-11-03 13:53: 'ZAPREG start before', no line after
+     * it, before any GPU step had run). Skipping it removes the whole failure mode.
+     * pipa-gpu-zap=1 runs the sequence from here instead, which is how it was reached before.
+     * pipa-gpu-nozap=2/3 keep the two no-zap variants mainline and the vendor use, for measurement:
+     *   2  clear RBBM_SECVID_TRUST_CNTL (a6xx_gpu.c:1515, adreno.c:2046). The offset is the
+     *      vendor's own, so 0xf400 is A6XX_RBBM_SECVID_TRUST_CNTL unchanged.
+     *   3  send CP_SET_SECURE_MODE(0) even though no zap was loaded. */
+    unsigned zap = 0, mode = 0;
+    PE_parse_boot_argn("pipa-gpu-zap", &zap, sizeof zap);
+    PE_parse_boot_argn("pipa-gpu-nozap", &mode, sizeof mode);
+    if (zap) {
+        if (!zapLoad()) return false;
+    } else if (mode == 2) {
+        gw(0xf400, 0);
+        zapRow("trcntl0");
+        return true;
+    } else if (mode != 3) {
+        zapRow("nozap");
+        return true;
+    } else {
+        zapRow("nozap secure0");
+    }
     native_gpu_step = 135;
     uint32_t words[2] = {}, fence = 0, seen = 0;
     if (AdrenoPM4Type7(0x66, 1, &words[0]) != AdrenoPM4Success || gRing->submit(words, 2, &fence)) {zapRow("submit"); return false;}
@@ -1841,8 +1890,10 @@ void gpuThread(void *, wait_result_t) {
     const gpb_io io = {nullptr, rd, wr, delayUs};
     gpb_result &r = native_gpu_result;
     native_gpu_step = 10;
+    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("start"); }
     gpb_run(&io, gMode, have, &r);
     rowsBasic(r);
+    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-power"); }
     if (gMode < 5) {native_gpu_step = 99; return;}
     commandDb();
     uint32_t cx_gmu = r.cc_gmu, ahb = r.cc_ahb;
@@ -1860,15 +1911,32 @@ void gpuThread(void *, wait_result_t) {
     }
     gmuState(io, r, cx_gmu, ahb);
     if (gMode >= 7) gmuColdStart(r, native_gpu_clocks);
+    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-gmu"); }
     if (gMode >= 8 && gColdOk) gxOn();
+    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-gx"); }
     const bool cp = gMode >= 9 && native_gpu_gx.gx_on && gpuContext() && cpStart();
+    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-cp"); }
     const bool irq = gMode >= 10 && cp && leaveSecure() && gpuInterrupt();
     if (irq) regDump("init");
+    /* The three rows a GPU round is judged by, repeated on the USB console. The persistent log
+     * needs the board to come back to fastboot and a TWRP read; this needs neither, so a boot
+     * whose progress thread never starts (no SUPER rows at all, 2026-11-03 14:24) still answers
+     * whether the accelerator published. */
+    auto verdict = [](const char *row) {
+        char line[200];
+        int n = snprintf(line, sizeof line, "GPUROW %s\n", row);
+        if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
+    };
     if (gMode >= 11 && irq && publish()) {
         if (selfTest() && gMode >= 12) metal();
+        verdict(native_gpu_rows[kRowZap]);
+        verdict(native_gpu_rows[kRowIrq]);
+        verdict(native_gpu_rows[kRowMetal]);
         native_gpu_step = 99;
         heartbeat();
     }
+    verdict(native_gpu_rows[kRowZap]);
+    verdict(native_gpu_rows[kRowIrq]);
     native_gpu_step = 99;
 }
 }  // namespace

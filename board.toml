@@ -776,6 +776,8 @@ kernel_args = [
   # costs CPU on a machine with no acceleration yet. The rows still reach the serial console and
   # the persistent log (sheng-log=1 above), so nothing is lost. boot-progress=0 is not the
   # switch for this: it turns the page and the log thread off together.
+  # sheng-banner=0: the region probe and the nozap round took its slot; both are one-off
+  # diagnostics, so the banner switch is back for every normal image.
   "sheng-banner=0",
   # boot-usb99 was the first image that passed this pair, and it faulted in the writer's
   # read-back of the previous run: the header struct was handed straight to a block-addressed
