@@ -1387,7 +1387,9 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   /* Direct scanout, the zero-copy path. Absent when the display never entered it (startDirect needs sheng-dpu-scanout>=2 and a display
    * bank window), so this row's presence is itself the answer to "did the direct path run". The upstream display guide asks for a
    * "[direct scanout]" row carrying flips, mapped surfaces, latch time and the wait for the GPU; this is that row. */
-  if (&native_legacy_direct && (native_legacy_direct[0] )) {
+  // Print when either path moved at all: with no flip the counters are the evidence, and a
+  // gate on flips alone hides exactly the boot that needs reading.
+  if (&native_legacy_direct && (native_legacy_direct[0] || (&native_legacy_swapstat && native_legacy_swapstat[0]))) {
     char row[200];
     const volatile uint32_t *d = native_legacy_direct;
     snprintf(row, sizeof row,
