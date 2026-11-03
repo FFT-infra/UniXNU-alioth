@@ -784,6 +784,10 @@ kernel_args = [
   # "sheng-log=1 boot-ui-trace=1" as the usage). Without it the probe returns before recording
   # anything, which is why every STK row was empty. It captures on its 44th..48th call (~90 s).
   "boot-ui-trace=1",
+  # trace=1 alone still records nothing for slots 1 and 2: BootProcessProbe.c only sets
+  # trace_slot[] for focus3/focus4, and for focus/focus2 through boot-ui-follow. Without this the
+  # probe walked the processes and stored no stack, which is why STK stayed empty with the trace on.
+  "boot-ui-follow=1",
   "boot-ui-focus=SpringBoard",
   "boot-ui-focus2=backboardd",
   # Slots 3 and 4 (PosterBoard, mediaserverd) are left out: PosterBoard has not appeared in any of
