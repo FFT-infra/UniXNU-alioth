@@ -67,6 +67,7 @@ extern volatile unsigned boot_progress_display_owned __attribute__((weak_import)
 extern volatile uint32_t native_legacy_swap_validation_calls __attribute__((weak_import));
 extern volatile uint32_t native_legacy_swap_accepted_count __attribute__((weak_import));
 extern volatile uint32_t native_legacy_swap_rejected_count __attribute__((weak_import));
+extern volatile uint32_t native_legacy_swap_validation_reason __attribute__((weak_import));
 extern volatile uint32_t native_legacy_prepare_calls __attribute__((weak_import));
 /* [0] status, [1] bytes, [2..] the bytes of the PosterBoard wallpaper choice. */
 extern volatile int32_t sheng_wallpaper_cfg[130] __attribute__((weak_import));
@@ -1834,7 +1835,7 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
       /* tf/lp are the touch loop's frame count and the step it is in. A boot that stops
        * compositing also stops that loop, and the two readings on one line are what say whether
        * they are the same event without needing the persistent log, which stalls on its own. */
-      const int n = snprintf(line, sizeof line, "SUPER t=%us runs=%u calls=%u mon=%llu sw=%u/%u/%u own=%u prep=%u data=%u tf=%u lp=%u\n", elapsed,
+      const int n = snprintf(line, sizeof line, "SUPER t=%us runs=%u calls=%u mon=%llu sw=%u/%u/%u own=%u prep=%u data=%u tf=%u lp=%u vr=%u\n", elapsed,
                              boot_log_super_runs, boot_log_tick_calls,
                              &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL,
                              &native_legacy_swap_validation_calls ? native_legacy_swap_validation_calls : 0u,
@@ -1844,7 +1845,8 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                              &native_legacy_prepare_calls ? native_legacy_prepare_calls : 0u,
                              &native_data_persist_state ? (unsigned)__atomic_load_n(&native_data_persist_state, __ATOMIC_RELAXED) : 0u,
                              &native_touch_frames ? __atomic_load_n(&native_touch_frames, __ATOMIC_RELAXED) : 0u,
-                             &native_touch_loop_step ? __atomic_load_n(&native_touch_loop_step, __ATOMIC_RELAXED) : 0u);
+                             &native_touch_loop_step ? __atomic_load_n(&native_touch_loop_step, __ATOMIC_RELAXED) : 0u,
+                             &native_legacy_swap_validation_reason ? native_legacy_swap_validation_reason : 0u);
       if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
     }
     if (!tick_autoreset || elapsed < tick_autoreset + ResetSyncGrace) continue;
