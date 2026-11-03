@@ -1182,14 +1182,26 @@ bool zapLoad() {
     // The row is written here, not only before the SCM calls: a boot that stops inside this copy left the
     // previous text ("in mem_setup step 4") standing, which reads as a hung mem_setup and is not one.
     z[0] = 5; native_gpu_step = 133;
-    zapRow("in copy");
-    scmEnter("copy");
-    {
+    /* pipa-gpu-zap-reuse=1: skip the copy and go straight to auth_and_reset. The region is not
+     * reachable from the AP on a boot after the first since power-on (measured 2026-11-03 12:28:
+     * 'enter copy' with no read line after it, so the load itself hangs), and on those boots the
+     * image from the previous boot may still be in place. If auth accepts it, the copy is not
+     * needed at all after the first boot. */
+    unsigned reuse = 0;
+    PE_parse_boot_argn("pipa-gpu-zap-reuse", &reuse, sizeof reuse);
+    zapRow(reuse ? "copy skipped" : "in copy");
+    scmEnter(reuse ? "copy-skipped" : "copy");
+    if (!reuse) {
         IODeviceMemory *m = IODeviceMemory::withRange(kZapPhys, kZapBytes);
         OSSharedPtr<IOMemoryMap> map;
         if (m) {map = OSSharedPtr<IOMemoryMap>(m->map(kIOMapAnywhere | kIOMapWriteCombineCache), OSNoRetain); m->release();}
         if (!map) return stop(-9);
         volatile uint8_t *region = reinterpret_cast<volatile uint8_t *>(map->getVirtualAddress());
+        /* One read before the first write. A region TrustZone has locked answers neither, but a
+         * region that is only write-protected answers the read and hangs on the store, and those
+         * two need different next steps. The console line is what survives a hang here. */
+        const uint32_t head = *reinterpret_cast<volatile uint32_t *>(region);
+        scmDone("read", head, 0, 0);
         const uint64_t base = relocate ? lo : kZapPhys;
         for (unsigned i = 0; i < phnum; ++i) {
             if (ph(i, 0) != 1 || ((ph(i, 6) >> 24) & 7) == 2 || !ph(i, 5)) continue;
@@ -1200,7 +1212,7 @@ bool zapLoad() {
         }
         __asm__ volatile("dsb sy" ::: "memory");
     }   // the CPU view is gone before TrustZone takes the region
-    scmDone("copy", 0, 0, 0);
+    scmDone(reuse ? "copy-skipped" : "copy", 0, 0, 0);
     // qcom_scm_pas_auth_and_reset: ARGS(1).
     z[0] = 6; native_gpu_step = 134;
     zapRow("in auth_and_reset");
