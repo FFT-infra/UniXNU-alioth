@@ -211,6 +211,8 @@ extern volatile uint32_t native_touch_decoded __attribute__((weak_import));
 extern volatile uint32_t native_touch_seq __attribute__((weak_import));
 extern volatile uint32_t native_touch_count __attribute__((weak_import));
 extern volatile unsigned native_touch_frame_raw[8] __attribute__((weak_import));
+extern volatile uint32_t native_touch_loop_step __attribute__((weak_import));
+extern volatile uint32_t native_touch_fail_step __attribute__((weak_import));
 extern volatile int32_t native_backlight_request[6] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_reassert_ticks __attribute__((weak_import));
 extern volatile uint64_t native_adreno_cache_stats[5] __attribute__((weak_import));
@@ -903,8 +905,9 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
    * raw is the last frame's first eight bytes as read, so 0xff everywhere means "no response". */
   if (&native_touch_decoded) {
     char row[170];
-    snprintf(row, sizeof row, "[touch raw] frames=%u valid=%u decoded=%u seq=%u count=%u raw=%02x%02x%02x%02x%02x%02x%02x%02x",
+    snprintf(row, sizeof row, "[touch raw] frames=%u valid=%u decoded=%u seq=%u count=%u loop=%u fail=%u raw=%02x%02x%02x%02x%02x%02x%02x%02x",
              native_touch_frames, native_touch_valid, native_touch_decoded, native_touch_seq, native_touch_count,
+             native_touch_loop_step, native_touch_fail_step,
              native_touch_frame_raw[0], native_touch_frame_raw[1], native_touch_frame_raw[2], native_touch_frame_raw[3],
              native_touch_frame_raw[4], native_touch_frame_raw[5], native_touch_frame_raw[6], native_touch_frame_raw[7]);
     at = put(out, at, cap, row, sizeof row);
@@ -1810,7 +1813,10 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
       // writer's work: the display's swap counters (a client submitted / acceptance), the boot page's ownership flag, the
       // pre-write hook, and the Data store's state (3 fresh, 2 resumed, 7 kept). A boot that draws no frame has swap=0
       // here; a boot that draws has it climbing.
-      const int n = snprintf(line, sizeof line, "SUPER t=%us runs=%u calls=%u mon=%llu sw=%u/%u/%u own=%u prep=%u data=%u\n", elapsed,
+      /* tf/lp are the touch loop's frame count and the step it is in. A boot that stops
+       * compositing also stops that loop, and the two readings on one line are what say whether
+       * they are the same event without needing the persistent log, which stalls on its own. */
+      const int n = snprintf(line, sizeof line, "SUPER t=%us runs=%u calls=%u mon=%llu sw=%u/%u/%u own=%u prep=%u data=%u tf=%u lp=%u\n", elapsed,
                              boot_log_super_runs, boot_log_tick_calls,
                              &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL,
                              &native_legacy_swap_validation_calls ? native_legacy_swap_validation_calls : 0u,
@@ -1818,7 +1824,9 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                              &native_legacy_swap_rejected_count ? native_legacy_swap_rejected_count : 0u,
                              &boot_progress_display_owned ? boot_progress_display_owned : 0u,
                              &native_legacy_prepare_calls ? native_legacy_prepare_calls : 0u,
-                             &native_data_persist_state ? (unsigned)__atomic_load_n(&native_data_persist_state, __ATOMIC_RELAXED) : 0u);
+                             &native_data_persist_state ? (unsigned)__atomic_load_n(&native_data_persist_state, __ATOMIC_RELAXED) : 0u,
+                             &native_touch_frames ? __atomic_load_n(&native_touch_frames, __ATOMIC_RELAXED) : 0u,
+                             &native_touch_loop_step ? __atomic_load_n(&native_touch_loop_step, __ATOMIC_RELAXED) : 0u);
       if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
     }
     if (!tick_autoreset || elapsed < tick_autoreset + ResetSyncGrace) continue;
