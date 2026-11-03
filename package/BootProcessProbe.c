@@ -104,6 +104,12 @@ void boot_process_capture(void) {
   trace_enabled = (PE_parse_boot_argn("boot-ui-trace", &want, sizeof want) && want) ? 1 : 0;
  }
  if (!trace_enabled) return;
+ // Three passes only, and none before the caller has had ~45 turns (about 90 s): one pass is
+ // enough for the persistent log to show a wait chain, and each pass is one more chance to block
+ // on a user-page fault with the task lock held. A boot without the argument never reaches here.
+ static unsigned calls;
+ const unsigned call = ++calls;   // one worker thread calls this; no atomic needed
+ if (call < 44 || call > 48) return;
  // Exactly one capture worker. Refuse reentry without waiting or modifying its
  // partial results, including in host failure-injection checks.
  if(__atomic_exchange_n(&boot_process_busy,1,__ATOMIC_ACQUIRE))return;
