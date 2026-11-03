@@ -635,7 +635,9 @@ kernel_args = [
   # kIOHIDDigitizerEventFromEdgeTip, which is the only thing UIKit reads to classify an edge
   # touch; without it the home-swipe and the switcher gestures are type 0 and never recognise.
   # Only the bottom edge is marked and an unfilled begin position is skipped (NativeHidInput.cpp).
-  "sheng-touch-edge=0",
+  # Removed 2026-11-04: NativeHidInput.cpp:173 reads `e==1`, so passing 0 writes the default and
+  # spends 18 bytes of a command line that is at its 1000-byte limit.
+  # "sheng-touch-edge=0",
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
@@ -669,7 +671,10 @@ kernel_args = [
   # "QCOM USB WORKER active". If a precondition fails the page prints
   # "QCOM USB WORKER unavailable phase=%u error=%u" and the enum names which one.
   "qcom-usb-debug=1",
-  "qcom-usb-ctl=1",
+  # qcom-usb-ctl=1 only adds the two-way control channel tmp/shot.sh talked to; the screenshot
+  # path it served answered ENXIO on every boot, and the panel copy now comes from the diagnostic
+  # export's screen.bgrx. Off by default, so leaving it out costs nothing but 15 bytes.
+  # "qcom-usb-ctl=1",
   "sheng-disable-watchdogd=1",
   # native-touch=1 starts the FocalTech FT5652 probe from
   # native_legacy_display_late_probe(). The driver is compiled into every image; this argument
@@ -736,9 +741,10 @@ kernel_args = [
   # every image up to boot-usb73 did: contacts arrived and no report was ever published.
   "offline-hid-input=1",
   # Screenshot registration. Proven harmless on boot-usb87: the home screen appeared at ~88 s
-  # with it enabled, and no capture had even been requested. Kept on so the frame buffer can be
-  # read back over the control socket once the USB link is stable.
-  "offline-screenshot=1",
+  # with it enabled, and no capture had even been requested. Removed 2026-11-04: it registers the
+  # frame buffer with the USB screenshot provider, whose path answered ENXIO on every boot since,
+  # and BootDiagExport.c reads the same mapping itself for screen.bgrx.
+  # "offline-screenshot=1",
   # The AppleKeyStore stand-in and its key-event path. Without a keybag the post-restart lock
   # screen asks for a passcode nothing can satisfy; this pair makes the owned AppleKeyStore
   # answer "no passcode, nothing locked". Add sheng-aks-sls=3 only if the prompt survives.
@@ -770,6 +776,19 @@ kernel_args = [
   # deadline: "no reset at 150 s" was the writer never having started, not the reset path
   # failing. The official unattended example passes both arguments together.
   "sheng-log=1",
+  # Four processes sampled for stacks (BootProcessProbe.c). The GPU stack is up and waiting for a
+  # swap while the compositor submits none, so the open question is where the render server sits:
+  # with these four the answer is a stack, not a guess. BootLog prints two rows per role to the
+  # console every 30 s, because the slot that carries [stacks] is exactly what freezes.
+  # The tracer is opt-in (BootProcessProbe.c:104, and docs/zh/porting/log-capture.md gives
+  # "sheng-log=1 boot-ui-trace=1" as the usage). Without it the probe returns before recording
+  # anything, which is why every STK row was empty. It captures on its 44th..48th call (~90 s).
+  "boot-ui-trace=1",
+  "boot-ui-focus=SpringBoard",
+  "boot-ui-focus2=backboardd",
+  # Slots 3 and 4 (PosterBoard, mediaserverd) are left out: PosterBoard has not appeared in any of
+  # the boots that stop before the desktop, and a third and fourth trace cost 53 bytes the command
+  # line does not have. Add them back when the render server is drawing.
   # The on-screen diagnostic banner paints its rows straight into the frame buffer every 30 ms.
   # Until the GPU composites, nothing else draws, so it was the only live view; with the GPU
   # publishing and a wallpaper to judge, it paints over the frames it is meant to help read and
