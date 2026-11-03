@@ -308,6 +308,10 @@ void panelStage(void *ctx, const char *name, unsigned value, int result) {
 }
 
 // Map the touch 12-bit raw coordinates onto the 0.1 mm axes the HID layer expects.
+// Also declared below for the register dump; a weak_import keeps a build without the USB console
+// linking, and the &-test is what decides whether the row can be written.
+extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
+
 void publish(const struct Fts5652Contact *c, unsigned count) {
     int xs[12], ys[12], ids[12];
     /* A frame with no contacts is not the same as a finger leaving. At this poll rate the part
@@ -396,6 +400,31 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
     __asm__ volatile("dmb ish" ::: "memory");
     native_touch_seq = native_touch_seq + 1;
     if (count) {native_touch_last_x = xs[0]; native_touch_last_y = ys[0];}
+    /* The display side logs the gap between swaps (LegacyDisplayProbe.cpp), and that gap is only
+     * meaningful next to when a finger was down. Print the two transitions only: a landing and a
+     * lift are rare, the 60 Hz stream between them is not. */
+    {
+        static unsigned downCount;
+        static uint64_t downUs;
+        uint64_t ns = 0;
+        absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+        const uint64_t us = ns / 1000;
+        if (count && !downCount) {
+            downUs = us;
+            if (&qcom_usb_debug_write) {
+                char line[96];
+                int n = snprintf(line, sizeof line, "TOUCHTAP down n=%u x=%d y=%d t_us=%llu\n",
+                                 count, xs[0], ys[0], (unsigned long long)us);
+                if (n > 0) qcom_usb_debug_write(line, (size_t)n);
+            }
+        } else if (!count && downCount && &qcom_usb_debug_write) {
+            char line[96];
+            int n = snprintf(line, sizeof line, "TOUCHTAP up held_us=%llu t_us=%llu\n",
+                             (unsigned long long)(downUs ? us - downUs : 0), (unsigned long long)us);
+            if (n > 0) qcom_usb_debug_write(line, (size_t)n);
+        }
+        downCount = count;
+    }
     static unsigned lastReportedCount = 0;
     if (count || lastReportedCount) {
         lastReportedCount = count;

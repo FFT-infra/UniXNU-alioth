@@ -365,7 +365,39 @@ extern "C" void native_legacy_swap_request_geometry(uint32_t rw, uint32_t rh, co
 	native_legacy_swap_req[10] = rh;
 	native_legacy_swap_req[11] = (dw << 16) | (dh & 0xffff);
 }
+// Frame pacing against touch. The compositor draws when something asks it to, so the number that
+// matters is not the frame rate but the two gaps: to the previous swap, and to the last touch
+// frame the touch driver published. One console row per swap, rate-limited to 50 a second, with
+// the number of rows the limit skipped, so a burst is visible as a count instead of a hole.
+extern volatile uint32_t native_touch_seq __attribute__((weak_import));
+static void framePacingObserved(bool accepted, unsigned reason) {
+	static uint64_t lastFrameUs, lastTouchUs;
+	static uint32_t lastTouchSeq, rows, skipped;
+	const uint64_t now = probeNowUs();
+	const uint32_t seq = &native_touch_seq ? native_touch_seq : 0;
+	if (seq != lastTouchSeq) {
+		lastTouchSeq = seq;
+		lastTouchUs = now;
+	}
+	const uint64_t gap = lastFrameUs ? now - lastFrameUs : 0;
+	if (lastFrameUs && gap < 20000) {   // 20 ms: the limit is a burst guard, not a sample rate
+		// lastFrameUs stays at the last printed row, so the next row's gap covers the burst.
+		skipped = skipped + 1;
+		return;
+	}
+	lastFrameUs = now;
+	if (!&qcom_usb_debug_write) return;
+	char line[144];
+	int n = snprintf(line, sizeof line, "FRAME %u gap_us=%llu touch_us=%llu seq=%u a=%u r=%u skip=%u\n",
+	                 ++rows, (unsigned long long)gap,
+	                 (unsigned long long)(lastTouchUs ? now - lastTouchUs : 0), seq,
+	                 accepted ? 1u : 0u, reason, skipped);
+	if (n > 0) qcom_usb_debug_write(line, (size_t)n);
+	skipped = 0;
+}
+
 void native_legacy_swap_validation_observed(bool accepted, unsigned reason, const void *request, const void *surface) {
+	framePacingObserved(accepted, reason);
 	if (reason < 8) native_legacy_swap_reason_counts[reason] = native_legacy_swap_reason_counts[reason] + 1;
 	// Band 8: a client reached the backend and submitted a swap. Painted before the verdict, so
 	// the band reports the submission, not whether it was accepted.
