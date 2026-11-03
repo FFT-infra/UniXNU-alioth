@@ -245,6 +245,8 @@ static void recordRejectedSwap(unsigned reason, const void *request, const void 
 	memcpy(native_legacy_rej_class, name, sizeof(name));
 }
 
+// File scope: a linkage specification cannot sit inside a function body in C++.
+extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
 void native_legacy_surface_rejected(uint64_t width, uint64_t height, uint32_t format, uint32_t planes,
     uint64_t stride, uint64_t allocation, uint64_t bytes) {
 	native_legacy_rej_surface[0] = width;
@@ -258,7 +260,6 @@ void native_legacy_surface_rejected(uint64_t width, uint64_t height, uint32_t fo
 	// these was a one-round snapshot on every boot this ran, and the progress thread dies with it.
 	{
 		static unsigned said;
-		extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
 		if (!said && &qcom_usb_debug_write) {
 			char line[200];
 			int n = snprintf(line, sizeof line,
