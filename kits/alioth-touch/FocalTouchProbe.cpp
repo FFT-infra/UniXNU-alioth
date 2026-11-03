@@ -515,6 +515,9 @@ static void touchHealthCheck(Session &s) {
 
 void touchThread(void *arg, wait_result_t) {
     Session &s = *static_cast<Session *>(arg);
+    /* A name, so a stalled boot can be asked where this thread is: BootUiTraceProbe.c's
+     * boot_kthread_report() looks a kernel thread up by name and prints its saved frames. */
+    thread_set_thread_name(current_thread(), "alioth-touch");
     struct Fts5652Contact contacts[10];
     unsigned frames = 0;
     /* native-touch-diag=1: one round that answers "is the part scanning at all" before any

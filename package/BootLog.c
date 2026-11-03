@@ -212,6 +212,7 @@ extern volatile uint32_t native_touch_seq __attribute__((weak_import));
 extern volatile uint32_t native_touch_count __attribute__((weak_import));
 extern volatile unsigned native_touch_frame_raw[8] __attribute__((weak_import));
 extern volatile uint32_t native_touch_loop_step __attribute__((weak_import));
+extern int boot_kthread_report(const char *, char *, unsigned) __attribute__((weak_import));
 extern volatile uint32_t native_touch_fail_step __attribute__((weak_import));
 extern volatile int32_t native_backlight_request[6] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_reassert_ticks __attribute__((weak_import));
@@ -620,6 +621,20 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     for (unsigned role = 0; role < 4; ++role) {
       unsigned n = boot_ui_trace_role_rows(role, rows, 64, 2);   // 2: with each thread group's deeper frames
       for (unsigned i = 0; i < n; ++i) at = put(out, at, cap, rows[i], 120);
+    }
+  }
+  /* Where this kernel's own long-running threads sit. boot_kthread_report() (BootUiTraceProbe.c) looks a
+   * kernel thread up by name and prints its saved frames, so a boot whose touch loop stopped names the call
+   * it stopped in, and a boot whose process-capture worker stopped shows that as well. Addresses are kernel
+   * virtual, already unslid against the kernel: symbolicate them on the built kernel binary. */
+  if (&boot_kthread_report) {
+    static const char *const kthreads[] = {"alioth-touch", "boot_process_probe", "alioth-bt"};
+    for (unsigned i = 0; i < sizeof kthreads / sizeof kthreads[0]; ++i) {
+      char krow[200];
+      if (boot_kthread_report(kthreads[i], krow, sizeof krow) != 0) continue;
+      char row[224];
+      snprintf(row, sizeof row, "KTH %s %s", kthreads[i], krow);
+      at = put(out, at, cap, row, sizeof row);
     }
   }
   if (&native_legacy_state_words) {

@@ -90,6 +90,20 @@ static int capture(proc_t p,void *arg) {
  capture_seen=capture_seen+1;return PROC_RETURNED;
 }
 void boot_process_capture(void) {
+ // Opt-in on this board, and off by default. The worker reads user stacks through
+ // vm_map_read_user, and a user page that is not resident faults on this board's own pager
+ // (NativeRamBlock holds the Data volume over the store window), so that read can block for a
+ // long time. Measured 2026-11-03: with the worker running every boot, three boots in a row
+ // stopped the persistent log at its first round and drew no frame; before the port the same
+ // image reached 59 and 68 rounds and drew. The porting guide's own usage is opt-in
+ // (docs/zh/porting/log-capture.md: sheng-log=1 boot-ui-trace=1), so take a trace only when the
+ // argument asks for one.
+ static int trace_enabled = -1;
+ if (trace_enabled < 0) {
+  unsigned want = 0;
+  trace_enabled = (PE_parse_boot_argn("boot-ui-trace", &want, sizeof want) && want) ? 1 : 0;
+ }
+ if (!trace_enabled) return;
  // Exactly one capture worker. Refuse reentry without waiting or modifying its
  // partial results, including in host failure-injection checks.
  if(__atomic_exchange_n(&boot_process_busy,1,__ATOMIC_ACQUIRE))return;
