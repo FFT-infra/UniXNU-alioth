@@ -1179,7 +1179,11 @@ bool zapLoad() {
         if (r.a0 || r.a1) return stop(4);
     }
     // qcom_mdt_load_no_init into the reserved region (relocatable: offsets from the lowest segment address).
+    // The row is written here, not only before the SCM calls: a boot that stops inside this copy left the
+    // previous text ("in mem_setup step 4") standing, which reads as a hung mem_setup and is not one.
     z[0] = 5; native_gpu_step = 133;
+    zapRow("in copy");
+    scmEnter("copy");
     {
         IODeviceMemory *m = IODeviceMemory::withRange(kZapPhys, kZapBytes);
         OSSharedPtr<IOMemoryMap> map;
@@ -1196,6 +1200,7 @@ bool zapLoad() {
         }
         __asm__ volatile("dsb sy" ::: "memory");
     }   // the CPU view is gone before TrustZone takes the region
+    scmDone("copy", 0, 0, 0);
     // qcom_scm_pas_auth_and_reset: ARGS(1).
     z[0] = 6; native_gpu_step = 134;
     zapRow("in auth_and_reset");
