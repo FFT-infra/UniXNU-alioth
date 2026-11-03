@@ -144,13 +144,27 @@ reset_source = PACKAGE / 'BootReset.c'
 reset_obj = OUT / 'BootReset.o'
 reset_command = [str(reset_source) if arg == str(source) else str(reset_obj) if arg == str(obj) else arg for arg in command]
 subprocess.run(reset_command, cwd=record['directory'], check=True, timeout=90)
+# The user-space wait chain (BootProcessProbe.c + BootUiTraceProbe.c). BootProgress.c already
+# starts a worker that calls boot_process_capture() every two seconds and reads
+# boot_process_rows; with only the weak stubs in LinkStubs.c those rows are empty, which is why
+# every earlier log's [stacks] section was bare. These two objects are the implementation the
+# porting guide names (log-capture.md: sheng-log=1 plus boot-ui-trace=1 starts a separate capture
+# worker; boot-ui-focus3=chronod adds a third process), copied unchanged from UniXNU-sheng.
+process_source = PACKAGE / 'BootProcessProbe.c'
+process_obj = OUT / 'BootProcessProbe.o'
+process_command = [str(process_source) if arg == str(source) else str(process_obj) if arg == str(obj) else arg for arg in command]
+subprocess.run(process_command, cwd=record['directory'], check=True, timeout=90)
+trace_source = PACKAGE / 'BootUiTraceProbe.c'
+trace_obj = OUT / 'BootUiTraceProbe.o'
+trace_command = [str(trace_obj) if arg == str(process_obj) else str(trace_source) if arg == str(process_source) else arg for arg in process_command]
+subprocess.run(trace_command, cwd=record['directory'], check=True, timeout=90)
 # DpuProbe.cpp is C++ (IOMemoryMap, PE_Video), so it is compiled and archived by build-gop-legacy-display.py, which has the C++
 # command line. This file's command is `-xc`.
 
 archive = OUT / 'libBootProgress.a'
 archive.unlink(missing_ok=True)
 subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(obj), str(fault_obj), str(policy_obj), str(diag_obj), str(fw_obj),
-                str(log_obj), str(reset_obj)], check=True, timeout=30)
+                str(log_obj), str(reset_obj), str(process_obj), str(trace_obj)], check=True, timeout=30)
 (OUT / 'build-report.json').write_text(json.dumps({
     'watchdog_policy_sha256': hashlib.sha256(policy_source.read_bytes()).hexdigest(),
     'diag_sha256': hashlib.sha256(diag_source.read_bytes()).hexdigest(),
