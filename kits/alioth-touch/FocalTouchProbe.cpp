@@ -28,6 +28,9 @@ volatile uint32_t native_touch_hid_reports;
 volatile int native_touch_error;
 volatile uint32_t native_touch_loop_step;
 volatile uint32_t native_touch_valid;
+/* publish() calls that carried at least one contact. It moves only when the panel itself reports a
+ * finger, so a run with no touch and a run whose decode is broken stop looking the same. */
+volatile uint32_t native_touch_decoded;
 /* Contacts that arrived with a zero area. Cumulative over the boot; printed on the TOUCHREG line
  * so a run says whether a light tap lands in this case at all. */
 volatile uint32_t native_touch_area0;
@@ -384,6 +387,7 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
     native_touch_seq = native_touch_seq + 1;
     __asm__ volatile("dmb ish" ::: "memory");
     native_touch_count = count;
+    if (count) native_touch_decoded = native_touch_decoded + 1;
     for (unsigned i = 0; i < count && i < 12; ++i) {
         native_touch_xs[i] = xs[i];
         native_touch_ys[i] = ys[i];

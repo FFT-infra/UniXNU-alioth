@@ -65,7 +65,7 @@ extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak
 //   [8] last error                    [9] spurious interrupts
 // Report 2 bits, matching NativeHidInput's buttonsAction (mask & 0xe): 1 power, 2 volume up,
 // 3 volume down.
-extern "C" {volatile int32_t native_buttons_stats[10];}
+extern "C" {volatile int32_t native_buttons_stats[16];}
 
 namespace {
 // The window bases, the PPIDs, the report bits and the channel arithmetic live in ButtonsCore.h,
@@ -237,6 +237,13 @@ uint32_t pressed() {
     // must not read as "pressed" for the GPIO (which is active low). bt_pressed_mask takes the
     // GPIO only when it was read, so pass the read result as have_gpio.
     if (ponRead) pon = 0;
+    // The bytes as read, before the mask decides anything, plus both read results. A press that
+    // leaves mask at 0 is then either a failed read (pr/gr non-zero) or a byte that really says
+    // released, and the two need different next steps.
+    native_buttons_stats[10] = (int32_t)pon;
+    native_buttons_stats[11] = (int32_t)gpio;
+    native_buttons_stats[12] = (int32_t)ponRead;
+    native_buttons_stats[13] = (int32_t)(gpioRead == 0 ? 0 : (gpioRead < 0 ? -1 : gpioRead));
     return bt_pressed_mask(pon, gpio, gpioRead == 0);
 }
 

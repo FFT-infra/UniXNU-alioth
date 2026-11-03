@@ -79,7 +79,7 @@ extern volatile int native_gestalt_cache_status __attribute__((weak_import));
 extern volatile int native_ls_store_status __attribute__((weak_import));
 extern volatile uint64_t native_data_persist_present __attribute__((weak_import));
 extern volatile int native_staged_apps_stage __attribute__((weak_import));
-extern volatile int32_t native_buttons_stats[10] __attribute__((weak_import));
+extern volatile int32_t native_buttons_stats[16] __attribute__((weak_import));
 extern volatile int32_t native_backlight_stats[16] __attribute__((weak_import));
 extern volatile int native_staged_apps_dirs __attribute__((weak_import));
 extern volatile int native_staged_apps_files __attribute__((weak_import));
@@ -205,6 +205,12 @@ extern volatile uint32_t native_adreno_wc_audit[6] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_submit_ibs[4] __attribute__((weak_import));
 extern volatile uint32_t native_touch_edge_stats[4] __attribute__((weak_import));
 extern volatile uint32_t native_touch_hid_multi[3] __attribute__((weak_import));
+extern volatile uint32_t native_touch_frames __attribute__((weak_import));
+extern volatile uint32_t native_touch_valid __attribute__((weak_import));
+extern volatile uint32_t native_touch_decoded __attribute__((weak_import));
+extern volatile uint32_t native_touch_seq __attribute__((weak_import));
+extern volatile uint32_t native_touch_count __attribute__((weak_import));
+extern volatile unsigned native_touch_frame_raw[8] __attribute__((weak_import));
 extern volatile int32_t native_backlight_request[6] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_reassert_ticks __attribute__((weak_import));
 extern volatile uint64_t native_adreno_cache_stats[5] __attribute__((weak_import));
@@ -573,6 +579,12 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     snprintf(row, sizeof row, "B st=%d irq=%d rep=%d mask=%x apid=%d/%d off=%d pdc=%x err=%d spur=%d", native_buttons_stats[0], native_buttons_stats[1],
              native_buttons_stats[2], native_buttons_stats[3], native_buttons_stats[4], native_buttons_stats[5], native_buttons_stats[6],
              native_buttons_stats[7], native_buttons_stats[8], native_buttons_stats[9]);
+    {
+      char brow[110];
+      snprintf(brow, sizeof brow, "Braw pon=%02x gpio=%02x pr=%d gr=%d", native_buttons_stats[10], native_buttons_stats[11],
+               native_buttons_stats[12], native_buttons_stats[13]);
+      at = put(out, at, cap, brow, sizeof brow);
+    }
     at = put(out, at, cap, row, sizeof row);
   }
   // Panel brightness (AppleARMBacklight.cpp): stage (3 published, negative the failed step), requests, last level, the levels read back from
@@ -883,6 +895,18 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     char row[80];
     snprintf(row, sizeof row, "[touch multi] reports=%u max=%u lifts=%u", native_touch_hid_multi[0], native_touch_hid_multi[1],
              native_touch_hid_multi[2]);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  /* What the panel itself returned. frames/valid are the probe's own reads, decoded counts publishes
+   * that carried a contact: a run where someone touched and decoded stays 0 says the panel response
+   * never reached the decoder, which is a different fault from a HID report that was not delivered.
+   * raw is the last frame's first eight bytes as read, so 0xff everywhere means "no response". */
+  if (&native_touch_decoded) {
+    char row[170];
+    snprintf(row, sizeof row, "[touch raw] frames=%u valid=%u decoded=%u seq=%u count=%u raw=%02x%02x%02x%02x%02x%02x%02x%02x",
+             native_touch_frames, native_touch_valid, native_touch_decoded, native_touch_seq, native_touch_count,
+             native_touch_frame_raw[0], native_touch_frame_raw[1], native_touch_frame_raw[2], native_touch_frame_raw[3],
+             native_touch_frame_raw[4], native_touch_frame_raw[5], native_touch_frame_raw[6], native_touch_frame_raw[7]);
     at = put(out, at, cap, row, sizeof row);
   }
   // IBs per GPU submission: submissions, IBs, the most in one, and those with more than 16 (a frame used to be split at 16).
