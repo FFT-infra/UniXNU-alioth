@@ -254,6 +254,21 @@ void native_legacy_surface_rejected(uint64_t width, uint64_t height, uint32_t fo
 	native_legacy_rej_surface[4] = stride;
 	native_legacy_rej_surface[5] = allocation;
 	native_legacy_rej_surface[6] = bytes;
+	// Say it once, on the console, at the moment it happens: the persistent log that also carries
+	// these was a one-round snapshot on every boot this ran, and the progress thread dies with it.
+	{
+		static unsigned said;
+		extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
+		if (!said && &qcom_usb_debug_write) {
+			char line[200];
+			int n = snprintf(line, sizeof line,
+			    "GPUREJ surface %llux%llu fmt %x planes %llu stride %llu alloc %llu bytes %llu\n",
+			    (unsigned long long)width, (unsigned long long)height, format, (unsigned long long)planes,
+			    (unsigned long long)stride, (unsigned long long)allocation, (unsigned long long)bytes);
+			if (n > 0) qcom_usb_debug_write(line, (size_t)n);
+			said = 1;
+		}
+	}
 }
 
 // Content statistics of presented frames (copy = kind 0, blank fill = kind 1): the first 32 are
