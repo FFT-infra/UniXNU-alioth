@@ -592,9 +592,10 @@ void touchThread(void *arg, wait_result_t) {
          * seven times the designed SPI traffic and never reached SpringBoard in 534 s, while
          * the same board reached the lock screen in about 104 s with the probe inactive.
          * IOSleep yields the CPU between frames, which a polled input thread must do. */
+        native_touch_loop_step = 0;
         IOSleep(TB_FRAME_PERIOD_US / 1000);
         frames = frames + 1;
-        if (frames % TB_REG_POLL_FRAMES == 0) touchHealthCheck(s);
+        if (frames % TB_REG_POLL_FRAMES == 0) {native_touch_loop_step = 5; touchHealthCheck(s);}
         /* The line is still read, but it no longer gates the fetch. It is low only a few dozen
          * times in two minutes while a finger is on the panel -- usb185 counted 35 in 120 s -- so
          * gating on it left the fallback path, one frame in fifty, as the real sample rate: 398
@@ -623,6 +624,11 @@ void touchThread(void *arg, wait_result_t) {
         native_touch_loop_step = 2;
         native_touch_valid = native_touch_valid + 1;
         native_touch_frames = native_touch_frames + 1;
+        /* Steps 3 and 4 say where a loop that stops stops: 2 is the last good frame either way, so
+         * a frozen frame counter next to step 2 could be the publish path or the sleep, and those
+         * are different failures (a blocked publish is a shared consumer, a sleep that never
+         * returns is the timer). */
+        native_touch_loop_step = 3;
         /* Keep the head of the payload that produced this frame. A frame that reports zero
          * contacts and a frame whose contacts land off-screen look identical in the counters,
          * and these bytes separate them. */
@@ -639,6 +645,7 @@ void touchThread(void *arg, wait_result_t) {
             if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
         }
         publish(contacts, count);
+        native_touch_loop_step = 4;
     }
 }
 

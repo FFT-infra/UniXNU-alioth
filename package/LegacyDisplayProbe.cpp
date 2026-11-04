@@ -495,6 +495,18 @@ void native_legacy_vsync_observed(unsigned event, unsigned hz) {
 	vsyncHzValue = hz;
 }
 
+// The counters above, for the console. Until now nothing read them: the comment below said they
+// were "kept for a future reader", and the question they answer -- did the refresh tick arm, fire
+// and publish on the boot that drew nothing -- stayed open with the data sitting in memory.
+// Order is the argument to native_legacy_vsync_observed: 0 timer armed, 1 tick, 2 idle stop, 3
+// late deadline, 4 start with a rate, 5 published at the requested rate.
+unsigned native_legacy_vsync_counts(uint64_t *out, unsigned *hz) {
+	if (out)
+		for (unsigned i = 0; i < 6; ++i) out[i] = vsyncEvents[i];
+	if (hz) *hz = vsyncHzValue;
+	return 1;
+}
+
 void native_legacy_registration_observed(IOService *display) {
 	native_legacy_registration_calls = native_legacy_registration_calls + 1;
 	// Band 7: the display reached registerService. This is the only marker that reports the

@@ -268,6 +268,8 @@ extern unsigned native_legacy_properties_now(char *, unsigned) __attribute__((we
 extern unsigned native_legacy_clients_dump(char *, unsigned) __attribute__((weak_import));
 extern unsigned native_legacy_swap_timeline(char *, unsigned) __attribute__((weak_import));
 extern unsigned native_legacy_prepare_report(char *, unsigned) __attribute__((weak_import));
+extern unsigned native_legacy_vsync_counts(uint64_t *, unsigned *) __attribute__((weak_import));
+extern volatile uint32_t native_legacy_direct_stage __attribute__((weak_import));
 extern char native_adreno_metal_rows[48][96] __attribute__((weak_import));
 extern unsigned native_legacy_state_words(char *, unsigned) __attribute__((weak_import));
 extern volatile uint32_t native_adreno_view_diag[6] __attribute__((weak_import));
@@ -276,6 +278,9 @@ extern int boot_reset_bootloader(char *, unsigned) __attribute__((weak_import));
 extern int boot_reset_mark_bootloader(char *, unsigned) __attribute__((weak_import));
 extern int boot_reset_watchdog(uint32_t, char *, unsigned) __attribute__((weak_import));
 extern void boot_reset_pet(void) __attribute__((weak_import));
+// A plain extern, not weak_import: it lives in this package (BootReset.c) and &symbol on a weak
+// data symbol is a -Wpointer-bool-conversion error under -Werror. [0] armed, [1] pets so far.
+extern volatile int32_t boot_reset_wdt_stats[4];
 void boot_log_tick(unsigned now);
 extern volatile uint64_t native_adreno_import_diag[10] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_import_stage __attribute__((weak_import));
@@ -286,7 +291,7 @@ extern volatile uint64_t native_adreno_import_fail_pa __attribute__((weak_import
 // The mark line is "mark: %08x -> %08x rc=%d | <pon line> pon_rc=%d", about 100 bytes with the
 // PON text at 50, so 64 truncated it before pon_rc and left the PON verdict unreadable even when
 // the write happened. 160 leaves room for a wider status word and a longer PON line.
-static char boot_log_reset_probe_text[240], boot_log_reset_result[200], boot_log_reset_mark[160], boot_log_reset_watchdog[120];
+static char boot_log_reset_probe_text[240], boot_log_reset_result[200], boot_log_reset_mark[160], boot_log_reset_watchdog[192];
 // The kernel message buffer (bsd/sys/msgbuf.h); only these leading fields are read.
 struct boot_log_msgbuf {int msg_magic, msg_size, msg_bufx, msg_bufr; char *msg_bufc;};
 extern struct boot_log_msgbuf *msgbufp;
@@ -1846,7 +1851,7 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
     if (!reset_pet_stopped && &boot_reset_pet) boot_reset_pet();
     if (boot_log_super_runs - reported >= 10) {
       reported = boot_log_super_runs;
-      char line[192];
+      char line[224];
       // Everything the answer to "did the desktop come up" needs, from a thread that does not share the monitor's or the
       // writer's work: the display's swap counters (a client submitted / acceptance), the boot page's ownership flag, the
       // pre-write hook, and the Data store's state (3 fresh, 2 resumed, 7 kept). A boot that draws no frame has swap=0
@@ -1854,7 +1859,10 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
       /* tf/lp are the touch loop's frame count and the step it is in. A boot that stops
        * compositing also stops that loop, and the two readings on one line are what say whether
        * they are the same event without needing the persistent log, which stalls on its own. */
-      const int n = snprintf(line, sizeof line, "SUPER t=%us runs=%u calls=%u mon=%llu sw=%u/%u/%u own=%u prep=%u data=%u tf=%u lp=%u vr=%u u=%08x d=%08x bg=%08x ns=%u\n", elapsed,
+      // wdt is the arm flag and the pet count: a boot whose supervisor runs has pets climbing once
+      // a second, so a pet count that stops while this row keeps printing is a watchdog write that
+      // no longer lands, and a row that stops printing is a supervisor that stopped.
+      const int n = snprintf(line, sizeof line, "SUPER t=%us runs=%u calls=%u mon=%llu sw=%u/%u/%u own=%u prep=%u data=%u tf=%u lp=%u vr=%u wdt=%d/%d u=%08x d=%08x bg=%08x ns=%u\n", elapsed,
                              boot_log_super_runs, boot_log_tick_calls,
                              &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL,
                              &native_legacy_swap_validation_calls ? native_legacy_swap_validation_calls : 0u,
@@ -1866,11 +1874,36 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                              &native_touch_frames ? __atomic_load_n(&native_touch_frames, __ATOMIC_RELAXED) : 0u,
                              &native_touch_loop_step ? __atomic_load_n(&native_touch_loop_step, __ATOMIC_RELAXED) : 0u,
                              &native_legacy_swap_validation_reason ? native_legacy_swap_validation_reason : 0u,
+                             boot_reset_wdt_stats[0], boot_reset_wdt_stats[1],
                              &native_legacy_swap_req ? native_legacy_swap_req[0] : 0u,
                              &native_legacy_swap_req ? native_legacy_swap_req[1] : 0u,
                              &native_legacy_swap_req ? native_legacy_swap_req[2] : 0u,
                              &native_legacy_swap_req ? native_legacy_swap_req[3] : 0u);
       if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+      // The refresh tick and the direct-scanout window, on the console. The six vsync counters
+      // existed but nothing printed them (they were "kept for a future reader"), and the DPU
+      // window's state only reached the UFS slot -- which is exactly the half a boot that stops
+      // before the desktop never writes. Together they answer the one question left on a boot
+      // that draws nothing: was the render server's refresh tick armed and firing, and was the
+      // window that lets the display read the compositor's surface installed.
+      //   arm/tick/idle/late/start/pub are native_legacy_vsync_observed's six events.
+      //   ds is NativeLegacyDisplay's direct-stage: 1 no window, 2 not primary, 3 armed and
+      //   waiting for NativeUfs, 5 armed but the MDP map failed, 0 taken.
+      if (&native_legacy_vsync_counts) {
+        uint64_t v[6] = {0, 0, 0, 0, 0, 0};
+        unsigned vhz = 0;
+        native_legacy_vsync_counts(v, &vhz);
+        char r[208];
+        const int rn = snprintf(r, sizeof r,
+                                "VSYNC arm=%llu tick=%llu idle=%llu late=%llu start=%llu pub=%llu hz=%u dpu=%08x ds=%u\n",
+                                (unsigned long long)v[0], (unsigned long long)v[1],
+                                (unsigned long long)v[2], (unsigned long long)v[3],
+                                (unsigned long long)v[4], (unsigned long long)v[5], vhz,
+                                &native_ufs_dpu_state ? native_ufs_dpu_state : 0u,
+                                &native_legacy_direct_stage ? native_legacy_direct_stage : 0u);
+        if (rn > 0 && &qcom_usb_debug_write)
+          qcom_usb_debug_write(r, (size_t)rn < sizeof r ? (size_t)rn : sizeof r - 1);
+      }
       // What the last verdict was made on: layer masks, surface count, the request geometry and the
       // display it was compared with. One line, only when a swap has been seen.
       if (&native_legacy_swap_req && native_legacy_swap_req[4]) {
@@ -1934,8 +1967,15 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
       // Where the four traced processes sit, on the console: [stacks] lives in the slot, and the slot
       // is what freezes on the boots that stop before the desktop. Two rows per role is the main
       // thread's own frames.
+      // A round with no STK row at all reads two ways: the tracer never started, or it started and
+      // found nothing. Say which, instead of leaving the absence silent.
+      if (elapsed % 30 == 0 && &qcom_usb_debug_write && !&boot_ui_trace_role_rows) {
+        const char *nohook = "STK nohook\n";
+        qcom_usb_debug_write(nohook, 11);
+      }
       if (elapsed % 30 == 0 && &boot_ui_trace_role_rows && &qcom_usb_debug_write) {
         static char srows[64][120];
+        unsigned total = 0;
         for (unsigned role = 0; role < 4; ++role) {
           // Detail 0 is the only mode that prints the process's own name; detail 2 prints the
           // registers, the peer and one row per thread group. Two calls, three rows: without the
@@ -1957,6 +1997,11 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
             if (sn > 0) qcom_usb_debug_write(s, (size_t)sn < sizeof s ? (size_t)sn : sizeof s - 1);
             ++printed;
           }
+          total += printed;
+        }
+        if (!total) {
+          const char *none = "STK none\n";
+          qcom_usb_debug_write(none, 9);
         }
       }
     }
@@ -1979,7 +2024,7 @@ void boot_log_tick(unsigned now) {
     tick_seen_at = 0;
     // An unattended run must come back however it ends: on the desktop past its deadline (int-229 first suspected) or in a panic seconds
     // after the start, before UFS and this log exist (int-229: a duplicate class at PE_lockdown_iokit). So the first tick, independent of
-    // sheng-log, marks the cell (any restart is fastboot) and arms the hypervisor's watchdog, which bites a minute after the pings stop:
+    // sheng-log, marks the cell (any restart is fastboot) and arms the hypervisor's watchdog, which bites half a minute after the pings stop:
     // after the autoreset deadline, or when a panic parks the cores.
     uint32_t autoreset = 0;
     // The probe is called for its text, not for a verdict: what the cell held at boot is worth
