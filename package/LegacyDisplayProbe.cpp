@@ -486,6 +486,26 @@ void surfaceAfterCopyObserved(void) {
 	OSSafeReleaseNULL(memory);
 }
 
+// The same reading as SURFACE, taken after the CPU copy has finished. SURFACE runs at swap-validation time, which
+// is when the compositor submits — before its command buffer has drawn (docs/zh/porting/display.md). If this row is
+// lit while SURFACE is not, the copy simply reads too early and the fix is a wait; if both are dark, nothing ever
+// writes the surface the display is handed.
+static unsigned afterTransferRows, afterTransferLit, afterTransferLuma, afterTransferSum;
+void surfaceAfterTransferObserved(void) {
+	OSObject *object = (OSObject *)(uintptr_t)native_legacy_swap_surface;
+	if (!object || !&native_legacy_surface_descriptor) return;
+	IOMemoryDescriptor *memory = native_legacy_surface_descriptor(object);
+	if (!memory) return;
+	const uint64_t stride = &native_legacy_surface_stride ? native_legacy_surface_stride(object) : 0;
+	const uint64_t height = &native_legacy_surface_height ? native_legacy_surface_height(object) : 0;
+	if (!surfaceMeasure(memory, stride, height, &afterTransferRows, &afterTransferLit, &afterTransferLuma, &afterTransferSum)) return;
+	if (!&qcom_usb_debug_write) return;
+	char line[160];
+	const int n = snprintf(line, sizeof line, "SURFACEC n=%u nonblack=%u/1000 luma=%u sum=%08x\n",
+	                      afterTransferRows, afterTransferLit, afterTransferLuma, afterTransferSum);
+	if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+}
+
 void native_legacy_swap_validation_observed(bool accepted, unsigned reason, const void *request, const void *surface) {
 	framePacingObserved(accepted, reason);
 	if (reason < 8) native_legacy_swap_reason_counts[reason] = native_legacy_swap_reason_counts[reason] + 1;
