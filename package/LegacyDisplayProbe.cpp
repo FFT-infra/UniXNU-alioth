@@ -402,26 +402,14 @@ extern IOMemoryDescriptor *native_legacy_surface_descriptor(OSObject *) __attrib
 extern uint64_t native_legacy_surface_width(OSObject *) __attribute__((weak_import));
 extern uint64_t native_legacy_surface_height(OSObject *) __attribute__((weak_import));
 extern uint64_t native_legacy_surface_stride(OSObject *) __attribute__((weak_import));
-static unsigned surfaceRows, surfaceLit, surfaceLuma, surfaceSum;
-void surfaceSampleObserved(bool accepted, const void *surfaceObject) {
-	// Once per second at most: the swap path can run ten times in half a second, and one sample of the
-	// frame that got there is enough to say whether the client drew anything.
-	static uint64_t lastAt;
-	const uint64_t now = probeNowUs();
-	if (lastAt && now - lastAt < 1000000) return;
-	lastAt = now;
-	OSObject *object = (OSObject *)surfaceObject;
-	if (!object || !&native_legacy_surface_descriptor) return;
-	IOMemoryDescriptor *memory = native_legacy_surface_descriptor(object);
-	if (!memory) return;
+// One reading of a surface's memory: every 4096th dword, bounded to 16384 samples. A 1080x2400 frame is
+// 6.5 MiB, so this walks the whole picture without costing a frame. The caller owns the descriptor.
+static bool surfaceMeasure(IOMemoryDescriptor *memory, uint64_t stride, uint64_t height, unsigned *rows,
+                           unsigned *litOut, unsigned *lumaOut, unsigned *hashOut) {
 	IOMemoryMap *map = memory->map(kIOMapAnywhere | kIOMapReadOnly | kIOMapCopybackCache);
-	if (!map || !map->getVirtualAddress()) { OSSafeReleaseNULL(map); return; }
-	const uint64_t stride = &native_legacy_surface_stride ? native_legacy_surface_stride(object) : 0;
-	const uint64_t height = &native_legacy_surface_height ? native_legacy_surface_height(object) : 0;
-	uint64_t length = map->getLength();
-	if (!stride || !height || stride > length) { OSSafeReleaseNULL(map); return; }
-	// Every 4096th dword of the mapped surface, bounded to 16384 samples: a 1080x2400 frame is
-	// 6.5 MiB, so this walks the whole picture without costing a frame.
+	if (!map || !map->getVirtualAddress()) { OSSafeReleaseNULL(map); return false; }
+	const uint64_t length = map->getLength();
+	if (!stride || !height || stride > length) { OSSafeReleaseNULL(map); return false; }
 	const volatile uint32_t *base = (const volatile uint32_t *)(uintptr_t)map->getVirtualAddress();
 	const uint64_t dwords = length / 4;
 	uint64_t lit = 0, luma = 0, samples = 0;
@@ -435,17 +423,60 @@ void surfaceSampleObserved(bool accepted, const void *surfaceObject) {
 		samples = samples + 1;
 	}
 	OSSafeReleaseNULL(map);
-	surfaceRows = surfaceRows + 1;
-	surfaceLit = samples ? (unsigned)(lit * 1000 / samples) : 0;
-	surfaceLuma = samples ? (unsigned)(luma / samples) : 0;
-	surfaceSum = hash;
+	if (!samples) return false;
+	*rows = (*rows) + 1;
+	*litOut = (unsigned)(lit * 1000 / samples);
+	*lumaOut = (unsigned)(luma / samples);
+	*hashOut = hash;
+	return true;
+}
+
+static unsigned surfaceRows, surfaceLit, surfaceLuma, surfaceSum;
+void surfaceSampleObserved(bool accepted, const void *surfaceObject) {
+	// Once per second at most: the swap path can run ten times in half a second, and one sample of the
+	// frame that got there is enough to say whether the client drew anything.
+	static uint64_t lastAt;
+	const uint64_t now = probeNowUs();
+	if (lastAt && now - lastAt < 1000000) return;
+	lastAt = now;
+	OSObject *object = (OSObject *)surfaceObject;
+	if (!object || !&native_legacy_surface_descriptor) return;
+	IOMemoryDescriptor *memory = native_legacy_surface_descriptor(object);
+	if (!memory) return;
+	const uint64_t stride = &native_legacy_surface_stride ? native_legacy_surface_stride(object) : 0;
+	const uint64_t height = &native_legacy_surface_height ? native_legacy_surface_height(object) : 0;
+	if (!surfaceMeasure(memory, stride, height, &surfaceRows, &surfaceLit, &surfaceLuma, &surfaceSum)) return;
 	if (!&qcom_usb_debug_write) return;
 	char line[160];
 	const int n = snprintf(line, sizeof line,
 	                      "SURFACE n=%u a=%u nonblack=%u/1000 luma=%u sum=%08x stride=%llu h=%llu\n",
-	                      surfaceRows, accepted ? 1u : 0u, surfaceLit, surfaceLuma, hash,
+	                      surfaceRows, accepted ? 1u : 0u, surfaceLit, surfaceLuma, surfaceSum,
 	                      (unsigned long long)stride, (unsigned long long)height);
 	if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+}
+
+// The same reading, taken after the GPU copy finished. SURFACE reads the frame before anything writes it and
+// says the compositor's surface is empty; this row says whether the copy put anything into it. A lit row here
+// with a dark panel puts the break in the display path; an empty one means the GPU never wrote the frame the
+// compositor swapped, and the draws went somewhere else.
+static IOMemoryDescriptor *gpuCopyMemory;
+static uint64_t gpuCopyStride, gpuCopyHeight;
+static unsigned afterRows, afterLit, afterLuma, afterSum;
+void surfaceAfterCopyObserved(void) {
+	IOMemoryDescriptor *memory = gpuCopyMemory;
+	if (!memory) return;
+	gpuCopyMemory = nullptr;
+	const uint64_t stride = gpuCopyStride, height = gpuCopyHeight;
+	gpuCopyStride = gpuCopyHeight = 0;
+	if (surfaceMeasure(memory, stride, height, &afterRows, &afterLit, &afterLuma, &afterSum) && &qcom_usb_debug_write) {
+		char line[160];
+		const int n = snprintf(line, sizeof line,
+		                      "SURFACEB n=%u nonblack=%u/1000 luma=%u sum=%08x stride=%llu h=%llu\n",
+		                      afterRows, afterLit, afterLuma, afterSum,
+		                      (unsigned long long)stride, (unsigned long long)height);
+		if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+	}
+	OSSafeReleaseNULL(memory);
 }
 
 void native_legacy_swap_validation_observed(bool accepted, unsigned reason, const void *request, const void *surface) {
@@ -516,7 +547,15 @@ static volatile int native_legacy_gpu_last_status;
 bool native_legacy_gpu_offer(void *display, IOMemoryDescriptor *memory, uint64_t stride, uint32_t width, uint32_t height,
                              uint32_t format) {
 	if (!gpuHandoffPresenter || !&native_gop_gpu_offer) return false;
-	return native_gop_gpu_offer(gpuHandoffPresenter, display, memory, stride, width, height, format);
+	if (!native_gop_gpu_offer(gpuHandoffPresenter, display, memory, stride, width, height, format)) return false;
+	// Keep this frame's memory for the after-copy reading (surfaceAfterCopyObserved); the completion gives it back.
+	IOMemoryDescriptor *previous = gpuCopyMemory;
+	if (memory) memory->retain();
+	gpuCopyMemory = memory;
+	gpuCopyStride = stride;
+	gpuCopyHeight = height;
+	OSSafeReleaseNULL(previous);
+	return true;
 }
 
 void native_legacy_gpu_fallback_observed(int status) {

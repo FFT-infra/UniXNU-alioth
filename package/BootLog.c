@@ -2019,6 +2019,21 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
         if (gn > 0 && &qcom_usb_debug_write)
           qcom_usb_debug_write(g, (size_t)gn < sizeof g ? (size_t)gn : sizeof g - 1);
       }
+      // The Metal bridge's own telemetry table, on the console. It lives in the UFS slot ([metal table]),
+      // and the slot is what a boot that stops early never writes — but this table is filled by the render
+      // server's scanout loop, which is running on exactly those boots. Print the rows that have text,
+      // every tenth second, so the pipeline, pass, draw and dispatch counts and the refusal texts are
+      // readable without a reader.
+      if (&native_adreno_metal_rows && elapsed % 10 == 0 && &qcom_usb_debug_write) {
+        unsigned printed = 0;
+        for (unsigned r = 0; r < 48 && printed < 6; ++r)
+          if (native_adreno_metal_rows[r][0]) {
+            char s[112];
+            const int sn = snprintf(s, sizeof s, "MT%d %.94s\n", r, (const char *)native_adreno_metal_rows[r]);
+            if (sn > 0) qcom_usb_debug_write(s, (size_t)sn < sizeof s ? (size_t)sn : sizeof s - 1);
+            ++printed;
+          }
+      }
       // Where the four traced processes sit, on the console: [stacks] lives in the slot, and the slot
       // is what freezes on the boots that stop before the desktop. Two rows per role is the main
       // thread's own frames.

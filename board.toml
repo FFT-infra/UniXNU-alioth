@@ -320,7 +320,7 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # plugin's CDHash (21a11822) plus the same two original modules byte for byte, which the
 # script verifies against build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "c61acb5d57396997b2e9e5a61d4419721622a3b6b05aafff583848f49597c493",
+  "8f9a92c77b203e3c075fdc312101f480c67067b35288153131fc6c00f604e5e5",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -722,12 +722,11 @@ kernel_args = [
   # the privileged GPU client instead of being copied by the CPU. The live row's swap counter
   # (sc) has not moved without it, so the desktop may be compositing and never presenting.
   # The tag is shortened to u208 because the command line is at 983 of its 1000 bytes.
-  # 2026-11-04 cpupath round: 0 sends every accepted swap down the CPU copy into the firmware
-  # framebuffer instead of offering it to the GPU client. The 2026-10-29 desktop was reached on the
-  # copy path (GPUSWAP copied 92), and the p1 rounds on the GPU path reported ten completed frames
-  # while the panel's own checksum did not move for 170 s — the copy is the path whose writes are
-  # known to reach the buffer the panel scans.
-  "sheng-fb-gpu=0",
+  # 2026-11-04 cpupath round measured sheng-fb-gpu=0: NativeGOPPresenter only publishes itself as the
+  # hand-off service when this is 1 (NativeGOPPresenter.cpp:104 `if(gpuMode)gHandoff=this`), so with 0 the
+  # scanout client's NGP_METHOD_MODE call fails and it stops at marker 6711 before it can report anything.
+  # The CPU copy path is selected by sheng-dpu-scanout=0 instead, which leaves the hand-off service up.
+  "sheng-fb-gpu=1",
   # Direct scanout and its colour order. These two are not optional: fix159 booted without them
   # and the digitizer reported power=01 (monitor) with contacts=0 all run, while fix160, the same
   # kernel with these two arguments, reached the desktop and answered touch. They were dropped
