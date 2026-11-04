@@ -739,7 +739,7 @@ kernel_args = [
   # Set back to 1 for the m23 probe round only: the whole-scanout fill and its read-back live in the GPU
   # client (GpuScanoutClient.h, kScanoutFillProbe), which exists only while this is 1. The panel will not
   # update on that round; the readings are MT4 f<result>/<per-mille seen> against the PANEL row.
-  "sheng-fb-gpu=1",
+  "sheng-fb-gpu=0",
   # Direct scanout and its colour order. These two are not optional: fix159 booted without them
   # and the digitizer reported power=01 (monitor) with contacts=0 all run, while fix160, the same
   # kernel with these two arguments, reached the desktop and answered touch. They were dropped
