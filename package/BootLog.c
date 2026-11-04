@@ -1946,10 +1946,11 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
         extern volatile uint64_t native_adreno_readonly_address;
         extern volatile uint64_t native_adreno_readonly_bytes;
         extern volatile uint32_t native_adreno_import_plain_writable;
+        extern volatile uint64_t native_adreno_readonly_large[3];
         extern volatile uint64_t native_adreno_import_diag[10];
         char q[320];
         const int qn = snprintf(q, sizeof q,
-                                "PANEL nonblack=%u/1000 luma=%u rgb=%u/%u/%u sum=%08x gpu off=%llu comp=%llu fail=%llu aban=%llu gop=%llx/%llx fen=%u/%u/%u/%u ro=%llu roa=%llx/%llu pw=%u imp=%llu/%llu\n",
+                                "PANEL nonblack=%u/1000 luma=%u rgb=%u/%u/%u sum=%08x gpu off=%llu comp=%llu fail=%llu aban=%llu gop=%llx/%llx fen=%u/%u/%u/%u ro=%llu roa=%llx/%llu pw=%u imp=%llu/%llu rlg=%llu/%llx/%llu\n",
                                 p[0], p[1], p[2], p[3], p[4], p[5],
                                 &native_gop_gpu_offers ? (unsigned long long)native_gop_gpu_offers : 0ULL,
                                 &native_gop_gpu_completions ? (unsigned long long)native_gop_gpu_completions : 0ULL,
@@ -1963,7 +1964,10 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                                 (unsigned long long)native_adreno_readonly_bytes,
                                 (unsigned)native_adreno_import_plain_writable,
                                 (unsigned long long)native_adreno_import_diag[0],
-                                (unsigned long long)native_adreno_import_diag[1]);
+                                (unsigned long long)native_adreno_import_diag[1],
+                                (unsigned long long)native_adreno_readonly_large[0],
+                                (unsigned long long)native_adreno_readonly_large[1],
+                                (unsigned long long)native_adreno_readonly_large[2]);
         if (qn > 0 && &qcom_usb_debug_write)
           qcom_usb_debug_write(q, (size_t)qn < sizeof q ? (size_t)qn : sizeof q - 1);
       }
