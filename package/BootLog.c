@@ -230,6 +230,14 @@ extern struct native_adreno_client_text native_adreno_client_text[8] __attribute
 /* [0] the marker count, [1..16] the plugin's newest progress markers, from NativeAdrenoPublish.cpp. */
 extern volatile uint32_t native_adreno_metal_marks[17] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_mount_fail[4] __attribute__((weak_import));
+/* The display service's own user-client record: whether any process opened it at all, which pid,
+ * and the status of the last open. A boot that never takes the display splits in two here — nobody
+ * opened it, or somebody opened it and never swapped. */
+/* Plain externs: these live in LegacyDisplayProbe.cpp, which is linked into the same kernel
+ * archive, and weak_import on a data symbol makes clang fold `&sym` to true (-Werror). */
+extern volatile uint32_t native_legacy_client_calls, native_legacy_client_type;
+extern volatile int native_legacy_client_pid, native_legacy_client_status;
+
 extern volatile uint32_t native_adreno_window_overflow[4][3] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_client_stats[5][8] __attribute__((weak_import));
 struct native_adreno_asker_record {char name[20]; uint32_t reads;};
@@ -1899,12 +1907,15 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
           for (unsigned i = 1; i < 17 && rn + 8 < sizeof ring; ++i)
             rn += (size_t)snprintf(ring + rn, sizeof ring - rn, " %x", native_adreno_metal_marks[i]);
         char g[420];
-        int gn = snprintf(g, sizeof g, "GPUCLI clients=%u mountfail=%u/%x/%u askers=%u marks=%u%s txt=%s:%.60s\n",
+        int gn = snprintf(g, sizeof g, "GPUCLI clients=%u mountfail=%u/%x/%u askers=%u disp=%u/%d/%x marks=%u%s txt=%s:%.60s\n",
                           named,
                           &native_adreno_mount_fail ? native_adreno_mount_fail[0] : 0u,
                           &native_adreno_mount_fail ? native_adreno_mount_fail[1] : 0u,
                           &native_adreno_mount_fail ? native_adreno_mount_fail[3] : 0u,
                           askers,
+                          native_legacy_client_calls,
+                          native_legacy_client_pid,
+                          (unsigned)native_legacy_client_status,
                           &native_adreno_metal_marks ? native_adreno_metal_marks[0] : 0u,
                           ring,
                           who, txt);
