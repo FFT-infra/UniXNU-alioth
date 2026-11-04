@@ -1953,8 +1953,21 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
               ++named;
             }
         unsigned askers = 0;
+        // ...and which processes they are. A count alone cannot say whether the difference
+        // between a boot that composites and one that does not is "fewer processes reached Metal"
+        // or "the same processes reached it in a different order", and the names are the row the
+        // UFS slot holds but a boot that stops early never writes.
+        char names[176];
+        size_t nn = 0;
+        names[0] = 0;
         if (&native_adreno_metal_askers)
-          for (unsigned i = 0; i < 12; ++i) if (native_adreno_metal_askers[i].name[0]) ++askers;
+          for (unsigned i = 0; i < 12; ++i)
+            if (native_adreno_metal_askers[i].name[0]) {
+              ++askers;
+              if (nn + 22 < sizeof names)
+                nn += (size_t)snprintf(names + nn, sizeof names - nn, "%s%.19s",
+                                       nn ? "," : "", native_adreno_metal_askers[i].name);
+            }
         // The plugin's own progress markers (0x68xx: entered, Turnip found, device made, no Turnip, no
         // device). Nonzero means the bundle loaded and createDevice ran; zero with askers > 0 means the
         // system found the plugin and never got an entry point out of it.
@@ -1967,13 +1980,13 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
         if (&native_adreno_metal_marks)
           for (unsigned i = 1; i < 17 && rn + 8 < sizeof ring; ++i)
             rn += (size_t)snprintf(ring + rn, sizeof ring - rn, " %x", native_adreno_metal_marks[i]);
-        char g[420];
-        int gn = snprintf(g, sizeof g, "GPUCLI clients=%u mountfail=%u/%x/%u askers=%u disp=%u/%d/%x marks=%u%s txt=%s:%.60s\n",
+        char g[640];
+        int gn = snprintf(g, sizeof g, "GPUCLI clients=%u mountfail=%u/%x/%u askers=%u[%s] disp=%u/%d/%x marks=%u%s txt=%s:%.60s\n",
                           named,
                           &native_adreno_mount_fail ? native_adreno_mount_fail[0] : 0u,
                           &native_adreno_mount_fail ? native_adreno_mount_fail[1] : 0u,
                           &native_adreno_mount_fail ? native_adreno_mount_fail[3] : 0u,
-                          askers,
+                          askers, names,
                           native_legacy_client_calls,
                           native_legacy_client_pid,
                           (unsigned)native_legacy_client_status,
