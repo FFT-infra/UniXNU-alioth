@@ -1942,10 +1942,12 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
         extern volatile uint64_t native_legacy_gop_physical;
         extern volatile uint32_t native_legacy_fence_probe[4];
         extern volatile uint64_t native_adreno_readonly_imports;
+        extern volatile uint64_t native_adreno_readonly_address;
+        extern volatile uint64_t native_adreno_readonly_bytes;
         extern volatile uint64_t native_adreno_import_diag[10];
         char q[320];
         const int qn = snprintf(q, sizeof q,
-                                "PANEL nonblack=%u/1000 luma=%u rgb=%u/%u/%u sum=%08x gpu off=%llu comp=%llu fail=%llu aban=%llu gop=%llx/%llx fen=%u/%u/%u/%u ro=%llu imp=%llu/%llu\n",
+                                "PANEL nonblack=%u/1000 luma=%u rgb=%u/%u/%u sum=%08x gpu off=%llu comp=%llu fail=%llu aban=%llu gop=%llx/%llx fen=%u/%u/%u/%u ro=%llu roa=%llx/%llu imp=%llu/%llu\n",
                                 p[0], p[1], p[2], p[3], p[4], p[5],
                                 &native_gop_gpu_offers ? (unsigned long long)native_gop_gpu_offers : 0ULL,
                                 &native_gop_gpu_completions ? (unsigned long long)native_gop_gpu_completions : 0ULL,
@@ -1955,6 +1957,8 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                                 native_legacy_fence_probe[0], native_legacy_fence_probe[1], native_legacy_fence_probe[2],
                                 native_legacy_fence_probe[3],
                                 (unsigned long long)native_adreno_readonly_imports,
+                                (unsigned long long)native_adreno_readonly_address,
+                                (unsigned long long)native_adreno_readonly_bytes,
                                 (unsigned long long)native_adreno_import_diag[0],
                                 (unsigned long long)native_adreno_import_diag[1]);
         if (qn > 0 && &qcom_usb_debug_write)
