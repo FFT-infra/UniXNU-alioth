@@ -396,6 +396,58 @@ static void framePacingObserved(bool accepted, unsigned reason) {
 	skipped = 0;
 }
 
+// What the client's own surface holds, read before any copy runs. The IOSurface accessors are the
+// driver's extern "C" ones; a surface that does not answer them is skipped rather than guessed at.
+extern IOMemoryDescriptor *native_legacy_surface_descriptor(OSObject *) __attribute__((weak_import));
+extern uint64_t native_legacy_surface_width(OSObject *) __attribute__((weak_import));
+extern uint64_t native_legacy_surface_height(OSObject *) __attribute__((weak_import));
+extern uint64_t native_legacy_surface_stride(OSObject *) __attribute__((weak_import));
+static unsigned surfaceRows, surfaceLit, surfaceLuma, surfaceSum;
+void surfaceSampleObserved(bool accepted, const void *surfaceObject) {
+	// Once per second at most: the swap path can run ten times in half a second, and one sample of the
+	// frame that got there is enough to say whether the client drew anything.
+	static uint64_t lastAt;
+	const uint64_t now = probeNowUs();
+	if (lastAt && now - lastAt < 1000000) return;
+	lastAt = now;
+	OSObject *object = (OSObject *)surfaceObject;
+	if (!object || !&native_legacy_surface_descriptor) return;
+	IOMemoryDescriptor *memory = native_legacy_surface_descriptor(object);
+	if (!memory) return;
+	IOMemoryMap *map = memory->map(kIOMapAnywhere | kIOMapReadOnly | kIOMapCopybackCache);
+	if (!map || !map->getVirtualAddress()) { OSSafeReleaseNULL(map); return; }
+	const uint64_t stride = &native_legacy_surface_stride ? native_legacy_surface_stride(object) : 0;
+	const uint64_t height = &native_legacy_surface_height ? native_legacy_surface_height(object) : 0;
+	uint64_t length = map->getLength();
+	if (!stride || !height || stride > length) { OSSafeReleaseNULL(map); return; }
+	// Every 4096th dword of the mapped surface, bounded to 16384 samples: a 1080x2400 frame is
+	// 6.5 MiB, so this walks the whole picture without costing a frame.
+	const volatile uint32_t *base = (const volatile uint32_t *)(uintptr_t)map->getVirtualAddress();
+	const uint64_t dwords = length / 4;
+	uint64_t lit = 0, luma = 0, samples = 0;
+	uint32_t hash = 2166136261u;
+	for (uint64_t i = 0; i < dwords && samples < 16384; i += 4096) {
+		const uint32_t pixel = base[i];
+		const uint32_t b = pixel & 0xff, g = (pixel >> 8) & 0xff, r = (pixel >> 16) & 0xff;
+		if (r | g | b) lit = lit + 1;
+		luma += (r * 299 + g * 587 + b * 114) / 1000;
+		hash ^= pixel; hash *= 16777619u;
+		samples = samples + 1;
+	}
+	OSSafeReleaseNULL(map);
+	surfaceRows = surfaceRows + 1;
+	surfaceLit = samples ? (unsigned)(lit * 1000 / samples) : 0;
+	surfaceLuma = samples ? (unsigned)(luma / samples) : 0;
+	surfaceSum = hash;
+	if (!&qcom_usb_debug_write) return;
+	char line[160];
+	const int n = snprintf(line, sizeof line,
+	                      "SURFACE n=%u a=%u nonblack=%u/1000 luma=%u sum=%08x stride=%llu h=%llu\n",
+	                      surfaceRows, accepted ? 1u : 0u, surfaceLit, surfaceLuma, hash,
+	                      (unsigned long long)stride, (unsigned long long)height);
+	if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+}
+
 void native_legacy_swap_validation_observed(bool accepted, unsigned reason, const void *request, const void *surface) {
 	framePacingObserved(accepted, reason);
 	if (reason < 8) native_legacy_swap_reason_counts[reason] = native_legacy_swap_reason_counts[reason] + 1;
@@ -414,6 +466,12 @@ void native_legacy_swap_validation_observed(bool accepted, unsigned reason, cons
 	native_legacy_swap_validation_reason = reason;
 	native_legacy_swap_request = (uintptr_t)request;
 	native_legacy_swap_surface = (uintptr_t)surface;
+	// The frame the client submitted, measured where it is still only the client's surface: before any copy, so the
+	// number cannot be confused with what reached the panel. The panel's own reading (BootProgress's PANEL row) says
+	// the buffer ends up all black on every round so far, and this row separates the two causes: a black surface is a
+	// render that produced nothing, a lit surface that still lands black is the copy. Samples every 64th dword: the
+	// surface can be 10 MiB and this runs in the swap path.
+	surfaceSampleObserved(accepted, surface);
 	native_legacy_swap_validation_checkpoint(accepted, reason, request, surface);
 }
 

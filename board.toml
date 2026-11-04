@@ -320,7 +320,7 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # plugin's CDHash (21a11822) plus the same two original modules byte for byte, which the
 # script verifies against build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "d6fe6afeb0f068017397fdb1f5d783ce30ae31df3c605cf0a8fa2e6cb605e8f0",
+  "c61acb5d57396997b2e9e5a61d4419721622a3b6b05aafff583848f49597c493",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -722,14 +722,25 @@ kernel_args = [
   # the privileged GPU client instead of being copied by the CPU. The live row's swap counter
   # (sc) has not moved without it, so the desktop may be compositing and never presenting.
   # The tag is shortened to u208 because the command line is at 983 of its 1000 bytes.
-  "sheng-fb-gpu=1",
+  # 2026-11-04 cpupath round: 0 sends every accepted swap down the CPU copy into the firmware
+  # framebuffer instead of offering it to the GPU client. The 2026-10-29 desktop was reached on the
+  # copy path (GPUSWAP copied 92), and the p1 rounds on the GPU path reported ten completed frames
+  # while the panel's own checksum did not move for 170 s — the copy is the path whose writes are
+  # known to reach the buffer the panel scans.
+  "sheng-fb-gpu=0",
   # Direct scanout and its colour order. These two are not optional: fix159 booted without them
   # and the digitizer reported power=01 (monitor) with contacts=0 all run, while fix160, the same
   # kernel with these two arguments, reached the desktop and answered touch. They were dropped
   # from the round script when the commands moved to unixnu build payload, and every image from
   # fix156 to fix159 lost touch with them.
   "sheng-fb-bgra=1",
-  "sheng-dpu-scanout=2",
+  # 2026-11-04 dpu0 round: 2 takes the direct path as soon as NativeUfs has installed the display
+  # bank's stage-1 window (native_ufs_dpu_state bit 31) and flips the VIG pipes straight onto the
+  # compositor's surface; 0 leaves the display on the buffer the firmware is already scanning and
+  # writes every frame into it. The 2026-10-29 desktop was reached on the second path
+  # (GPUSWAP copied 92) and the recent rounds that flip (flips=15) do not show one, so this round
+  # moves one value back to the path that is known to have drawn.
+  "sheng-dpu-scanout=0",
   # pipa-metal-withhold=none was tried on 2026-10-29: SpringBoard stops trapping but the
   # compositor then sends swaps with no surface (reason 1), so nothing draws. The default
   # withholds the Apple GPU families, which is the configuration where the desktop appears.

@@ -298,6 +298,20 @@ static uint32_t framebufferChecksum(void) {
   framebufferChannels[3] = samples ? (uint32_t)(oneSided * 1000 / samples) : 0;
   return hash;
 }
+// Sample the buffer the panel is scanning, now, and hand the result to whoever asks. framebufferSample() runs from the
+// monitor's loop, and that loop stops early on this board (measured: 7 turns in 170 s), so the GPUFB row freezes at
+// whatever the panel looked like around the second boot stage — which is the one reading that would say whether the
+// desktop is on the panel at all. The boot log's supervisor keeps running for the whole round, so it can keep this
+// reading alive: out gets nonblack/1000, luma, the three channel means, and the checksum of this sample.
+void boot_progress_panel_sample(unsigned out[6]) {
+  const uint32_t hash = framebufferChecksum();
+  out[0] = framebufferNonBlack;
+  out[1] = framebufferLuma;
+  out[2] = framebufferChannels[0];
+  out[3] = framebufferChannels[1];
+  out[4] = framebufferChannels[2];
+  out[5] = hash;
+}
 extern volatile uint32_t native_gop_ready __attribute__((weak_import));
 extern volatile uint32_t native_gop_failures __attribute__((weak_import));
 extern volatile uint64_t native_gop_transfers __attribute__((weak_import));

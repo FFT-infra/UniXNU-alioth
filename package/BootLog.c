@@ -270,6 +270,11 @@ extern unsigned native_legacy_swap_timeline(char *, unsigned) __attribute__((wea
 extern unsigned native_legacy_prepare_report(char *, unsigned) __attribute__((weak_import));
 extern unsigned native_legacy_vsync_counts(uint64_t *, unsigned *) __attribute__((weak_import));
 extern volatile uint32_t native_legacy_direct_stage __attribute__((weak_import));
+extern void boot_progress_panel_sample(unsigned *) __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_offers __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_completions __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_failures __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_abandoned __attribute__((weak_import));
 extern char native_adreno_metal_rows[48][96] __attribute__((weak_import));
 extern unsigned native_legacy_state_words(char *, unsigned) __attribute__((weak_import));
 extern volatile uint32_t native_adreno_view_diag[6] __attribute__((weak_import));
@@ -1922,6 +1927,24 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                                 &native_legacy_direct_stage ? native_legacy_direct_stage : 0u);
         if (rn > 0 && &qcom_usb_debug_write)
           qcom_usb_debug_write(r, (size_t)rn < sizeof r ? (size_t)rn : sizeof r - 1);
+      }
+      // What the panel's buffer holds right now, sampled here rather than in the monitor loop that stops early.
+      // nonblack/1000 and luma are the same measure the GPUFB row uses, so a black screen and a drawn desktop differ
+      // by orders of magnitude instead of by opinion. off/comp/fail/aban are the GPU hand-off counters: an offer that
+      // never completes is a frame the render server sent and the display never showed.
+      if (&boot_progress_panel_sample) {
+        unsigned p[6] = {0, 0, 0, 0, 0, 0};
+        boot_progress_panel_sample(p);
+        char q[192];
+        const int qn = snprintf(q, sizeof q,
+                                "PANEL nonblack=%u/1000 luma=%u rgb=%u/%u/%u sum=%08x gpu off=%llu comp=%llu fail=%llu aban=%llu\n",
+                                p[0], p[1], p[2], p[3], p[4], p[5],
+                                &native_gop_gpu_offers ? (unsigned long long)native_gop_gpu_offers : 0ULL,
+                                &native_gop_gpu_completions ? (unsigned long long)native_gop_gpu_completions : 0ULL,
+                                &native_gop_gpu_failures ? (unsigned long long)native_gop_gpu_failures : 0ULL,
+                                &native_gop_gpu_abandoned ? (unsigned long long)native_gop_gpu_abandoned : 0ULL);
+        if (qn > 0 && &qcom_usb_debug_write)
+          qcom_usb_debug_write(q, (size_t)qn < sizeof q ? (size_t)qn : sizeof q - 1);
       }
       // What the last verdict was made on: layer masks, surface count, the request geometry and the
       // display it was compared with. One line, only when a swap has been seen.
