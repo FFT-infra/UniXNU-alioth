@@ -599,7 +599,11 @@ kernel_args = [
   # 3600 was set for a watched round, and it is longer than any unattended round's budget:
   # the board then never returns by itself, the round times out at its budget and skips the
   # reader stage, so the persistent log is never read. The reset must fire inside the budget.
-  "sheng-autoreset=180",
+  # 400, not 180: the compositor starts submitting between 70 s and 150 s on a good boot, and the reset
+  # landed while the data store was still being written on every round, which is the most likely reason the
+  # persisted userspace state degraded across boots (askers 7 -> 4 -> 3 -> 1 on 2026-11-04). The round
+  # script waits 500 s for fastboot to match.
+  "sheng-autoreset=400",
   # The physical keys and the panel brightness are both compiled in and both called from
   # LegacyDisplayProbe (alioth_buttons_probe and alioth_backlight_probe, :951-954), but each
   # returns on its first line unless its own boot argument is present, so until these two
