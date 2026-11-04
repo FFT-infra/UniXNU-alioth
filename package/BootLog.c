@@ -1940,15 +1940,18 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
         // samples). If they differ, the copy is landing in memory the panel never scans out.
         extern volatile uint64_t native_gop_physical;
         extern volatile uint64_t native_legacy_gop_physical;
-        char q[224];
+        extern volatile uint32_t native_legacy_fence_probe[4];
+        char q[288];
         const int qn = snprintf(q, sizeof q,
-                                "PANEL nonblack=%u/1000 luma=%u rgb=%u/%u/%u sum=%08x gpu off=%llu comp=%llu fail=%llu aban=%llu gop=%llx/%llx\n",
+                                "PANEL nonblack=%u/1000 luma=%u rgb=%u/%u/%u sum=%08x gpu off=%llu comp=%llu fail=%llu aban=%llu gop=%llx/%llx fen=%u/%u/%u/%u\n",
                                 p[0], p[1], p[2], p[3], p[4], p[5],
                                 &native_gop_gpu_offers ? (unsigned long long)native_gop_gpu_offers : 0ULL,
                                 &native_gop_gpu_completions ? (unsigned long long)native_gop_gpu_completions : 0ULL,
                                 &native_gop_gpu_failures ? (unsigned long long)native_gop_gpu_failures : 0ULL,
                                 &native_gop_gpu_abandoned ? (unsigned long long)native_gop_gpu_abandoned : 0ULL,
-                                (unsigned long long)native_gop_physical, (unsigned long long)native_legacy_gop_physical);
+                                (unsigned long long)native_gop_physical, (unsigned long long)native_legacy_gop_physical,
+                                native_legacy_fence_probe[0], native_legacy_fence_probe[1], native_legacy_fence_probe[2],
+                                native_legacy_fence_probe[3]);
         if (qn > 0 && &qcom_usb_debug_write)
           qcom_usb_debug_write(q, (size_t)qn < sizeof q ? (size_t)qn : sizeof q - 1);
       }
