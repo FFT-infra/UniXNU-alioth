@@ -743,7 +743,7 @@ kernel_args = [
   # Set back to 1 for the m23 probe round only: the whole-scanout fill and its read-back live in the GPU
   # client (GpuScanoutClient.h, kScanoutFillProbe), which exists only while this is 1. The panel will not
   # update on that round; the readings are MT4 f<result>/<per-mille seen> against the PANEL row.
-  "sheng-fb-gpu=1",
+  "sheng-fb-gpu=0",
   # Direct scanout and its colour order. These two are not optional: fix159 booted without them
   # and the digitizer reported power=01 (monitor) with contacts=0 all run, while fix160, the same
   # kernel with these two arguments, reached the desktop and answered touch. They were dropped
@@ -769,7 +769,7 @@ kernel_args = [
   # second run — read with the TWRP reader, because the USB console carried no SUPER row at all — says
   # "stage=4 branch=0 flips=0 mapped=0 refused=0": the path armed and then nothing was ever offered.
   # Direct scanout stays the target; it needs its own round that finds how stage 4 stops the supervisor.
-  "sheng-dpu-scanout=2",
+  "sheng-dpu-scanout=0",
   # pipa-metal-withhold=none was tried on 2026-10-29: SpringBoard stops trapping but the
   # compositor then sends swaps with no surface (reason 1), so nothing draws. The default
   # withholds the Apple GPU families, which is the configuration where the desktop appears.
