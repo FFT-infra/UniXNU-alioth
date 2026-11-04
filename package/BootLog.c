@@ -1992,7 +1992,16 @@ void boot_log_tick(unsigned now) {
       tick_autoreset = autoreset;
       if (&boot_reset_probe) (void)boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text);
       if (&boot_reset_mark_bootloader) boot_reset_mark_bootloader(boot_log_reset_mark, sizeof boot_log_reset_mark);
-      if (&boot_reset_watchdog) boot_reset_watchdog(autoreset + 60, boot_log_reset_watchdog, sizeof boot_log_reset_watchdog);
+      if (&boot_reset_watchdog) {
+        boot_reset_watchdog(autoreset + 60, boot_log_reset_watchdog, sizeof boot_log_reset_watchdog);
+        // The arm's own readback, on the console: whether the block took the enable and what it
+        // held before is the difference between "armed" and "wrote to a register that ignored us".
+        if (&qcom_usb_debug_write && boot_log_reset_watchdog[0]) {
+          char w[220];
+          const int wn = snprintf(w, sizeof w, "WDT %s\n", boot_log_reset_watchdog);
+          if (wn > 0) qcom_usb_debug_write(w, (size_t)wn < sizeof w ? (size_t)wn : sizeof w - 1);
+        }
+      }
       thread_t rth;
       const kern_return_t sr = kernel_thread_start_priority(autoreset_supervisor, 0, BASEPRI_KERNEL, &rth);
       boot_log_super_start = (int)sr;
