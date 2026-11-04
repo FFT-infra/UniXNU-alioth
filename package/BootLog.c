@@ -275,6 +275,7 @@ extern int boot_reset_probe(char *, unsigned) __attribute__((weak_import));
 extern int boot_reset_bootloader(char *, unsigned) __attribute__((weak_import));
 extern int boot_reset_mark_bootloader(char *, unsigned) __attribute__((weak_import));
 extern int boot_reset_watchdog(uint32_t, char *, unsigned) __attribute__((weak_import));
+extern void boot_reset_pet(void) __attribute__((weak_import));
 void boot_log_tick(unsigned now);
 extern volatile uint64_t native_adreno_import_diag[10] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_import_stage __attribute__((weak_import));
@@ -356,6 +357,10 @@ static int boot_log_started;
 static uint64_t tick_start_cntpct;
 static unsigned tick_seen_seq, tick_seen_at;
 static int tick_reset_tried;
+/* Once the deadline's reset has been attempted, stop petting the hardware watchdog: on this
+ * board the software path returns 99 every time, so the bark is the only reset that leaves the
+ * SoC, and it must be allowed to fire. */
+static int reset_pet_stopped;
 static uint32_t tick_autoreset;
 static volatile unsigned log_sync_seq;
 // Instrumentation for the [tick] log row: the autoreset clock's own counters, so a boot that never returns names which part of it stood still.
@@ -1793,6 +1798,7 @@ static void writer(void *arg, wait_result_t result) {
 // The reset, once the deadline is reached. Called from the deadline owners below, which are the board monitor and the supervisor.
 static void boot_log_fire_reset(unsigned elapsed) {
   tick_reset_tried = 1;
+  reset_pet_stopped = 1;   // let the hardware bark: every software path below returns 99 here
   // The deadline is reached, and that fact has to leave the kernel even when the reset then works or is
   // refused silently: the console is the only channel that survives both.
   if (&qcom_usb_debug_write) {
@@ -1835,6 +1841,9 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
     boot_log_super_returns = boot_log_super_returns + 1;
     const unsigned elapsed = (unsigned)((log_ticks() - start) / f);
     boot_log_super_elapsed = elapsed;
+    // One register write a second. Its absence is the signal: a supervisor that stops, and a
+    // deadline whose software reset failed, both end in the same hardware bark.
+    if (!reset_pet_stopped && &boot_reset_pet) boot_reset_pet();
     if (boot_log_super_runs - reported >= 10) {
       reported = boot_log_super_runs;
       char line[192];

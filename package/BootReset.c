@@ -296,14 +296,51 @@ int boot_reset_bootloader(char *text, unsigned cap) {
   return 99;   // neither the SCM deassert nor the PS_HOLD write restarted the part
 }
 
-// The APSS watchdog (qcom,wdt@17c10000, bark-time 0x4e20 = 20 s, pet-time 0x3a98 = 15 s,
-// qcom,ipi-ping). kona has no Gunyah, so the SMCCC vendor calls the sheng board uses are
-// not available here. This board's watchdog is the SoC's own and it is armed by the
-// bootloader, not by us: pinging it from the kernel would need the register protocol the
-// mainline driver implements, which is not written yet. Report that plainly rather than
-// pretend a watchdog is armed.
-volatile int32_t boot_reset_wdt_stats[4];   // [0] reserved, [1] reserved, [2] reserved, [3] pings sent
+// The APSS watchdog. This board has no working software reset: boot_reset_bootloader() ends in
+// PSCI SYSTEM_RESET (measured NOT_SUPPORTED on this firmware) and a direct PS_HOLD write, and
+// returns 99. The watchdog is the only reset that leaves the SoC, and arming it is the one thing
+// that keeps an unattended loop from needing a hand at every bad boot.
+//
+// Registers and layout from the mainline driver, drivers/watchdog/qcom-wdt.c: the kpss layout is
+// RST 0x4, EN 0x8, STS 0xC, BARK 0x10, BITE 0x14, enable bit 0, and every time value is in ticks
+// of the sleep clock. arch/arm64/boot/dts/qcom/sm8250.dtsi:88 gives sleep_clk as 32764 Hz, and the
+// vendor device tree (reference/k40-kernel kona.dtsi:695) puts the block at 0x17c10000 size 0x1000.
+//
+// The bark is 60 s and the bite 65 s, petted once a second by BootLog's supervisor. That thread
+// also prints SUPER, so a boot whose supervisor stops is exactly a boot that should reset: within
+// a minute it does, at the hardware level, even though every software path on this board fails.
+enum {WdtBase = 0x17c10000, WdtSize = 0x1000};
+enum {WdtRst = 0x4, WdtEn = 0x8, WdtSts = 0xc, WdtBark = 0x10, WdtBite = 0x14};
+enum {WdtRate = 32764, WdtBarkSeconds = 60, WdtBiteSeconds = 65};
+volatile int32_t boot_reset_wdt_stats[4];   // [0] armed, [1] pets, [2] en before, [3] sts before
+static volatile uint32_t *wdt_io;
+static int wdt_armed;
 int boot_reset_watchdog(uint32_t deadline, char *text, unsigned cap) {
-  snprintf(text, cap, "watchdog: not armed; kona has no Gunyah and the APSS watchdog protocol is not implemented (deadline %us)", deadline);
-  return 1;
+  if (wdt_armed) {snprintf(text, cap, "watchdog: already armed (deadline %us)", deadline); return 0;}
+  volatile uint32_t *w = (volatile uint32_t *)ml_io_map_unmappable((vm_offset_t)WdtBase, (vm_size_t)WdtSize, 7);
+  if (!w) {snprintf(text, cap, "watchdog: map refused at %x", (unsigned)WdtBase); return 1;}
+  const uint32_t en_before = w[WdtEn / 4], sts_before = w[WdtSts / 4];
+  // Order from qcom_wdt_start: disable, pet once to clear the count, load bark and bite, enable,
+  // then pet so the first window starts now rather than at whatever the bootloader left.
+  w[WdtEn / 4] = 0;
+  w[WdtRst / 4] = 1;
+  w[WdtBark / 4] = (uint32_t)WdtBarkSeconds * WdtRate;
+  w[WdtBite / 4] = (uint32_t)WdtBiteSeconds * WdtRate;
+  w[WdtEn / 4] = 1;
+  w[WdtRst / 4] = 1;
+  const uint32_t en_after = w[WdtEn / 4], sts_after = w[WdtSts / 4];
+  wdt_io = w; wdt_armed = 1;
+  boot_reset_wdt_stats[0] = 1; boot_reset_wdt_stats[2] = (int32_t)en_before; boot_reset_wdt_stats[3] = (int32_t)sts_before;
+  snprintf(text, cap, "watchdog armed: bark %us bite %us rate %u en %x->%x sts %x->%x deadline %us",
+           (unsigned)WdtBarkSeconds, (unsigned)WdtBiteSeconds, (unsigned)WdtRate,
+           en_before, en_after, sts_before, sts_after, deadline);
+  return 0;
 }
+// One pet. Called from the supervisor once a loop; a caller that stops calling it is the signal
+// the hardware acts on, so this must stay a plain register write with no lock and no allocation.
+void boot_reset_pet(void) {
+  if (!wdt_armed || !wdt_io) return;
+  wdt_io[WdtRst / 4] = 1;
+  boot_reset_wdt_stats[1] = boot_reset_wdt_stats[1] + 1;
+}
+int boot_reset_is_armed(void) {return wdt_armed;}
