@@ -320,7 +320,7 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # plugin's CDHash (21a11822) plus the same two original modules byte for byte, which the
 # script verifies against build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "0c717e44a3bd98b6274e998c370ef35ed6b0ead558c3f802aa2e167054b96eac",
+  "e90ff95cf0564f807704cccdddaef55f5d422412f55ab8e1c4980de1fcdf875f",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
