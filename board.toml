@@ -726,7 +726,17 @@ kernel_args = [
   # hand-off service when this is 1 (NativeGOPPresenter.cpp:104 `if(gpuMode)gHandoff=this`), so with 0 the
   # scanout client's NGP_METHOD_MODE call fails and it stops at marker 6711 before it can report anything.
   # The CPU copy path is selected by sheng-dpu-scanout=0 instead, which leaves the hand-off service up.
-  "sheng-fb-gpu=1",
+  # Back to the CPU copy, the path the desktop was seen on. Measured 2026-11-04 (m18, round mp1): with
+  # sheng-fb-gpu=1 the scanout client fills the whole scanout with 0xFF through the GPU, reports the command
+  # buffer complete (MT4 f1), and the kernel's PANEL row — an uncached mapping of the same physical page
+  # 0x9c000000 the presenter maps — does not change by one byte. newBufferWithBytesNoCopy therefore does not
+  # alias the caller's pages in this runtime: metal2vulkan falls back to a private copy (buffer_descriptor.rs,
+  # `copied_buffer`) when the host import fails, and Turnip implements no VK_EXT_external_memory_host. Every
+  # GPU write, including the compositor's own draws, lands in that copy.
+  # The GPU path is the only one that needs the GPU to write the display's memory, so it is off until the import
+  # works. With 0, NativeGOPPresenter::transfer() runs the CPU copy from the compositor's surface into the boot
+  # buffer, which is what u223 did: "GPUSWAP … copied 92 status 0 bytes 10368000".
+  "sheng-fb-gpu=0",
   # Direct scanout and its colour order. These two are not optional: fix159 booted without them
   # and the digitizer reported power=01 (monitor) with contacts=0 all run, while fix160, the same
   # kernel with these two arguments, reached the desktop and answered touch. They were dropped
