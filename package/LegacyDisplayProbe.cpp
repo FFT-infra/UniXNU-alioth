@@ -402,6 +402,9 @@ extern IOMemoryDescriptor *native_legacy_surface_descriptor(OSObject *) __attrib
 extern uint64_t native_legacy_surface_width(OSObject *) __attribute__((weak_import));
 extern uint64_t native_legacy_surface_height(OSObject *) __attribute__((weak_import));
 extern uint64_t native_legacy_surface_stride(OSObject *) __attribute__((weak_import));
+// The kernel's data-cache invalidate, the same symbol NativeLegacyDisplay.cpp declares for its copy path.
+extern "C" void flush_dcache64(uint64_t addr, unsigned count, int phys);
+
 // One reading of a surface's memory: every 4096th dword, bounded to 16384 samples. A 1080x2400 frame is
 // 6.5 MiB, so this walks the whole picture without costing a frame. The caller owns the descriptor.
 static bool surfaceMeasure(IOMemoryDescriptor *memory, uint64_t stride, uint64_t height, unsigned *rows,
@@ -410,6 +413,10 @@ static bool surfaceMeasure(IOMemoryDescriptor *memory, uint64_t stride, uint64_t
 	if (!map || !map->getVirtualAddress()) { OSSafeReleaseNULL(map); return false; }
 	const uint64_t length = map->getLength();
 	if (!stride || !height || stride > length) { OSSafeReleaseNULL(map); return false; }
+	// The surfaces are write-combined (iPadOS 27 display surfaces are), so the CPU's view is only valid after the
+	// cache lines are invalidated: without this every read returns the previous frame's, which is zero. The CPU
+	// copy path in NativeLegacyDisplay.cpp flushes the same way before it reads a surface (line 829 there).
+	flush_dcache64((uint64_t)(uintptr_t)map->getVirtualAddress(), (unsigned)length, false);
 	const volatile uint32_t *base = (const volatile uint32_t *)(uintptr_t)map->getVirtualAddress();
 	const uint64_t dwords = length / 4;
 	uint64_t lit = 0, luma = 0, samples = 0;
