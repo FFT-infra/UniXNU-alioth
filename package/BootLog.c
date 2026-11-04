@@ -1841,14 +1841,33 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
   const uint64_t start = log_ticks();
   unsigned reported = 0;
   while (!tick_reset_tried) {
+    // Before the first sleep: this line alone says the thread was entered. Without it "never
+    // started" and "started and stuck in its first IOSleep" produce the same console.
+    if (boot_log_super_runs == 0 && &qcom_usb_debug_write) {
+      const char *entered = "SUP entered\n";
+      qcom_usb_debug_write(entered, 12);
+    }
     IOSleep(1000);
     boot_log_super_runs = boot_log_super_runs + 1;
     boot_log_super_returns = boot_log_super_returns + 1;
     const unsigned elapsed = (unsigned)((log_ticks() - start) / f);
     boot_log_super_elapsed = elapsed;
+    // Beacons around the first two pets. A boot that loses its supervisor loses the round to the
+    // watchdog, so the difference between "the thread never started", "it started and the pet's
+    // register write hung" and "it is running and petting" has to be readable from the console.
+    if (boot_log_super_runs <= 2 && &qcom_usb_debug_write) {
+      char b[64];
+      const int bn = snprintf(b, sizeof b, "SUPRUN n=%u t=%us pre-pet\n", boot_log_super_runs, elapsed);
+      if (bn > 0) qcom_usb_debug_write(b, (size_t)bn < sizeof b ? (size_t)bn : sizeof b - 1);
+    }
     // One register write a second. Its absence is the signal: a supervisor that stops, and a
     // deadline whose software reset failed, both end in the same hardware bark.
     if (!reset_pet_stopped && &boot_reset_pet) boot_reset_pet();
+    if (boot_log_super_runs <= 2 && &qcom_usb_debug_write) {
+      char b[64];
+      const int bn = snprintf(b, sizeof b, "SUPRUN n=%u t=%us pet=%d\n", boot_log_super_runs, elapsed, boot_reset_wdt_stats[1]);
+      if (bn > 0) qcom_usb_debug_write(b, (size_t)bn < sizeof b ? (size_t)bn : sizeof b - 1);
+    }
     if (boot_log_super_runs - reported >= 10) {
       reported = boot_log_super_runs;
       char line[224];
@@ -2037,21 +2056,21 @@ void boot_log_tick(unsigned now) {
       tick_autoreset = autoreset;
       if (&boot_reset_probe) (void)boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text);
       if (&boot_reset_mark_bootloader) boot_reset_mark_bootloader(boot_log_reset_mark, sizeof boot_log_reset_mark);
-      if (&boot_reset_watchdog) {
+      if (&boot_reset_watchdog)
         boot_reset_watchdog(autoreset + 60, boot_log_reset_watchdog, sizeof boot_log_reset_watchdog);
-        // The arm's own readback, on the console: whether the block took the enable and what it
-        // held before is the difference between "armed" and "wrote to a register that ignored us".
-        if (&qcom_usb_debug_write && boot_log_reset_watchdog[0]) {
-          char w[220];
-          const int wn = snprintf(w, sizeof w, "WDT %s\n", boot_log_reset_watchdog);
-          if (wn > 0) qcom_usb_debug_write(w, (size_t)wn < sizeof w ? (size_t)wn : sizeof w - 1);
-        }
-      }
       thread_t rth;
       const kern_return_t sr = kernel_thread_start_priority(autoreset_supervisor, 0, BASEPRI_KERNEL, &rth);
       boot_log_super_start = (int)sr;
       if (sr == KERN_SUCCESS)
         thread_deallocate(rth);
+      // The arm's readback and the supervisor's start result on one line: without superstart a boot
+      // with no SUPER row cannot be told apart from a boot whose pet's register write hung, and
+      // both now cost the whole round to a 30 s bite.
+      if (&qcom_usb_debug_write && boot_log_reset_watchdog[0]) {
+        char w[300];
+        const int wn = snprintf(w, sizeof w, "WDT %s superstart=%d\n", boot_log_reset_watchdog, (int)sr);
+        if (wn > 0) qcom_usb_debug_write(w, (size_t)wn < sizeof w ? (size_t)wn : sizeof w - 1);
+      }
     }
     uint32_t mode = 0;
     if (PE_parse_boot_argn("sheng-log", &mode, sizeof mode) && mode == 1 &&
