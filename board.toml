@@ -757,7 +757,12 @@ kernel_args = [
   # fix125 flipped 522 frames on this board with COPY=0, so it is a path with hardware evidence behind it.
   # Any failure falls back to the GPU copy, which is broken until the import works, so treat a fallback here
   # as "no update" rather than "no picture".
-  "sheng-dpu-scanout=2",
+  # Back to 0 for now: with 2 the boot reaches "[direct scanout] stage=4" and then stops before the boot
+  # supervisor starts, twice in a row (m20, rounds mr1 and ms1, 2026-11-04). The persistent log from the
+  # second run — read with the TWRP reader, because the USB console carried no SUPER row at all — says
+  # "stage=4 branch=0 flips=0 mapped=0 refused=0": the path armed and then nothing was ever offered.
+  # Direct scanout stays the target; it needs its own round that finds how stage 4 stops the supervisor.
+  "sheng-dpu-scanout=0",
   # pipa-metal-withhold=none was tried on 2026-10-29: SpringBoard stops trapping but the
   # compositor then sends swaps with no surface (reason 1), so nothing draws. The default
   # withholds the Apple GPU families, which is the configuration where the desktop appears.
