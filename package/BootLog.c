@@ -1935,6 +1935,7 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
       if (&boot_progress_panel_sample) {
         unsigned p[6] = {0, 0, 0, 0, 0, 0};
         boot_progress_panel_sample(p);
+        {extern void surfaceLateObserved(void); surfaceLateObserved();}
         // The two mappings both claim to be the firmware's frame buffer and both were checked against PE_Video's
         // v_baseAddr: the presenter's (what the GPU copy writes into) and the display driver's (what this row
         // samples). If they differ, the copy is landing in memory the panel never scans out.

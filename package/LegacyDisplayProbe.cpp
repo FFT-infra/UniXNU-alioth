@@ -506,6 +506,24 @@ void surfaceAfterTransferObserved(void) {
 	if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
 }
 
+// A reading of the last swapped surface, taken from the periodic tick rather than from the swap itself: it says
+// whether that memory ever holds anything at all, independent of when the copy happens to run.
+static unsigned lateRows, lateLit, lateLuma, lateSum;
+extern "C" void surfaceLateObserved(void) {
+	OSObject *object = (OSObject *)(uintptr_t)native_legacy_swap_surface;
+	if (!object || !&native_legacy_surface_descriptor) return;
+	IOMemoryDescriptor *memory = native_legacy_surface_descriptor(object);
+	if (!memory) return;
+	const uint64_t stride = &native_legacy_surface_stride ? native_legacy_surface_stride(object) : 0;
+	const uint64_t height = &native_legacy_surface_height ? native_legacy_surface_height(object) : 0;
+	if (!surfaceMeasure(memory, stride, height, &lateRows, &lateLit, &lateLuma, &lateSum)) return;
+	if (!&qcom_usb_debug_write) return;
+	char line[160];
+	const int n = snprintf(line, sizeof line, "SURFACEL n=%u nonblack=%u/1000 luma=%u sum=%08x\n",
+	                      lateRows, lateLit, lateLuma, lateSum);
+	if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+}
+
 void native_legacy_swap_validation_observed(bool accepted, unsigned reason, const void *request, const void *surface) {
 	framePacingObserved(accepted, reason);
 	if (reason < 8) native_legacy_swap_reason_counts[reason] = native_legacy_swap_reason_counts[reason] + 1;
