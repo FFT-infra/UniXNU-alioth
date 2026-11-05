@@ -317,10 +317,10 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # StaticTrustCache entries and is absent from the 76-entry SystemTrustCache.
 # Since the Metal staging it is the three-module owner bundle that
 # scripts/make-owner-trust-bundle.py builds: one owner module carrying the Adreno Metal
-# plugin's CDHash (21a11822) plus the same two original modules byte for byte, which the
+# plugin's CDHash (bb44c4be) plus the same two original modules byte for byte, which the
 # script verifies against build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "482604c519b759f9590c0aedbff348c1f9332fbee26dc33d735810a80b775f48",
+  "1587e34750f40d9f4449c59e34f112fbc0e3019fffda617401d6a4b896cc2dd7",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -603,7 +603,12 @@ kernel_args = [
   # landed while the data store was still being written on every round, which is the most likely reason the
   # persisted userspace state degraded across boots (askers 7 -> 4 -> 3 -> 1 on 2026-11-04). The round
   # script waits 500 s for fastboot to match.
-  "sheng-autoreset=400",
+  # 250 from 2026-11-05 19:1x at the user's request: the 240 s wait for the reset after a 160 s capture is
+  # most of a round's wall time. This is the value that was reverted on 2026-11-05 because `askers` fell to 1
+  # and `sw` to 0 with it; that was never an isolated test, so the next round that uses it must read `askers`,
+  # `sw`, the persistent log's `slots_written`, and whether the desktop appears before the reset. A regression
+  # there puts this back to 400.
+  "sheng-autoreset=250",
   # The physical keys and the panel brightness are both compiled in and both called from
   # LegacyDisplayProbe (alioth_buttons_probe and alioth_backlight_probe, :951-954), but each
   # returns on its first line unless its own boot argument is present, so until these two
@@ -755,11 +760,6 @@ kernel_args = [
   # from the round script when the commands moved to unixnu build payload, and every image from
   # fix156 to fix159 lost touch with them.
   "sheng-fb-bgra=1",
-  # 2026-11-05 tu0 round: sheng-fb-bgra=1 above also makes the plugin set TU_DEBUG=sysmem,nocb, and that sysmem
-  # render path writes no pixels on this build: the panel stayed on the boot frame while every swap was accepted.
-  # nocb alone reaches the desktop (PANEL sum changed, SURFACEnonblack 224/1000, the desktop visible by eye).
-  # sheng-tu-debug overrides the plugin's choice; set it to sysmem,nocb to test that path again.
-  "sheng-tu-debug=nocb",
   # 2026-11-04 dpu0 round: 2 takes the direct path as soon as NativeUfs has installed the display
   # bank's stage-1 window (native_ufs_dpu_state bit 31) and flips the VIG pipes straight onto the
   # compositor's surface; 0 leaves the display on the buffer the firmware is already scanning and

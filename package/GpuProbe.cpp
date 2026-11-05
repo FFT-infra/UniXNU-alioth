@@ -897,15 +897,15 @@ void hwInit() {
 }
 
 // The UCHE's registers as read back (UCHE_MODE_CNTL, WRITE_RANGE_MAX, WRITE_THRU_BASE, TRAP_BASE, GMEM_RANGE_MIN/MAX, 0E12,
-// CLIENT_PF) and the NC_MODE_CNTL of RB, TPL1, SP and RBBM: right after hw_init, and again from the live loop when they change
+// CLIENT_PF), CP APRIV/RB control and the NC_MODE_CNTL of RB, TPL1, SP and RBBM: right after hw_init, and again from the live loop when they change
 // (Turnip's command streams write some of them). Shader accesses ended in UCHE_OOB_ACCESS (2026-10-24).
 void ucheRow() {
     auto r64 = [](uint32_t dword) {return uint64_t(gpuRead(dword)) | uint64_t(gpuRead(dword + 1)) << 32;};
     char line[sizeof native_gpu_rows[0]];
-    snprintf(line, sizeof line, "UCHE m%x w%llx t%llx/%llx g%llx-%llx 0e12 %x pf %x | nc %x %x %x %x",
+    snprintf(line, sizeof line, "UCHE m%x w%llx t%llx/%llx g%llx-%llx 0e12 %x pf %x | nc %x %x %x %x ap %x rb %x",
              gpuRead(0xE01), (unsigned long long)r64(0xE05), (unsigned long long)r64(0xE07), (unsigned long long)r64(0xE09),
              (unsigned long long)r64(0xE0B), (unsigned long long)r64(0xE0D), gpuRead(0xE12), gpuRead(0xE19), gpuRead(0x8E08),
-             gpuRead(0xB604), gpuRead(0xAE02), gpuRead(0x534));
+             gpuRead(0xB604), gpuRead(0xAE02), gpuRead(0x534), gpuRead(0x844), gpuRead(0x802));
     if (strncmp(line, native_gpu_rows[kRowUche], sizeof line)) {
         strlcpy(native_gpu_rows[kRowUche], line, sizeof native_gpu_rows[0]);
         changed();
@@ -1649,17 +1649,13 @@ bool metal() {
         "backboardd,iconservicesagent,Preferences,CollectionsPoster,AegirPoster,KaleidoscopePoster,"
         "PhotosPosterProvider,PosterBoard,WidgetRenderer_Default,mediaserverd,SpringBoard");
     accelerator->setProperty("MetalPluginClassName", "NativeAdrenoMetalDevice");
-    // Turnip's options for this board, which replace the plugin's default "sysmem,nocb" (NativeAdrenoMetalPlugin.mm
-    // applyBoardTurnipDebug). That default keeps every pass in system memory against a hang of the A740's concurrent binning (BV
-    // and BR); the A650 has no concurrent binning, so by default Turnip picks tiled GMEM rendering with binning or system memory
-    // per pass, as on Linux ("nocb" is a no-op here and keeps the variable non-empty). pipa-turnip-debug=<options> replaces it
-    // for a round, e.g. pipa-turnip-debug=sysmem,nocb.
-    // sheng-fb-bgra=1 is what the plugin actually acts on (NativeAdrenoMetalPlugin.mm:299 sets TU_DEBUG from it); this row used
-    // to print only pipa-turnip-debug, so a boot with the flag on read "Turnip options nocb" and looked as if it had not applied.
-    // Print the plugin's own choice here so one log line answers both.
+    // Turnip's options for this board. The plugin sets TU_DEBUG=nocb for every process (NativeAdrenoMetalPlugin.mm); "nocb" is a
+    // no-op on the A650, which has no concurrent binning, and keeps the variable non-empty. The system-memory path that
+    // sheng-fb-bgra=1 used to select writes no pixels (2026-11-05), so nothing selects it by default. This row prints what that
+    // process will use: sheng-tu-debug=<options> overrides the plugin, pipa-turnip-debug=<options> records a round's choice here.
+    // Nothing reads the NativeTurnipDebug property this becomes, so this row is a reading, not a switch.
     char turnip[64] = "nocb";
-    unsigned fbBgra = 0;
-    if (PE_parse_boot_argn("sheng-fb-bgra", &fbBgra, sizeof fbBgra) && fbBgra) strlcpy(turnip, "sysmem,nocb", sizeof turnip);
+    PE_parse_boot_arg_str("sheng-tu-debug", turnip, sizeof turnip);
     PE_parse_boot_arg_str("pipa-turnip-debug", turnip, sizeof turnip);
     // Canned Turnip option sets for a round, so an A/B on the GMEM input attachment bug (HANDOFF-pipa.md 10.14) fits in the
     // 1000-byte command line: pipa-tu=1..5 (8 bytes) instead of pipa-turnip-debug=<46 bytes>.
