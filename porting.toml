@@ -182,7 +182,7 @@ evidence = [
 id = "storage"
 status = "device-verified"
 components = ["ShengUfs", "VerifiedRoot", "VirtioMmioBlock", "RamBlock"]
-paths = ["drivers/ShengUfs", "scripts/*ufs*", "scripts/*storage*", "scripts/*userdata*", "scripts/*root*"]
+paths = ["scripts/*ufs*", "scripts/*storage*", "scripts/*userdata*", "scripts/*root*"]
 inputs = [
   "UFS 3.1 host on SM8250, bound through ShengUfs, plus the two authenticated volume windows (OS and SystemOS) inside userdata.",
   "The Data seed is a raw APFS container: scripts/prepare-owner-data-fixture.py requires NXSB at 0x20, so the ADT reserves RAMDisk rather than PackedRAMDisk.",
@@ -267,7 +267,7 @@ evidence = [
 id = "input"
 status = "implemented"
 components = ["QcomGeniSpi", "ShengHidInput", "ShengNovatekTouch"]
-paths = ["drivers/ShengHidInput", "drivers/ShengNovatekTouch", "kits/alioth-touch", "scripts/build-alioth-touch.py", "scripts/build-gop-legacy-display.py", "package/*Button*", "package/tests/buttons_host.c"]
+paths = ["drivers/ShengHidInput", "package/HidInputProbe.cpp", "kits/alioth-touch", "scripts/build-alioth-touch.py", "scripts/build-gop-legacy-display.py", "package/*Button*", "package/tests/buttons_host.c"]
 inputs = ["FocalTech FT5652 on GENI SE4 (QUPv3 wrapper 0), per alioth-sm8250.dtsi: spi-max-frequency 6000000, interrupts <39 0x2008>, reset GPIO 33, irq GPIO 39, vdd L10C, vcc_i2c L1C, display-coords 0 0 8640 19200, max-touch-number 10."]
 configuration = ["board.toml: native-touch=1 starts kits/alioth-touch, sheng-touch-hid=1 enables the publication path in ShengHidInput, native-touch-diag=1 is a measurement-only round and must be removed for release images. SPI clock is the device tree's 6 MHz; the source is TCXO 19.2 MHz on DFS level 0."]
 procedure = ["Build with component ShengHidInput selected and the board display recipe, which invokes build-sheng-hid-input.py and archives NativeHidInput.late.o plus hid-original-bindings.o into the force-loaded libNativeLegacyDisplay.late.a. Then build payload and boot image, verify the payload carries the built kernel, and boot over USB."]
@@ -375,7 +375,7 @@ evidence = [{ kind = "device", command = "sh scripts/run-sheng-unattended.sh <bo
 id = "network"
 status = "planned"
 components = []
-paths = ["package/alioth_pcie.c", "drivers/Ath12kWifi", "package/*Wifi*", "package/MhiBoot*", "scripts/*wifi*", "scripts/*mhi*"]
+paths = ["package/alioth_pcie.c", "package/*Wifi*", "package/MhiBoot*", "scripts/*wifi*", "scripts/*mhi*"]
 inputs = [
   "QCA6390 at 17cb:1101 behind qcom,pcie@1c00000; parf 0x01c00000+0x3000, phy 0x01c06000+0x1000, dm_core 0x60000000+0xf1d, ELBI 0x60000f20+0xa8, IATU 0x60001000+0x1000, conf 0x60100000+0x100000.",
   "package/alioth_pcie.c is the bring-up measured on this phone in the ios-sweet series. It was 723 lines when the first version of this area was written and is 1445 lines now, with fifteen numbered steps: 1 read what the loader left, 2 power the controller and its clocks, 3-5 the PHY sequence and its ready bit, 6-7 the clock controller and the auxiliary clock generator, 8-9 the PARF registers and the vendor's init sequence, 10 drive the endpoint pads WLAN_EN (TLMM 20) high and release PERST# (TLMM 79), 11 set PARF_LTSSM bit 8 to start training, 12 ask the command database about the two PMIC rails, 13 write the seven dm_core registers the vendor writes, 14 read ELBI, 15 read the configuration space for the vendor and device ids. Boot argument pcie=N runs steps 1 to N.", "The whole resource set the bring-up has to vote, read from the vendor tree on 2026-11-06. Clocks, eleven of them (kona-pcie.dtsi:76-88): pcie_0_pipe_clk, pcie_0_ref_clk_src, pcie_0_aux_clk at 19.2 MHz, pcie_0_cfg_ahb_clk, pcie_0_mstr_axi_clk, pcie_0_slv_axi_clk, pcie_0_ldo, pcie_0_slv_q2a_axi_clk, pcie_tbu_clk, pcie_phy_refgen_clk, pcie_ddrss_sf_tbu_clk at 100 MHz. Resets, two (kona-pcie.dtsi:90-93): GCC_PCIE_0_BCR and GCC_PCIE_0_PHY_BCR. Supplies (kona-pcie.dtsi:46-52): gdsc-vdd from pcie_0_gdsc, vreg-1p8 from pm8150_l9 at 1200000/1200000 uV with 16000 headroom, vreg-0p9 from pm8150_l5 at 880000/880000 uV with 73500 headroom, vreg-cx voted to RPMH_REGULATOR_LEVEL_MAX. SMMU sid base 0x1c00 with two iommu-map entries, and dma-coherent.", "The link-training sequence, from drivers/pci/controller/pci-msm.c:4407-4440. Enable training by writing PCIE20_PARF_LTSSM (parf + 0x1b0) bit 8 to 0. Then poll ELBI + PCIE20_ELBI_SYS_STTS (0x08): bit 10 (0x400, XMLH_LINK_UP) is link up, and bits [17:12] are the LTSSM state. Each check sleeps 5000-5100 us and the default cap is 20 checks, so the whole wait is about 100 ms; a debugfs vote in bits [31:4] of a module parameter can shorten it. A set bit alone is not enough: msm_pcie_confirm_linkup also requires dm_core + 0x80 bit 29 to be set and dm_core + 0x00 (vendor and device id) to differ from the link-down value, and on failure the driver reasserts PERST and returns an error (pci-msm.c:1242-1250).", "The PHY is not a handful of writes: kona-pcie.dtsi carries qcom,phy-sequence as 99 register/value/delay triples (297 numbers) that the driver replays from phy power-down at 0x840, with phy version 1102, link status at 0x814 bit 6, and L1 substate settings of a 10 ms timeout, no L0s, th-scale 2 (1 us) and th-value 70. A port that does not replay all 99 writes is not doing the same bring-up as the vendor kernel.",
