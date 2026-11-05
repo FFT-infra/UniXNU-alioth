@@ -8,6 +8,7 @@
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <kern/thread.h>
 #include <kern/clock.h>
+#include <kern/cpu_number.h>   // cpu_number(): the core this loop last ran on
 #include <pexpert/pexpert.h>
 #include <libkern/c++/OSSharedPtr.h>
 #include <string.h>
@@ -28,6 +29,10 @@ volatile uint32_t native_touch_hid_reports;
 volatile int native_touch_error;
 volatile uint32_t native_touch_loop_step;
 volatile uint32_t native_touch_valid;
+/* The core the frame loop last ran on. The loop stops with native_touch_frame_rc and native_touch_fail_step
+ * both at zero, i.e. asleep in IOSleep after a successful read and never woken; naming the core is what lets
+ * that be matched against the per-core timer rows instead of guessed at. */
+volatile uint32_t native_touch_core;
 /* publish() calls that carried at least one contact. It moves only when the panel itself reports a
  * finger, so a run with no touch and a run whose decode is broken stop looking the same. */
 volatile uint32_t native_touch_decoded;
@@ -593,6 +598,7 @@ void touchThread(void *arg, wait_result_t) {
          * the same board reached the lock screen in about 104 s with the probe inactive.
          * IOSleep yields the CPU between frames, which a polled input thread must do. */
         native_touch_loop_step = 0;
+        native_touch_core = (uint32_t)cpu_number();
         IOSleep(TB_FRAME_PERIOD_US / 1000);
         frames = frames + 1;
         if (frames % TB_REG_POLL_FRAMES == 0) {native_touch_loop_step = 5; touchHealthCheck(s);}

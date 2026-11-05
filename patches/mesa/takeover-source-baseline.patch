@@ -1,0 +1,3527 @@
+diff --git a/meson.build b/meson.build
+index 3aed8ca168d..6a2a30c8945 100644
+--- a/meson.build
++++ b/meson.build
+@@ -985,6 +985,7 @@ if with_clc
+ endif
+ 
+ with_gfx_compute = [
++  with_tools.contains('freedreno'),
+   with_any_opengl,
+   with_any_vk,
+   with_clc,
+diff --git a/meson.options b/meson.options
+index 678bc67e0c9..8b92a2be3e3 100644
+--- a/meson.options
++++ b/meson.options
+@@ -222,11 +222,18 @@ option(
+   'freedreno-kmds',
+   type : 'array',
+   value : ['msm'],
+-  choices : ['msm', 'kgsl', 'virtio', 'wsl'],
++  choices : ['msm', 'kgsl', 'virtio', 'wsl', 'darwin'],
+   description : 'List of kernel-mode drivers to enable for freedreno ' +
+                 'gallium and vulkan driver',
+ )
+ 
++option(
++  'tu-darwin-abi-dir',
++  type : 'string',
++  value : '',
++  description : 'Directory holding NativeAdrenoABI.h for the Turnip darwin kernel backend (freedreno-kmds=darwin)',
++)
++
+ option(
+   'amdgpu-virtio',
+   type : 'boolean',
+@@ -899,3 +906,14 @@ option(
+   value : false,
+   description : 'Build panfrost Rust components.'
+ )
++
++option('offline-adreno-probe', type : 'string', value : '',
++       description : 'C source for an explicitly requested offline compiler fixture')
++
++option('offline-air-nir-dir', type : 'string', value : '',
++       description : 'Optional external AIR frontend source directory for offline tests')
++option('offline-air-nir-llvm-config', type : 'string', value : '',
++       description : 'Explicit LLVM config executable for the offline AIR frontend')
++
++option('tu-builtin-source-id', type : 'string', value : '', description : 'Exact builtin compiler source and profile identity')
++option('tu-builtin-pack-header', type : 'string', value : '', description : 'Explicit generated builtin pack header; empty retains compiler path')
+diff --git a/src/freedreno/fdl/fd6_layout.c b/src/freedreno/fdl/fd6_layout.c
+index 67491abe611..65c2054ae3a 100644
+--- a/src/freedreno/fdl/fd6_layout.c
++++ b/src/freedreno/fdl/fd6_layout.c
+@@ -193,7 +193,11 @@ fdl6_layout_image(struct fdl_layout *layout, const struct fd_dev_info *info,
+           * aligned gmem store. turnip can use CP_BLIT to work without this
+           * extra alignment, but gallium driver doesn't implement it yet
+           */
+-         if (layout->cpp > 4)
++         /* An explicit layout's rows are their owner's (an imported surface's): they take the
++          * hardware's own alignment, 64 bytes, and turnip loads and stores such an image over its
++          * texels alone where its size is not whole blocks (tu_attachment_unpadded).
++          */
++         if (layout->cpp > 4 && !explicit_layout)
+             layout->pitchalign = fdl_cpp_shift(layout) - 2;
+ 
+          /* when possible, use a bit more alignment than necessary
+diff --git a/src/freedreno/fdl/fd6_view.cc b/src/freedreno/fdl/fd6_view.cc
+index 67f2095f8da..c56a83003aa 100644
+--- a/src/freedreno/fdl/fd6_view.cc
++++ b/src/freedreno/fdl/fd6_view.cc
+@@ -537,7 +537,12 @@ fdl6_view_init(struct fdl6_view *view, const struct fdl_layout **layouts,
+       tile_mode == TILE6_LINEAR && args->base_miplevel != layout->mip_levels - 1;
+ 
+    view->ubwc_enabled = ubwc_enabled;
+-   view->is_mutable = layout->is_mutable;
++   /* Mutability changes how a tiled image's swap is stored (MUTABLEEN above, only set for TILE6_3). A linear image keeps its
++    * swap in memory whatever its formats, so it is not mutable for the code that loads and stores it through tile memory
++    * (tu_clear_blit.cc and the GMEM input attachments of tu_cmd_buffer.cc take the swap and MUTABLEEN for a mutable view): it
++    * swapped the tile's red and blue once more on the way to memory.
++    */
++   view->is_mutable = is_mutable;
+    view->color_swap = color_swap;
+ 
+    view->RB_MRT_BUF_INFO =
+diff --git a/src/freedreno/ir3/ir3_disk_cache.c b/src/freedreno/ir3/ir3_disk_cache.c
+index 3b732d39584..8946939ef3d 100644
+--- a/src/freedreno/ir3/ir3_disk_cache.c
++++ b/src/freedreno/ir3/ir3_disk_cache.c
+@@ -37,7 +37,8 @@ ir3_disk_cache_init(struct ir3_compiler *compiler)
+    const struct build_id_note *note =
+       build_id_find_nhdr_for_addr(ir3_disk_cache_init);
+    unsigned build_id_len = build_id_length(note);
+-   assert(note && build_id_len == BUILD_ID_EXPECTED_HASH_LENGTH); /* sha1 */
++   /* Mach-O identifies a build with its 16-byte LC_UUID; ELF uses SHA-1. */
++   assert(note && build_id_len == (DETECT_OS_APPLE ? 16 : BUILD_ID_EXPECTED_HASH_LENGTH));
+ 
+    const uint8_t *id_sha1 = build_id_data(note);
+    assert(id_sha1);
+diff --git a/src/freedreno/ir3/ir3_shader.c b/src/freedreno/ir3/ir3_shader.c
+index 6b8419bb278..cfe684ab0d5 100644
+--- a/src/freedreno/ir3/ir3_shader.c
++++ b/src/freedreno/ir3/ir3_shader.c
+@@ -352,17 +352,27 @@ create_roundtrip_variant(struct ir3_shader *shader, struct ir3_shader_variant *v
+    char *disasm_data = NULL;
+    size_t disasm_size = 0;
+    FILE *disasm_stream = open_memstream(&disasm_data, &disasm_size);
++   if (!disasm_stream)
++      goto fail;
+    ir3_shader_disasm(v, v->bin, disasm_stream);
+-   fflush(disasm_stream);
++   if (fclose(disasm_stream)) {
++      free(disasm_data);
++      goto fail;
++   }
+ 
+    struct ir3_kernel_info info;
+    memset(&info, 0, sizeof(info));
+    info.numwg = INVALID_REG;
+ 
+-   fseek(disasm_stream, 0, SEEK_SET);
+-   rt_v->ir = ir3_parse(rt_v, &info, disasm_stream);
++   /* open_memstream is a write stream; read the completed bytes separately. */
++   FILE *input = fmemopen(disasm_data, disasm_size, "r");
++   if (!input) {
++      free(disasm_data);
++      goto fail;
++   }
++   rt_v->ir = ir3_parse(rt_v, &info, input);
+ 
+-   fclose(disasm_stream);
++   fclose(input);
+    free(disasm_data);
+ 
+    if (!rt_v->ir) {
+diff --git a/src/freedreno/ir3/meson.build b/src/freedreno/ir3/meson.build
+index c6258e57acc..ab6a9c0def3 100644
+--- a/src/freedreno/ir3/meson.build
++++ b/src/freedreno/ir3/meson.build
+@@ -173,3 +173,31 @@ test('ir3_delay_test',
+   ),
+   suite: ['freedreno'],
+ )
++
++if get_option('offline-adreno-probe') != ''
++  executable(
++    'adreno_compiler_probe',
++    get_option('offline-adreno-probe'),
++    link_with : libfreedreno_ir3,
++    dependencies : [idep_libir3decode, idep_mesautil, idep_nir],
++    include_directories : [inc_freedreno, inc_include, inc_src],
++    build_by_default : false,
++  )
++endif
++
++if get_option('offline-air-nir-dir') != ''
++  air_llvm_config = find_program(get_option('offline-air-nir-llvm-config'), required : true)
++  air_cpp_args = run_command(air_llvm_config, '--cxxflags', check : true).stdout().strip().split()
++  air_link_args = run_command(air_llvm_config, '--ldflags', '--libs', 'core', 'bitreader', 'bitwriter', 'analysis', '--system-libs', check : true).stdout().strip().split()
++  air_dir = get_option('offline-air-nir-dir')
++  executable(
++    'air_nir',
++    [air_dir / 'Frontend.cpp', air_dir / 'MesaBackend.c', air_dir / 'Library.c'],
++    cpp_args : air_cpp_args,
++    link_args : air_link_args,
++    link_with : libfreedreno_ir3,
++    dependencies : [idep_libir3decode, idep_mesautil, idep_nir],
++    include_directories : [inc_freedreno, inc_include, inc_src],
++    build_by_default : false,
++  )
++endif
+diff --git a/src/freedreno/vulkan/meson.build b/src/freedreno/vulkan/meson.build
+index d6c8a053d52..b544a9f27f2 100644
+--- a/src/freedreno/vulkan/meson.build
++++ b/src/freedreno/vulkan/meson.build
+@@ -100,6 +100,7 @@ libtu_includes = [
+ ]
+ 
+ tu_link_with = []
++tu_link_args = []
+ tu_deps = []
+ tu_flags = [sse2_args]
+ 
+@@ -115,6 +116,10 @@ if with_platform_wayland
+   tu_wsi = true
+ endif
+ 
++if with_platform_macos
++  tu_wsi = true
++endif
++
+ if system_has_kms_drm and not with_platform_android
+   tu_wsi = true
+ endif
+@@ -132,6 +137,19 @@ if freedreno_kmds.contains('kgsl')
+   libtu_files += files('tu_knl_kgsl.cc')
+ endif
+ 
++if freedreno_kmds.contains('darwin')
++  tu_flags += '-DTU_HAS_DARWIN'
++  libtu_files += files('tu_knl_darwin.cc', 'tu_builtin_cache.cc')
++  tu_flags += '-DTU_BUILTIN_SOURCE_ID="' + get_option('tu-builtin-source-id') + '"'
++  if get_option('tu-builtin-pack-header') != ''
++    tu_flags += '-DTU_BUILTIN_PACK_HEADER="' + get_option('tu-builtin-pack-header') + '"'
++  endif
++  libtu_includes += include_directories(get_option('tu-darwin-abi-dir'), is_system : false)
++  tu_deps += dependency('appleframeworks', modules : ['IOKit', 'CoreGraphics', 'Foundation', 'QuartzCore'])
++  # The wsi layer's device entrypoint table references weak symbols that nothing defines; ld64 needs them allowed.
++  tu_link_args += ['-Wl,-undefined,dynamic_lookup']
++endif
++
+ if freedreno_kmds.contains('msm')
+   tu_flags += '-DTU_HAS_MSM'
+   libtu_files += files('tu_knl_drm_msm.cc', 'tu_knl_drm.cc')
+@@ -225,7 +243,7 @@ libvulkan_freedreno = shared_library(
+   c_args : [no_override_init_args, tu_flags, soong_compat_c_args],
+   cpp_args : [tu_cpp_args, tu_flags, soong_compat_cpp_args],
+   gnu_symbol_visibility : 'hidden',
+-  link_args : [vulkan_icd_link_args, ld_args_bsymbolic, ld_args_gc_sections, ld_args_build_id],
++  link_args : [vulkan_icd_link_args, ld_args_bsymbolic, ld_args_gc_sections, ld_args_build_id, tu_link_args],
+   link_depends : vulkan_icd_link_depends,
+   install : true,
+ )
+diff --git a/src/freedreno/vulkan/tu_clear_blit.cc b/src/freedreno/vulkan/tu_clear_blit.cc
+index 47a2fc6ad52..f747981cdff 100644
+--- a/src/freedreno/vulkan/tu_clear_blit.cc
++++ b/src/freedreno/vulkan/tu_clear_blit.cc
+@@ -1,3 +1,4 @@
++#include "tu_frame_diagnostic.h"
+ /*
+  * Copyright 2019-2020 Valve Corporation
+  * SPDX-License-Identifier: MIT
+@@ -206,6 +207,33 @@ format_to_ifmt(enum pipe_format format)
+    }
+ }
+ 
++/* Tile memory holds a colour as the shader wrote it, whatever swap its image has in memory, so a load or store reads and writes
++ * it with the identity swap. Per site (tu_gmem_side_stats): [0] transfers, [1] of them with a swap other than WZYX on the tile
++ * side, [2] with MUTABLEEN, [3] of a linear image in memory. [1] is the counter that must stay zero for linear images.
++ */
++static uint64_t tu_gmem_side_counts[4][4];
++
++void
++tu_note_gmem_side(struct tu_cmd_buffer *cmd, const struct tu_image_view *iview, unsigned site, bool linear, bool mutableen, unsigned swap)
++{
++   tu_frame_event(37,(uintptr_t)cmd,site,(uintptr_t)iview,(uintptr_t)iview->image,iview->vk.format,linear,mutableen,swap,iview->view.color_swap,iview->view.is_mutable);
++   p_atomic_inc(&tu_gmem_side_counts[site][0]);
++   if (swap != WZYX)
++      p_atomic_inc(&tu_gmem_side_counts[site][1]);
++   if (mutableen)
++      p_atomic_inc(&tu_gmem_side_counts[site][2]);
++   if (linear)
++      p_atomic_inc(&tu_gmem_side_counts[site][3]);
++}
++
++extern "C" __attribute__((visibility("default"))) void tu_gmem_side_stats(uint64_t out[16]);
++extern "C" __attribute__((visibility("default"))) void
++tu_gmem_side_stats(uint64_t out[16])
++{
++   for (unsigned i = 0; i < 16; i++)
++      out[i] = p_atomic_read(&tu_gmem_side_counts[i / 4][i % 4]);
++}
++
+ template <chip CHIP>
+ static struct tu_native_format
+ blit_format_texture(enum pipe_format format, enum a6xx_tile_mode tile_mode, bool is_mutable, bool gmem)
+@@ -543,12 +571,27 @@ r2d_src_buffer_unaligned(struct tu_cmd_buffer *cmd,
+                    TPL1_A2D_SRC_TEXTURE_PITCH(CHIP, .pitch = pitch));
+ }
+ 
++/* GMEM holds a colour in the byte order its render target writes it in: a linear image's MRT swap (WXYZ for BGRA) is already applied
++ * there, as system memory rendering writes it. A load or a store therefore moves the bytes as they are, with the identity swap on the
++ * memory side too; the image's own swap on top exchanged red and blue against what system memory rendering writes (a frame mixing
++ * both modes: the wallpaper of the lock screen 51 % exchanged in i-batch, centre redrawn in system memory correct). A mutable tiled
++ * image (MUTABLEEN) keeps its swap.
++ */
++static inline uint32_t
++tu_gmem_transfer_swap_fixup(uint32_t info, uint32_t swap_mask, uint32_t identity, bool mutable_view)
++{
++   return mutable_view ? info : ((info & ~swap_mask) | identity);
++}
++
+ template <chip CHIP>
+ static void
+-r2d_dst(struct tu_cs *cs, const struct fdl6_view *iview, uint32_t layer,
+-        enum pipe_format src_format)
++r2d_dst_impl(struct tu_cs *cs, const struct fdl6_view *iview, uint32_t layer,
++             enum pipe_format src_format, bool gmem_transfer)
+ {
+    uint32_t dst_info = iview->RB_A2D_DEST_BUFFER_INFO;
++   if (gmem_transfer)
++      dst_info = tu_gmem_transfer_swap_fixup(dst_info, A6XX_RB_A2D_DEST_BUFFER_INFO_COLOR_SWAP__MASK,
++                                             A6XX_RB_A2D_DEST_BUFFER_INFO_COLOR_SWAP(WZYX), iview->is_mutable);
+    enum a6xx_format fmt = (enum a6xx_format) pkt_field_get(
+       A6XX_RB_A2D_DEST_BUFFER_INFO_COLOR_FORMAT, dst_info);
+    enum pipe_format dst_format = iview->format;
+@@ -563,6 +606,14 @@ r2d_dst(struct tu_cs *cs, const struct fdl6_view *iview, uint32_t layer,
+    tu_cs_image_flag_ref(cs, iview, layer);
+ }
+ 
++template <chip CHIP>
++static void
++r2d_dst(struct tu_cs *cs, const struct fdl6_view *iview, uint32_t layer,
++        enum pipe_format src_format)
++{
++   r2d_dst_impl<CHIP>(cs, iview, layer, src_format, false);
++}
++
+ static void
+ r2d_dst_depth(struct tu_cs *cs, const struct tu_image_view *iview, uint32_t layer)
+ {
+@@ -981,33 +1032,39 @@ static void
+ compile_shader(struct tu_device *dev, struct nir_shader *nir,
+                unsigned consts, unsigned *offset, enum global_shader idx)
+ {
+-   nir->options = ir3_get_compiler_options(dev->compiler);
++   /* A provisioned variant bypasses NIR/compiler work while retaining the
++    * original global-BO upload, addresses and command emission below. */
++   struct ir3_shader_variant *so = dev->builtin_variants[idx];
++   struct ir3_shader *sh = NULL;
++   if (so) {
++      ralloc_free(nir);
++   } else {
++      nir->options = ir3_get_compiler_options(dev->compiler);
+ 
+-   nir_assign_io_var_locations(nir, nir_var_shader_in);
+-   nir_assign_io_var_locations(nir, nir_var_shader_out);
++      nir_assign_io_var_locations(nir, nir_var_shader_in);
++      nir_assign_io_var_locations(nir, nir_var_shader_out);
+ 
+-   struct ir3_const_allocations const_allocs = {};
+-   if (consts > 0)
+-      ir3_const_alloc(&const_allocs, IR3_CONST_ALLOC_UBO_RANGES, align(consts, 8), 1);
++      struct ir3_const_allocations const_allocs = {};
++      if (consts > 0)
++         ir3_const_alloc(&const_allocs, IR3_CONST_ALLOC_UBO_RANGES, align(consts, 8), 1);
+ 
+-   const struct ir3_shader_options options = {
+-      .api_wavesize = IR3_SINGLE_OR_DOUBLE,
+-      .real_wavesize = IR3_SINGLE_OR_DOUBLE,
+-      .const_allocs = const_allocs,
+-      .fragdata_dynamic_remap =
+-         idx >= GLOBAL_SH_VS_CLEAR && idx <= GLOBAL_SH_FS_CLEAR_MAX,
+-   };
++      const struct ir3_shader_options options = {
++         .api_wavesize = IR3_SINGLE_OR_DOUBLE,
++         .real_wavesize = IR3_SINGLE_OR_DOUBLE,
++         .const_allocs = const_allocs,
++         .fragdata_dynamic_remap =
++            idx >= GLOBAL_SH_VS_CLEAR && idx <= GLOBAL_SH_FS_CLEAR_MAX,
++      };
+ 
+-   ir3_finalize_nir(dev->compiler, &options.nir_options, nir);
++      ir3_finalize_nir(dev->compiler, &options.nir_options, nir);
+ 
+-   ir3_nir_lower_io(nir);
++      ir3_nir_lower_io(nir);
+ 
+-   struct ir3_shader *sh =
+-      ir3_shader_from_nir(dev->compiler, nir, &options);
++      sh = ir3_shader_from_nir(dev->compiler, nir, &options);
+ 
+-   struct ir3_shader_key key = {};
+-   struct ir3_shader_variant *so =
+-      ir3_shader_get_variant(sh, &key, false, false, NULL, NULL);
++      struct ir3_shader_key key = {};
++      so = ir3_shader_get_variant(sh, &key, false, false, NULL, NULL);
++   }
+ 
+    struct tu6_global *global = dev->global_bo_map;
+ 
+@@ -1045,6 +1102,8 @@ tu_destroy_clear_blit_shaders(struct tu_device *dev)
+       if (dev->global_shaders[i])
+          ir3_shader_destroy(dev->global_shaders[i]);
+    }
++   ralloc_free(dev->builtin_cache_owner);
++   dev->builtin_cache_owner = NULL;
+ }
+ 
+ enum r3d_type {
+@@ -1586,6 +1645,7 @@ r3d_src_gmem_load(struct tu_cmd_buffer *cmd,
+                   const struct tu_image_view *iview,
+                   uint32_t layer)
+ {
++   tu_note_gmem_side(cmd, iview, 1, iview->image->layout[0].tile_mode == TILE6_LINEAR, false, WZYX);
+    r3d_src_load<CHIP>(cmd, cs, iview, layer, VK_FILTER_NEAREST, true);
+ }
+ 
+@@ -1623,6 +1683,8 @@ r3d_src_gmem(struct tu_cmd_buffer *cmd,
+ 
+    if (!iview->view.is_mutable)
+       tu_desc_set_swap<CHIP>(desc, WZYX);
++   tu_note_gmem_side(cmd, iview, 0, iview->image->layout[0].tile_mode == TILE6_LINEAR, false,
++                     iview->view.is_mutable ? iview->view.color_swap : WZYX);
+ 
+    /* If FDM offset is used, the last row and column extend beyond the
+     * framebuffer but are shifted over when storing. Expand the width and
+@@ -1664,10 +1726,13 @@ r3d_src_gmem(struct tu_cmd_buffer *cmd,
+ 
+ template <chip CHIP>
+ static void
+-r3d_dst(struct tu_cs *cs, const struct fdl6_view *iview, uint32_t layer,
+-        enum pipe_format src_format)
++r3d_dst_impl(struct tu_cs *cs, const struct fdl6_view *iview, uint32_t layer,
++             enum pipe_format src_format, bool gmem_transfer)
+ {
+    uint32_t mrt_buf_info = iview->RB_MRT_BUF_INFO;
++   if (gmem_transfer)
++      mrt_buf_info = tu_gmem_transfer_swap_fixup(mrt_buf_info, A6XX_RB_MRT_BUF_INFO_COLOR_SWAP__MASK,
++                                                 A6XX_RB_MRT_BUF_INFO_COLOR_SWAP(WZYX), iview->is_mutable);
+ 
+    enum a6xx_format fmt = (enum a6xx_format) pkt_field_get(
+       A6XX_RB_MRT_BUF_INFO_COLOR_FORMAT, mrt_buf_info);
+@@ -1697,6 +1762,14 @@ r3d_dst(struct tu_cs *cs, const struct fdl6_view *iview, uint32_t layer,
+       tu_cs_emit_regs(cs, GRAS_SU_RENDER_CNTL(CHIP));
+ }
+ 
++template <chip CHIP>
++static void
++r3d_dst(struct tu_cs *cs, const struct fdl6_view *iview, uint32_t layer,
++        enum pipe_format src_format)
++{
++   r3d_dst_impl<CHIP>(cs, iview, layer, src_format, false);
++}
++
+ template <chip CHIP>
+ static void
+ r3d_dst_depth(struct tu_cs *cs, const struct tu_image_view *iview, uint32_t layer)
+@@ -1784,6 +1857,8 @@ r3d_dst_gmem(struct tu_cmd_buffer *cmd, struct tu_cs *cs,
+    } else {
+       RB_MRT_BUF_INFO = iview->view.RB_MRT_BUF_INFO;
+       gmem_offset = tu_attachment_gmem_offset(cmd, att, layer);
++      RB_MRT_BUF_INFO = tu_gmem_transfer_swap_fixup(RB_MRT_BUF_INFO, A6XX_RB_MRT_BUF_INFO_COLOR_SWAP__MASK,
++                                                    A6XX_RB_MRT_BUF_INFO_COLOR_SWAP(WZYX), iview->view.is_mutable);
+    }
+ 
+    /* On a7xx we must always use FMT6_Z24_UNORM_S8_UINT_AS_R8G8B8A8. See
+@@ -2331,7 +2406,8 @@ event_blit_run(struct tu_cmd_buffer *cmd,
+                struct tu_cs *cs,
+                const struct tu_render_pass_attachment *att,
+                const event_blit_dst_view *blt_view,
+-               bool separate_stencil)
++               bool separate_stencil,
++               bool gmem_transfer = false)
+ {
+    tu_cs_emit_pkt4(cs, REG_A6XX_RB_RESOLVE_SYSTEM_BUFFER_INFO, 4);
+    if (blt_view->image->vk.format == VK_FORMAT_D32_SFLOAT_S8_UINT) {
+@@ -2349,7 +2425,12 @@ event_blit_run(struct tu_cmd_buffer *cmd,
+          tu_cs_emit(cs, A6XX_RB_RESOLVE_SYSTEM_BUFFER_PITCH(blt_view->stencil_pitch).value);
+       }
+    } else {
+-      tu_cs_emit(cs, blt_view->view->RB_RESOLVE_SYSTEM_BUFFER_INFO);
++      tu_cs_emit(cs, gmem_transfer ?
++                        tu_gmem_transfer_swap_fixup(blt_view->view->RB_RESOLVE_SYSTEM_BUFFER_INFO,
++                                                    A6XX_RB_RESOLVE_SYSTEM_BUFFER_INFO_COLOR_SWAP__MASK,
++                                                    A6XX_RB_RESOLVE_SYSTEM_BUFFER_INFO_COLOR_SWAP(WZYX),
++                                                    blt_view->view->is_mutable) :
++                        blt_view->view->RB_RESOLVE_SYSTEM_BUFFER_INFO);
+       tu_cs_image_ref_2d<CHIP>(cs, blt_view->view, blt_view->layer, false);
+ 
+       tu_cs_emit_pkt4(cs, REG_A6XX_RB_RESOLVE_SYSTEM_FLAG_BUFFER_BASE, 3);
+@@ -2776,6 +2857,34 @@ copy_compressed(VkFormat format,
+       *height = DIV_ROUND_UP(*height, block_height);
+ }
+ 
++/* Telemetry for the copies that need a row-by-row path (tu_copy_row_stats). [0] buffer to image copies, [1] those split into one blit per row, [2] their
++ * rows, [3] image to buffer copies, [4] those split per row, [5] their rows, [6] rows of the largest split copy, [7] its pitch in bytes,
++ * [8] its width | height << 32, [9] its VkFormat. A copy is counted per layer. */
++static uint64_t tu_copy_row_counters[16];
++static void
++tu_note_copy_rows(unsigned kind, bool split, uint32_t rows, uint32_t pitch, uint32_t width, uint32_t height, uint32_t format)
++{
++   uint64_t *c = tu_copy_row_counters + kind * 3;
++   __atomic_fetch_add(&c[0], 1, __ATOMIC_RELAXED);
++   if (!split)
++      return;
++   __atomic_fetch_add(&c[1], 1, __ATOMIC_RELAXED);
++   __atomic_fetch_add(&c[2], rows, __ATOMIC_RELAXED);
++   if (rows > tu_copy_row_counters[6]) {
++      tu_copy_row_counters[6] = rows;
++      tu_copy_row_counters[7] = pitch;
++      tu_copy_row_counters[8] = (uint64_t)height << 32 | width;
++      tu_copy_row_counters[9] = format;
++   }
++}
++extern "C" __attribute__((visibility("default"))) void tu_copy_row_stats(uint64_t out[16]);
++extern "C" void
++tu_copy_row_stats(uint64_t out[16])
++{
++   for (unsigned i = 0; i < 16; i++)
++      out[i] = __atomic_load_n(&tu_copy_row_counters[i], __ATOMIC_RELAXED);
++}
++
+ template <chip CHIP>
+ static void
+ tu_copy_buffer_to_image(struct tu_cmd_buffer *cmd,
+@@ -2833,6 +2942,7 @@ tu_copy_buffer_to_image(struct tu_cmd_buffer *cmd,
+ 
+       uint64_t src_va = vk_buffer_address(&src_buffer->vk, info->bufferOffset) + layer_size * i;
+       bool unaligned = (src_va & 63) || (pitch & 63);
++      tu_note_copy_rows(0, !has_unaligned && unaligned, extent.height, pitch, extent.width, extent.height, dst_image->vk.format);
+       if (!has_unaligned && unaligned) {
+          for (uint32_t y = 0; y < extent.height; y++) {
+             uint32_t x = (src_va & 63) / block_size;
+@@ -3056,6 +3166,7 @@ tu_copy_image_to_buffer(struct tu_cmd_buffer *cmd,
+       ops->src(cmd, cs, &src, i, VK_FILTER_NEAREST, dst_format);
+ 
+       uint64_t dst_va = vk_buffer_address(&dst_buffer->vk, info->bufferOffset) + layer_size * i;
++      tu_note_copy_rows(1, (dst_va & 63) || (pitch & 63), extent.height, pitch, extent.width, extent.height, src_image->vk.format);
+       if ((dst_va & 63) || (pitch & 63)) {
+          for (uint32_t y = 0; y < extent.height; y++) {
+             uint32_t x = (dst_va & 63) / block_size;
+@@ -5515,7 +5626,7 @@ tu_emit_blit(struct tu_cmd_buffer *cmd,
+          tu6_emit_blit_scissor(cmd, cs, i, align_scissor);
+       }
+       event_blit_dst_view blt_view = blt_view_from_tu_view(iview, i);
+-      event_blit_run<CHIP>(cmd, cs, attachment, &blt_view, separate_stencil);
++      event_blit_run<CHIP>(cmd, cs, attachment, &blt_view, separate_stencil, true);
+    }
+ 
+    tu_flush_for_access(&cmd->state.cache, TU_ACCESS_BLIT_WRITE_GMEM,
+@@ -5598,6 +5709,24 @@ fdm_apply_load_coords(struct tu_cmd_buffer *cmd,
+    r3d_coords_raw(cmd, cs, coords);
+ }
+ 
++/* A linear attachment over memory imported from a host pointer (an IOSurface's pages) or laid out by its owner (an explicit DRM
++ * format modifier layout, whose pitch fdl6_layout aligns to 64 bytes alone) has no padding past its edges: its rows are as tight
++ * as their owner made them and its last row may end the memory. GMEM loads and stores by blit events move whole gmem_align_w x
++ * gmem_align_h blocks, so such an attachment whose size is not whole blocks is loaded and stored by draws and 2D blits over its
++ * texels alone, and still renders in GMEM.
++ */
++bool
++tu_attachment_unpadded(struct tu_cmd_buffer *cmd, const struct tu_image_view *iview)
++{
++   const struct fd_dev_info *info = cmd->device->physical_device->info;
++   return iview->image->layout[0].tile_mode == TILE6_LINEAR &&
++          (iview->image->vk.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT ||
++           (iview->image->vk.external_handle_types &
++            (VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT |
++             VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT))) &&
++          (iview->view.width % info->gmem_align_w || iview->view.height % info->gmem_align_h);
++}
++
+ template <chip CHIP>
+ static void
+ load_3d_blit(struct tu_cmd_buffer *cmd,
+@@ -5758,6 +5887,7 @@ tu_load_gmem_attachment(struct tu_cmd_buffer *cmd,
+ 
+    if (TU_DEBUG(3D_LOAD) ||
+        cmd->state.pass->has_fdm ||
++       tu_attachment_unpadded(cmd, iview) ||
+        /* Replicating unresolve seems to not work and the blob never uses it.
+         */
+        (a != gmem_a)) {
+@@ -5812,7 +5942,7 @@ store_cp_blit(struct tu_cmd_buffer *cmd,
+          r2d_dst_stencil(cs, dst_iview, layer);
+       }
+    } else {
+-      r2d_dst<CHIP>(cs, &dst_iview->view, layer, src_format);
++      r2d_dst_impl<CHIP>(cs, &dst_iview->view, layer, src_format, true);
+    }
+ 
+    /* Note: we compute the swap here instead of using the color_swap as
+@@ -5840,6 +5970,8 @@ store_cp_blit(struct tu_cmd_buffer *cmd,
+       src_height += tiling->tile0.height;
+    }
+ 
++   tu_note_gmem_side(cmd, dst_iview, 2, dst_iview->image->layout[0].tile_mode == TILE6_LINEAR, src_iview->view.is_mutable, fmt.swap);
++
+    uint64_t va = gmem_offset;
+    if (CHIP < A8XX) {
+       /* For gen8, address is simply gmem_offset if tile_mode is gmem
+@@ -5930,7 +6062,7 @@ store_3d_blit(struct tu_cmd_buffer *cmd,
+          r3d_dst_stencil<CHIP>(cs, dst_iview, layer);
+       }
+    } else {
+-      r3d_dst<CHIP>(cs, &dst_iview->view, layer, src_format);
++      r3d_dst_impl<CHIP>(cs, &dst_iview->view, layer, src_format, true);
+    }
+ 
+    r3d_src_gmem<CHIP>(cmd, cs, src_iview, src_format, dst_format, gmem_offset, cpp);
+@@ -5981,6 +6113,9 @@ tu_attachment_store_unaligned(struct tu_cmd_buffer *cmd, uint32_t a)
+    if (TU_DEBUG(UNALIGNED_STORE))
+       return true;
+ 
++   if (tu_attachment_unpadded(cmd, iview))
++      return true;
++
+    unsigned render_area_count =
+       cmd->state.per_layer_render_area ? cmd->state.pass->num_views : 1;
+ 
+diff --git a/src/freedreno/vulkan/tu_clear_blit.h b/src/freedreno/vulkan/tu_clear_blit.h
+index 1defb044bf9..ed20f18714c 100644
+--- a/src/freedreno/vulkan/tu_clear_blit.h
++++ b/src/freedreno/vulkan/tu_clear_blit.h
+@@ -100,6 +100,15 @@ tu_store_gmem_attachment(struct tu_cmd_buffer *cmd,
+ void
+ tu_choose_gmem_layout(struct tu_cmd_buffer *cmd);
+ 
++bool
++tu_attachment_unpadded(struct tu_cmd_buffer *cmd, const struct tu_image_view *iview);
++
++/* Telemetry of the tile-memory side of GMEM loads and stores (tu_gmem_side_stats): site 0 a 3D store's source, 1 a 3D load's source,
++ * 2 a 2D store's source, 3 an input attachment read from tile memory.
++ */
++void
++tu_note_gmem_side(struct tu_cmd_buffer *cmd, const struct tu_image_view *iview, unsigned site, bool linear, bool mutableen, unsigned swap);
++
+ void
+ tu_cmd_fill_buffer_addr(VkCommandBuffer commandBuffer,
+                         VkDeviceAddress dstAddr,
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
+index 60ad3a8ef90..b53f8b80160 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.cc
++++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
+@@ -1,3 +1,4 @@
++#include "tu_frame_diagnostic.h"
+ /*
+  * Copyright © 2016 Red Hat.
+  * Copyright © 2016 Bas Nieuwenhuizen
+@@ -27,6 +28,8 @@
+ #include "tu_subsampled_image.h"
+ #include "tu_tile_config.h"
+ #include "tu_tracepoints.h"
++#include "util/os_time.h"
++#include "util/simple_mtx.h"
+ 
+ enum tu_cmd_buffer_status {
+    TU_CMD_BUFFER_STATUS_IDLE = 0,
+@@ -1385,10 +1388,10 @@ use_sysmem_rendering(struct tu_cmd_buffer *cmd,
+                      tu_autotune::rp_ctx_t *rp_ctx,
+                      tu_autotune::rp_key_opt rp_key)
+ {
+-   if (TU_DEBUG(SYSMEM)) {
+-      cmd->state.rp.gmem_disable_reason = "TU_DEBUG(SYSMEM)";
+-      return true;
+-   }
++   /* TU_DEBUG(SYSMEM) still lets a pass with a transient attachment (below) render in GMEM: in system memory such a pass wrote and
++    * read every transient attachment in DRAM (a 3048x2032 pass with RGBA16F and R32F transients took 9-12 ms of GPU time) and
++    * backed it for good. */
++   const bool forced_sysmem = TU_DEBUG(SYSMEM);
+ 
+    /* can't fit attachments into gmem */
+    if (!cmd->state.tiling->possible) {
+@@ -1441,7 +1444,7 @@ use_sysmem_rendering(struct tu_cmd_buffer *cmd,
+       return true;
+    }
+ 
+-   if (TU_DEBUG(GMEM)) {
++   if (TU_DEBUG(GMEM) && !forced_sysmem) {
+       cmd->state.rp.gmem_disable_reason = "TU_DEBUG(GMEM)";
+       return false;
+    }
+@@ -1452,6 +1455,22 @@ use_sysmem_rendering(struct tu_cmd_buffer *cmd,
+       return true;
+    }
+ 
++   /* An attachment in lazily allocated memory that has none yet (a transient attachment, Metal's memoryless texture) keeps none in
++    * GMEM rendering, where it lives in tile memory alone, while SYSMEM rendering makes its memory for good
++    * (tu_allocate_transient_attachments). The autotuner's choice, SYSMEM by default for passes of few draws, is a matter of bandwidth,
++    * which does not weigh the memory: a 3048x2032 RGBA16F attachment is 48 MiB. */
++   for (unsigned i = 0; i < cmd->state.pass->attachment_count; i++) {
++      const struct tu_image_view *iview = cmd->state.attachments[i];
++      if (iview && !(iview->image->vk.create_flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) && iview->image->mem &&
++          iview->image->mem->lazy && !iview->image->mem->bo)
++         return false;
++   }
++
++   if (forced_sysmem) {
++      cmd->state.rp.gmem_disable_reason = "TU_DEBUG(SYSMEM)";
++      return true;
++   }
++
+    tu_autotune::render_mode optimal_mode =
+       cmd->device->autotune->get_optimal_mode(cmd, rp_ctx, rp_key);
+    bool use_sysmem = optimal_mode == tu_autotune::render_mode::SYSMEM;
+@@ -2888,6 +2907,8 @@ tu_emit_input_attachments(struct tu_cmd_buffer *cmd,
+ 
+       if (!iview->view.is_mutable)
+          tu_desc_set_swap<CHIP>(dst, WZYX);
++      tu_note_gmem_side(cmd, iview, 3, iview->image->layout[0].tile_mode == TILE6_LINEAR, false,
++                        iview->view.is_mutable ? iview->view.color_swap : WZYX);
+ 
+       /* If FDM offset is used, the last row and column extend beyond the
+        * framebuffer but are shifted over when storing. Expand the width and
+@@ -4039,6 +4060,228 @@ tu_cmd_render_sysmem(struct tu_cmd_buffer *cmd,
+    tu_trace_end_render_pass<CHIP>(cmd, false);
+ }
+ 
++/* How render passes were rendered, for the process's telemetry (tu_render_mode_stats): [0] GMEM passes, [1] their thousands of
++ * pixels, [2] SYSMEM passes the autotuner chose, [3] their thousands of pixels, [4] SYSMEM passes for any other reason, [5] their
++ * thousands of pixels, [6] GMEM passes with an attachment loaded or stored over its texels alone (tu_attachment_unpadded).
++ */
++static uint64_t tu_render_mode_counts[8];
++
++#ifdef __APPLE__
++/* The clock every trace of the stack uses (CLOCK_UPTIME_RAW: the kernel's mach_absolute_time and the frontend's nowUs()), so rows join by time. */
++static inline uint64_t tu_trace_clock_ns(void) {return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);}
++#else
++static inline uint64_t tu_trace_clock_ns(void) {return os_time_get_nano();}
++#endif
++
++/* The last 512 render passes (tu_pass_ring_read), for the process's telemetry: when, how it was rendered and what its first colour
++ * attachment is, so the passes of one frame and the byte order they write can be read back. gpu_begin/gpu_end: when the GPU began and
++ * ended the pass's commands (ns of the GPU's always-on counter; 0 until it ran it), from timestamps the pass writes around itself into
++ * a slot of the first device's pass timestamp buffer (u_trace's RB_DONE_TS write, as tu_trace_record_ts emits it).
++ */
++struct tu_pass_rec {
++   uint64_t ns;           /* os_time_get_nano() when the pass was recorded */
++   uint32_t seq;
++   uint16_t width, height;
++   uint8_t mode;          /* 0 GMEM, 1 SYSMEM chosen by the autotuner, 2 SYSMEM for another reason */
++   uint8_t colors;        /* colour attachments of the first subpass */
++   uint8_t flags;         /* 1 mutable view, 2 linear image, 4 unpadded (loaded and stored over its texels), 8 loaded, 16 stored, 32 FDM */
++   uint8_t swap;          /* the colour swap of the first colour attachment's view */
++   uint16_t draws;
++   uint16_t format;       /* VkFormat of the first colour attachment */
++   uint32_t kpx;
++   uint64_t gpu_begin, gpu_end;
++   uint16_t fs_instrs, fs_tex, fs_systall, fs_sstall;   /* the heaviest fragment shader of the pass: ir3 instructions, texture fetches (cat 5), estimated stall cycles on (sy) and (ss) */
++   int8_t fs_waves, fs_regs;                            /* its max waves per core and highest GPR */
++   uint8_t samples;                                     /* sample count of the first colour attachment */
++   uint8_t ds;                                          /* 1 depth/stencil attachment, 2 the pass has a resolve */
++   uint32_t bandwidth;                                  /* the draws' estimated bandwidth per sample (bytes), the autotuner's figure */
++   uint32_t verts;                                      /* vertices of the pass's non-indirect draws */
++   uint32_t fs_hash;                                    /* tu_hash32 of that fragment shader (the tail padding of the 72 bytes) */
++};
++static_assert(sizeof(struct tu_pass_rec) == 72, "pass record");
++static struct tu_pass_rec tu_pass_ring[512];
++
++/* The host's diagnostics switch (SHENG_DIAG, set by the plugin from sheng-diag=1): without it no pass is stamped or kept in the ring. */
++static bool
++tu_pass_trace_on(void)
++{
++   static int on = -1;
++   if (on < 0)
++      on = getenv("SHENG_DIAG") != NULL;
++   return on;
++}
++static uint32_t tu_pass_seq;
++static struct tu_device *tu_pass_ts_dev;
++static struct tu_bo *tu_pass_ts_bo;
++static simple_mtx_t tu_pass_ts_lock = SIMPLE_MTX_INITIALIZER;
++
++/* The GPU address of the pass timestamp slot of seq (two 64-bit words), its words cleared; 0 when cmd's device has no buffer (only
++ * the first device that records a pass gets one).
++ */
++static uint64_t
++tu_pass_ts_slot(struct tu_cmd_buffer *cmd, uint32_t seq)
++{
++   struct tu_device *dev = cmd->device;
++   if (!p_atomic_read(&tu_pass_ts_bo)) {
++      simple_mtx_lock(&tu_pass_ts_lock);
++      if (!tu_pass_ts_bo && !tu_pass_ts_dev) {
++         tu_pass_ts_dev = dev;
++         struct tu_bo *bo = NULL;
++         if (tu_bo_init_new(dev, NULL, &bo, 512 * 16, TU_BO_ALLOC_INTERNAL_RESOURCE, "pass timestamps") == VK_SUCCESS) {
++            if (tu_bo_map(dev, bo, NULL) == VK_SUCCESS) {
++               memset(bo->map, 0, 512 * 16);
++               p_atomic_set(&tu_pass_ts_bo, bo);
++            } else {
++               tu_bo_finish(dev, bo);
++            }
++         }
++      }
++      simple_mtx_unlock(&tu_pass_ts_lock);
++   }
++   struct tu_bo *bo = p_atomic_read(&tu_pass_ts_bo);
++   if (!bo || tu_pass_ts_dev != dev)
++      return 0;
++   uint64_t *words = (uint64_t *) bo->map + (seq % 512) * 2;
++   words[0] = words[1] = 0;
++   return bo->iova + (seq % 512) * 16;
++}
++
++template <chip CHIP>
++static void
++tu_pass_stamp(struct tu_cs *cs, uint64_t iova)
++{
++   if (CHIP == A6XX) {
++      tu_cs_emit_pkt7(cs, CP_EVENT_WRITE, 4);
++      tu_cs_emit(cs, CP_EVENT_WRITE_0_EVENT(RB_DONE_TS) | CP_EVENT_WRITE_0_TIMESTAMP);
++      tu_cs_emit_qw(cs, iova);
++      tu_cs_emit(cs, 0x00000000);
++   } else {
++      tu_cs_emit_pkt7(cs, CP_EVENT_WRITE7, 3);
++      tu_cs_emit(cs, CP_EVENT_WRITE7_0(.event = RB_DONE_TS, .write_src = EV_WRITE_ALWAYSON, .write_dst = EV_DST_RAM,
++                                       .write_enabled = true).value);
++      tu_cs_emit_qw(cs, iova);
++   }
++}
++
++static uint32_t
++tu_note_pass(struct tu_cmd_buffer *cmd, bool sysmem, unsigned slot, uint64_t kpx)
++{
++   struct tu_pass_rec rec = {};
++   const VkExtent2D extent = cmd->state.render_areas[0].extent;
++   rec.ns = tu_trace_clock_ns();
++   rec.width = extent.width;
++   rec.height = extent.height;
++   rec.mode = !sysmem ? 0 : slot == 2 ? 1 : 2;
++   rec.draws = MIN2(cmd->state.rp.drawcall_count, 0xffff);
++   rec.kpx = kpx;
++   rec.flags = cmd->state.pass->has_fdm ? 32 : 0;
++   const struct tu_subpass *subpass = &cmd->state.pass->subpasses[0];
++   rec.colors = subpass->color_count;
++   for (uint32_t i = 0; i < subpass->color_count; i++) {
++      const uint32_t a = subpass->color_attachments[i].attachment;
++      if (a == VK_ATTACHMENT_UNUSED || !cmd->state.attachments[a])
++         continue;
++      const struct tu_image_view *iview = cmd->state.attachments[a];
++      const struct tu_render_pass_attachment *att = &cmd->state.pass->attachments[a];
++      rec.format = (uint16_t) iview->vk.format;
++      rec.swap = iview->view.color_swap;
++      rec.flags |= (iview->view.is_mutable ? 1 : 0) | (iview->image->layout[0].tile_mode == TILE6_LINEAR ? 2 : 0) |
++                   (tu_attachment_unpadded(cmd, iview) ? 4 : 0) | (att->load ? 8 : 0) | (att->store ? 16 : 0);
++      break;
++   }
++   rec.fs_instrs = cmd->state.rp.fs_instrs;
++   rec.fs_tex = cmd->state.rp.fs_tex;
++   rec.fs_systall = cmd->state.rp.fs_systall;
++   rec.fs_sstall = cmd->state.rp.fs_sstall;
++   rec.fs_waves = cmd->state.rp.fs_waves;
++   rec.fs_regs = cmd->state.rp.fs_regs;
++   rec.verts = cmd->state.rp.verts;
++   rec.fs_hash = cmd->state.rp.fs_hash;
++   rec.bandwidth = cmd->state.rp.drawcall_bandwidth_per_sample_sum / MAX2(cmd->state.rp.drawcall_count, 1);
++   rec.ds = subpass->depth_stencil_attachment.attachment != VK_ATTACHMENT_UNUSED ? 1 : 0;
++   for (uint32_t i = 0; i < subpass->color_count; i++) {
++      const uint32_t a = subpass->color_attachments[i].attachment;
++      if (a != VK_ATTACHMENT_UNUSED) {
++         rec.samples = (uint8_t) cmd->state.pass->attachments[a].samples;
++         break;
++      }
++   }
++   const uint32_t seq = p_atomic_inc_return(&tu_pass_seq);
++   rec.seq = seq;
++   tu_pass_ring[seq % 512] = rec;
++   tu_frame_event(36,(uintptr_t)cmd,seq,rec.mode,rec.width,rec.height,rec.colors,rec.samples,rec.flags,rec.format,rec.swap,rec.draws,rec.ns);
++   for(uint32_t a=0;a<cmd->state.pass->attachment_count;++a)if(cmd->state.attachments[a]) {
++      const auto *iv=cmd->state.attachments[a];const auto *att=&cmd->state.pass->attachments[a];
++      tu_frame_event(44,(uintptr_t)cmd,seq,a,(uintptr_t)iv,(uintptr_t)iv->image,iv->vk.format,iv->view.color_swap,iv->view.is_mutable,iv->image->layout[0].tile_mode,att->load,att->store,att->samples);
++   }
++   return seq;
++}
++
++/* Copies up to max records with a sequence number of from or more (oldest first) and returns how many; *newest is the newest
++ * sequence number handed out.
++ */
++extern "C" __attribute__((visibility("default"))) uint32_t tu_pass_ring_read(uint32_t from, struct tu_pass_rec *out, uint32_t max,
++                                                                            uint32_t *newest);
++extern "C" __attribute__((visibility("default"))) uint32_t
++tu_pass_ring_read(uint32_t from, struct tu_pass_rec *out, uint32_t max, uint32_t *newest)
++{
++   const uint32_t last = p_atomic_read(&tu_pass_seq);
++   *newest = last;
++   uint32_t first = from ? from : 1;
++   if (first > last)
++      return 0;
++   if (last - first >= 512)
++      first = last - 511;
++   uint32_t n = 0;
++   for (uint32_t s = first; s <= last && n < max; s++) {
++      struct tu_pass_rec rec = tu_pass_ring[s % 512];
++      if (rec.seq != s)
++         continue;
++      struct tu_bo *bo = p_atomic_read(&tu_pass_ts_bo);
++      if (bo) {
++         const volatile uint64_t *words = (const volatile uint64_t *) bo->map + (s % 512) * 2;
++         const uint64_t begin = words[0], end = words[1];
++         if (begin && end) {
++            rec.gpu_begin = tu_device_ticks_to_ns(tu_pass_ts_dev, begin);
++            rec.gpu_end = tu_device_ticks_to_ns(tu_pass_ts_dev, end);
++         }
++      }
++      out[n++] = rec;
++   }
++   return n;
++}
++
++static uint32_t
++tu_note_render_mode(struct tu_cmd_buffer *cmd, bool sysmem)
++{
++   const VkExtent2D extent = cmd->state.render_areas[0].extent;
++   const uint64_t kpx = (uint64_t) extent.width * extent.height / 1000;
++   const char *reason = cmd->state.rp.gmem_disable_reason;
++   const unsigned slot =
++      !sysmem ? 0 : reason && !strcmp(reason, "Autotune selected sysmem") ? 2 : 4;
++   p_atomic_inc(&tu_render_mode_counts[slot]);
++   p_atomic_add(&tu_render_mode_counts[slot + 1], kpx);
++   const uint32_t seq = tu_note_pass(cmd, sysmem, slot, kpx);
++   if (sysmem)
++      return seq;
++   for (unsigned i = 0; i < cmd->state.pass->attachment_count; i++) {
++      const struct tu_image_view *iview = cmd->state.attachments[i];
++      if (iview && tu_attachment_unpadded(cmd, iview)) {
++         p_atomic_inc(&tu_render_mode_counts[6]);
++         break;
++      }
++   }
++   return seq;
++}
++
++extern "C" __attribute__((visibility("default"))) void tu_render_mode_stats(uint64_t out[8]);
++extern "C" __attribute__((visibility("default"))) void
++tu_render_mode_stats(uint64_t out[8])
++{
++   for (unsigned i = 0; i < 8; i++)
++      out[i] = p_atomic_read(&tu_render_mode_counts[i]);
++}
++
+ template <chip CHIP>
+ void
+ tu_cmd_render(struct tu_cmd_buffer *cmd_buffer,
+@@ -4050,10 +4293,17 @@ tu_cmd_render(struct tu_cmd_buffer *cmd_buffer,
+    tu_autotune::rp_key_opt rp_key = cmd_buffer->device->autotune->emit_preempt_latency_tracking_rp_hash(cmd_buffer);
+ 
+    tu_autotune::rp_ctx_t rp_ctx = NULL;
+-   if (use_sysmem_rendering(cmd_buffer, &rp_ctx, rp_key))
++   const bool sysmem = use_sysmem_rendering(cmd_buffer, &rp_ctx, rp_key);
++   const uint32_t seq = tu_pass_trace_on() ? tu_note_render_mode(cmd_buffer, sysmem) : 0;
++   const uint64_t stamps = seq ? tu_pass_ts_slot(cmd_buffer, seq) : 0;
++   if (stamps)
++      tu_pass_stamp<CHIP>(&cmd_buffer->cs, stamps);
++   if (sysmem)
+       tu_cmd_render_sysmem<CHIP>(cmd_buffer, rp_ctx);
+    else
+       tu_cmd_render_tiles<CHIP>(cmd_buffer, rp_ctx, fdm_offsets);
++   if (stamps)
++      tu_pass_stamp<CHIP>(&cmd_buffer->cs, stamps + 8);
+ }
+ 
+ static void tu_reset_render_pass(struct tu_cmd_buffer *cmd_buffer)
+@@ -4342,6 +4592,7 @@ VkResult
+ tu_cmd_buffer_begin(struct tu_cmd_buffer *cmd_buffer,
+                     const VkCommandBufferBeginInfo *pBeginInfo)
+ {
++   tu_frame_event(50,(uintptr_t)cmd_buffer);
+    vk_command_buffer_begin(&cmd_buffer->vk, pBeginInfo);
+ 
+    memset(&cmd_buffer->state, 0, sizeof(cmd_buffer->state));
+@@ -6171,6 +6422,16 @@ tu_render_pass_state_merge(struct tu_render_pass_state *dst,
+    }
+ 
+    dst->drawcall_count += src->drawcall_count;
++   if (src->fs_instrs >= dst->fs_instrs) {
++      dst->fs_instrs = src->fs_instrs;
++      dst->fs_tex = src->fs_tex;
++      dst->fs_systall = src->fs_systall;
++      dst->fs_sstall = src->fs_sstall;
++      dst->fs_waves = src->fs_waves;
++      dst->fs_regs = src->fs_regs;
++      dst->fs_hash = src->fs_hash;
++   }
++   dst->verts += src->verts;
+ }
+ 
+ void
+@@ -8339,6 +8600,21 @@ tu6_draw_common(struct tu_cmd_buffer *cmd,
+    /* Fill draw stats for autotuner */
+    rp->drawcall_count++;
+ 
++   if (tu_pass_trace_on()) {
++      const struct tu_shader *fs = cmd->state.shaders[MESA_SHADER_FRAGMENT];
++      if (fs && fs->variant && fs->variant->info.instrs_count >= rp->fs_instrs) {
++         const struct ir3_info *info = &fs->variant->info;
++         rp->fs_instrs = info->instrs_count;
++         rp->fs_tex = info->instrs_per_cat[5];
++         rp->fs_systall = info->systall;
++         rp->fs_sstall = info->sstall;
++         rp->fs_waves = info->max_waves;
++         rp->fs_regs = info->max_reg;
++         rp->fs_hash = tu_hash32(fs->variant->blake3_str);
++      }
++      rp->verts += draw_count;
++   }
++
+    rp->drawcall_bandwidth_per_sample_sum +=
+       cmd->state.bandwidth.color_bandwidth_per_sample;
+ 
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.h b/src/freedreno/vulkan/tu_cmd_buffer.h
+index 17bebebd135..71d474568b5 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.h
++++ b/src/freedreno/vulkan/tu_cmd_buffer.h
+@@ -328,6 +328,13 @@ struct tu_render_pass_state
+ 
+    uint32_t drawcall_count;
+ 
++   /* The pass's heaviest fragment shader (by ir3 instruction count) and the vertices of its non-indirect draws: what the host's pass record
++    * (tu_pass_rec) says about why a pass took long. Counted only with SHENG_DIAG set. */
++   uint16_t fs_instrs, fs_tex, fs_systall, fs_sstall;
++   int8_t fs_waves, fs_regs;
++   uint32_t fs_hash;   /* its tu_hash32 */
++   uint32_t verts;
++
+    /* A calculated "draw cost" value for renderpass, which tries to
+     * estimate the bandwidth-per-sample of all the draws according
+     * to:
+diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
+index 82efb07af90..527a4d4380d 100644
+--- a/src/freedreno/vulkan/tu_device.cc
++++ b/src/freedreno/vulkan/tu_device.cc
+@@ -34,6 +34,7 @@
+ #include "fdl/freedreno_layout.h"
+ #include "tu_acceleration_structure.h"
+ #include "tu_clear_blit.h"
++#include "tu_builtin_cache.h"
+ #include "tu_cmd_buffer.h"
+ #include "tu_cs.h"
+ #include "tu_descriptor_set.h"
+@@ -327,6 +328,7 @@ get_device_extensions(const struct tu_physical_device *device,
+       .EXT_extended_dynamic_state2 = true,
+       .EXT_extended_dynamic_state3 = true,
+       .EXT_external_memory_dma_buf = true,
++      .EXT_external_memory_host = device->has_host_import,
+       .EXT_filter_cubic = device->info->props.has_tex_filter_cubic,
+       .EXT_fragment_density_map = true,
+       .EXT_fragment_density_map_offset = true,
+@@ -1163,6 +1165,8 @@ tu_get_properties(struct tu_physical_device *pdevice,
+          : pdevice->info->props.max_storage_buffer_range_bytes;
+    props->maxPushConstantsSize = MAX_PUSH_CONSTANTS_SIZE;
+    props->maxMemoryAllocationCount = UINT32_MAX;
++   /* VK_EXT_external_memory_host: the kernel pins whole 4 KiB pages. */
++   props->minImportedHostPointerAlignment = 4096;
+    props->maxSamplerAllocationCount = 64 * 1024;
+    props->bufferImageGranularity = 64;          /* A cache line */
+    props->sparseAddressSpaceSize = pdevice->va_size;
+@@ -3046,6 +3050,11 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
+ 
+    global = (struct tu6_global *)device->global_bo->map;
+    device->global_bo_map = global;
++#ifdef TU_HAS_DARWIN
++   result = tu_builtin_pack_load(device);
++   if (result != VK_SUCCESS)
++      goto fail_null_accel_struct;
++#endif
+    tu_init_clear_blit_shaders(device);
+ 
+    if (device->vk.enabled_features.accelerationStructure &&
+@@ -3161,6 +3170,9 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
+                                  "pthread condattr init");
+       goto fail_timeline_cond;
+    }
++#ifndef __APPLE__
++   /* Darwin has no pthread_condattr_setclock: its condition variables always use the realtime clock, and the darwin
++    * backend converts monotonic deadlines itself. */
+    if (pthread_condattr_setclock(&condattr, CLOCK_MONOTONIC) != 0) {
+       pthread_condattr_destroy(&condattr);
+       result = vk_startup_errorf(physical_device->instance,
+@@ -3168,6 +3180,7 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
+                                  "pthread condattr clock setup");
+       goto fail_timeline_cond;
+    }
++#endif
+    if (pthread_cond_init(&device->timeline_cond, &condattr) != 0) {
+       pthread_condattr_destroy(&condattr);
+       result = vk_startup_errorf(physical_device->instance,
+@@ -3485,6 +3498,17 @@ vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName)
+    return tu_GetInstanceProcAddr(instance, pName);
+ }
+ 
++#ifdef __APPLE__
++/* iPadOS has no Khronos loader: a consumer that opens a loader by path (the metal2vulkan runtime behind the native Metal device) opens this
++ * library and looks up the loader's name. Turnip is the only driver there, so the loader's entry is the driver's own. */
++PUBLIC
++VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
++vkGetInstanceProcAddr(VkInstance instance, const char *pName)
++{
++   return tu_GetInstanceProcAddr(instance, pName);
++}
++#endif
++
+ static VkResult
+ tu_add_to_heap(struct tu_device *dev, struct tu_bo *bo)
+ {
+@@ -3684,7 +3708,18 @@ tu_AllocateMemory(VkDevice _device,
+    const VkImportMemoryFdInfoKHR *fd_info =
+       vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_FD_INFO_KHR);
+ 
+-   if (fd_info && fd_info->handleType) {
++   const VkImportMemoryHostPointerInfoEXT *host_info =
++      vk_find_struct_const(pAllocateInfo->pNext, IMPORT_MEMORY_HOST_POINTER_INFO_EXT);
++
++   if (host_info && host_info->handleType) {
++      if (host_info->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT ||
++          ((uintptr_t) host_info->pHostPointer | pAllocateInfo->allocationSize) & 4095) {
++         result = VK_ERROR_INVALID_EXTERNAL_HANDLE;
++      } else {
++         result = tu_bo_init_host(device, &mem->bo, host_info->pHostPointer,
++                                  pAllocateInfo->allocationSize);
++      }
++   } else if (fd_info && fd_info->handleType) {
+       assert(fd_info->handleType ==
+                 VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT ||
+              fd_info->handleType ==
+@@ -3808,6 +3843,22 @@ tu_AllocateMemory(VkDevice _device,
+    return VK_SUCCESS;
+ }
+ 
++VKAPI_ATTR VkResult VKAPI_CALL
++tu_GetMemoryHostPointerPropertiesEXT(VkDevice _device,
++                                     VkExternalMemoryHandleTypeFlagBits handleType,
++                                     const void *pHostPointer,
++                                     VkMemoryHostPointerPropertiesEXT *pMemoryHostPointerProperties)
++{
++   VK_FROM_HANDLE(tu_device, device, _device);
++   if (handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT ||
++       !device->physical_device->has_host_import || ((uintptr_t) pHostPointer & 4095))
++      return vk_error(device, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++   /* Imported pages keep the owner's CPU mapping; they are offered as the plain (host-coherent) type. On Darwin the importer cleans
++    * and invalidates its own CPU caches around GPU use (NativeAdrenoAbiBoImport), as an IOSurface's owner does. */
++   pMemoryHostPointerProperties->memoryTypeBits = 1u;
++   return VK_SUCCESS;
++}
++
+ VkResult
+ tu_allocate_lazy_memory(struct tu_device *dev,
+                         struct tu_device_memory *mem)
+diff --git a/src/freedreno/vulkan/tu_device.h b/src/freedreno/vulkan/tu_device.h
+index d32a7d80f6d..356ab865d45 100644
+--- a/src/freedreno/vulkan/tu_device.h
++++ b/src/freedreno/vulkan/tu_device.h
+@@ -136,6 +136,8 @@ struct tu_physical_device
+    uint64_t va_size;
+ 
+    bool has_cached_coherent_memory;
++   /* The kernel pins host pages as BOs (VK_EXT_external_memory_host). */
++   bool has_host_import;
+    bool has_cached_non_coherent_memory;
+    /* Index for device local, host-coherent, host-cached memory.
+     * Only set to positive index when overwriting device-local, uncached memory
+@@ -300,6 +302,7 @@ struct tu_device
+ {
+    struct vk_device vk;
+    struct tu_instance *instance;
++   void *darwin_retire; /* Darwin KMD's bounded deferred BO retirement state. */
+ 
+    struct tu_queue *queues[TU_MAX_QUEUE_FAMILIES];
+    int queue_count[TU_MAX_QUEUE_FAMILIES];
+@@ -309,6 +312,8 @@ struct tu_device
+    int fd;
+ 
+    struct ir3_compiler *compiler;
++   void *builtin_cache_owner;
++   struct ir3_shader_variant *builtin_variants[GLOBAL_SH_COUNT + 2];
+ 
+    /* Backup in-memory cache to be used if the app doesn't provide one */
+    struct vk_pipeline_cache *mem_cache;
+diff --git a/src/freedreno/vulkan/tu_image.cc b/src/freedreno/vulkan/tu_image.cc
+index fa2ca902903..8b0aef1e680 100644
+--- a/src/freedreno/vulkan/tu_image.cc
++++ b/src/freedreno/vulkan/tu_image.cc
+@@ -1169,8 +1169,14 @@ tu_get_image_memory_requirements(struct tu_device *dev, struct tu_image *image,
+       case VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS: {
+          VkMemoryDedicatedRequirements *req =
+             (VkMemoryDedicatedRequirements *) ext;
++         /* Host pointer imports carry no per-image metadata, so an image
++          * over one may be bound at any offset of a shared import.
++          */
++         const VkExternalMemoryHandleTypeFlags host_types =
++            VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT |
++            VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT;
+          req->requiresDedicatedAllocation =
+-            image->vk.external_handle_types != 0;
++            (image->vk.external_handle_types & ~host_types) != 0;
+          req->prefersDedicatedAllocation = req->requiresDedicatedAllocation;
+          break;
+       }
+diff --git a/src/freedreno/vulkan/tu_knl.cc b/src/freedreno/vulkan/tu_knl.cc
+index ab27798c0f6..9c545c6ef9f 100644
+--- a/src/freedreno/vulkan/tu_knl.cc
++++ b/src/freedreno/vulkan/tu_knl.cc
+@@ -85,6 +85,19 @@ tu_bo_init_new_explicit_iova(struct tu_device *dev,
+    return VK_SUCCESS;
+ }
+ 
++VkResult
++tu_bo_init_host(struct tu_device *dev, struct tu_bo **bo, void *pointer, uint64_t size)
++{
++   if (!dev->instance->knl->bo_init_host)
++      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++   VkResult result = dev->instance->knl->bo_init_host(dev, bo, pointer, size);
++   if (result != VK_SUCCESS)
++      return result;
++   if (!(*bo)->unique_id)
++      (*bo)->unique_id = (*bo)->gem_handle;
++   return VK_SUCCESS;
++}
++
+ VkResult
+ tu_bo_init_dmabuf(struct tu_device *dev,
+                   struct tu_bo **bo,
+@@ -362,6 +375,14 @@ tu_enumerate_devices(struct vk_instance *vk_instance)
+       mesa_logi("Found compatible device '%s'.", path);
+ 
+    return result;
++#elif defined(TU_HAS_DARWIN)
++   struct tu_instance *instance =
++      container_of(vk_instance, struct tu_instance, vk);
++
++   VkResult result = tu_knl_darwin_load(instance);
++   if (result == VK_SUCCESS && TU_DEBUG(STARTUP))
++      mesa_logi("Found the NativeAdreno kernel client.");
++   return result;
+ #else
+    return VK_ERROR_INCOMPATIBLE_DRIVER;
+ #endif
+diff --git a/src/freedreno/vulkan/tu_knl.h b/src/freedreno/vulkan/tu_knl.h
+index 4c2bf6a41a7..7260521d654 100644
+--- a/src/freedreno/vulkan/tu_knl.h
++++ b/src/freedreno/vulkan/tu_knl.h
+@@ -58,6 +58,16 @@ struct tu_bo {
+    int shared_fd;
+ #endif
+ 
++#ifdef TU_HAS_DARWIN
++   /* The NativeAdreno kernel client's buffer handle (64 bit, gem_handle is its low half) and the token that selects its
++    * CPU mapping (IOConnectMapMemory64 memory type). */
++   uint64_t darwin_handle;
++   uint32_t darwin_token;
++   /* Size of the allocation behind a cacheable BO (its size class; 0: never cached) and its GPU permissions class. */
++   uint64_t darwin_alloc_size;
++   bool darwin_read_only;
++#endif
++
+    bool implicit_sync : 1;
+    bool never_unmap : 1;
+    bool cached_non_coherent : 1;
+@@ -140,6 +150,9 @@ struct tu_knl {
+                        const char *name);
+    VkResult (*bo_init_dmabuf)(struct tu_device *dev, struct tu_bo **out_bo,
+                               uint64_t size, enum tu_bo_alloc_flags flags, int prime_fd);
++   /* Optional (VK_EXT_external_memory_host): a BO over the caller's own pages at pointer. */
++   VkResult (*bo_init_host)(struct tu_device *dev, struct tu_bo **out_bo,
++                            void *pointer, uint64_t size);
+    int (*bo_export_dmabuf)(struct tu_device *dev, struct tu_bo *bo);
+    VkResult (*bo_alloc_lazy)(struct tu_device *dev, struct tu_bo *bo);
+    VkResult (*bo_map)(struct tu_device *dev, struct tu_bo *bo, void *placed_addr);
+@@ -221,6 +234,9 @@ tu_bo_init_dmabuf(struct tu_device *dev,
+ int
+ tu_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo);
+ 
++VkResult
++tu_bo_init_host(struct tu_device *dev, struct tu_bo **bo, void *pointer, uint64_t size);
++
+ void
+ tu_bo_finish(struct tu_device *dev, struct tu_bo *bo);
+ 
+@@ -262,6 +278,7 @@ void tu_sparse_vma_finish(struct tu_device *device,
+                           struct tu_sparse_vma *vma);
+ 
+ VkResult tu_knl_kgsl_load(struct tu_instance *instance, int fd);
++VkResult tu_knl_darwin_load(struct tu_instance *instance);
+ 
+ struct _drmVersion;
+ VkResult tu_knl_drm_msm_load(struct tu_instance *instance,
+diff --git a/src/freedreno/vulkan/tu_pipeline.cc b/src/freedreno/vulkan/tu_pipeline.cc
+index dba43f9a9c9..057e9fe3297 100644
+--- a/src/freedreno/vulkan/tu_pipeline.cc
++++ b/src/freedreno/vulkan/tu_pipeline.cc
+@@ -32,6 +32,18 @@
+ #include "tu_pass.h"
+ #include "tu_rmv.h"
+ 
++/* The vertex and fragment shader hashes (tu_hash32) of the last program a pipeline creation built on this thread, read and cleared by the
++ * host frontend right after it asks for a pipeline (tu_darwin_last_program): the pipeline log names a pass's shader by them. */
++static __thread uint32_t tu_last_program_hash[2];
++extern "C" __attribute__((visibility("default"))) void tu_darwin_last_program(uint32_t *vs, uint32_t *fs);
++extern "C" __attribute__((visibility("default"))) void
++tu_darwin_last_program(uint32_t *vs, uint32_t *fs)
++{
++   *vs = tu_last_program_hash[0];
++   *fs = tu_last_program_hash[1];
++   tu_last_program_hash[0] = tu_last_program_hash[1] = 0;
++}
++
+ /* Emit IB that preloads the descriptors that the shader uses */
+ 
+ static void
+@@ -1958,7 +1970,10 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
+ 
+    if (!executable_info) {
+       cache_hit = true;
+-      bool application_cache_hit = false;
++      /* Every required shader (and retained NIR, when requested) must come
++       * from the application's cache. Starting false makes this AND reduction
++       * report a miss even when compile-forbidden creation succeeds. */
++      bool application_cache_hit = true;
+ 
+       unsigned char shader_blake3[BLAKE3_KEY_LEN + 1];
+       memcpy(shader_blake3, pipeline_blake3, sizeof(pipeline_blake3));
+@@ -1997,7 +2012,8 @@ tu_pipeline_builder_compile_shaders(struct tu_pipeline_builder *builder,
+          cache_hit &= !!nir_shaders;
+       }
+ 
+-      if (application_cache_hit && builder->cache != builder->device->mem_cache) {
++      if (cache_hit && application_cache_hit &&
++          builder->cache != builder->device->mem_cache) {
+          pipeline_feedback.flags |=
+             VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT;
+       }
+@@ -2343,6 +2359,10 @@ tu_emit_program_state(struct tu_cs *sub_cs,
+          if (variants[stage]) {
+             memcpy(prog->stage_blake3[stage], variants[stage]->blake3_str,
+                    sizeof(variants[stage]->blake3_str));
++            if (stage == MESA_SHADER_VERTEX)
++               tu_last_program_hash[0] = tu_hash32(variants[stage]->blake3_str);
++            else if (stage == MESA_SHADER_FRAGMENT)
++               tu_last_program_hash[1] = tu_hash32(variants[stage]->blake3_str);
+          }
+       }
+    }
+@@ -2854,13 +2874,16 @@ template <chip CHIP>
+ static unsigned
+ tu6_scissor_size(struct tu_device *dev, const struct vk_viewport_state *vp)
+ {
+-   return 1 + vp->scissor_count * 2;
++   /* A pipeline without viewport state (rasterizer discard) has no scissors: a type-4 packet of zero registers is invalid. */
++   return vp->scissor_count ? 1 + vp->scissor_count * 2 : 0;
+ }
+ 
+ template <chip CHIP>
+ void
+ tu6_emit_scissor(struct tu_cs *cs, const struct vk_viewport_state *vp)
+ {
++   if (!vp->scissor_count)
++      return;
+    tu_cs_emit_pkt4(cs, GRAS_SC_SCREEN_SCISSOR_TL(CHIP, 0).reg, vp->scissor_count * 2);
+ 
+    for (uint32_t i = 0; i < vp->scissor_count; i++) {
+diff --git a/src/freedreno/vulkan/tu_pipeline.h b/src/freedreno/vulkan/tu_pipeline.h
+index 791a4fcb490..59b358dc0a1 100644
+--- a/src/freedreno/vulkan/tu_pipeline.h
++++ b/src/freedreno/vulkan/tu_pipeline.h
+@@ -17,6 +17,19 @@
+ #include "tu_shader.h"
+ #include "tu_suballoc.h"
+ 
++/* The first 32 bits of a shader's hex blake3 (ir3_shader_variant::blake3_str; 0 when it has none): the name a shader goes by in the host's
++ * logs (pass records and the pipeline log), so a slow pass is joined to the pipeline that made its fragment shader. */
++static inline uint32_t
++tu_hash32(const char *hex)
++{
++   uint32_t value = 0;
++   for (unsigned i = 0; i < 8 && hex[i]; i++) {
++      const char c = hex[i];
++      value = value << 4 | (uint32_t) (c >= 'a' ? c - 'a' + 10 : c >= 'A' ? c - 'A' + 10 : c - '0');
++   }
++   return value;
++}
++
+ enum tu_dynamic_state
+ {
+    TU_DYNAMIC_STATE_VIEWPORT,
+diff --git a/src/freedreno/vulkan/tu_queue.cc b/src/freedreno/vulkan/tu_queue.cc
+index e06cd57915e..dcf493afd18 100644
+--- a/src/freedreno/vulkan/tu_queue.cc
++++ b/src/freedreno/vulkan/tu_queue.cc
+@@ -1,3 +1,4 @@
++#include "tu_frame_diagnostic.h"
+ /*
+  * Copyright © 2016 Red Hat.
+  * Copyright © 2016 Bas Nieuwenhuizen
+@@ -476,6 +477,7 @@ queue_submit(struct vk_queue *_queue, struct vk_queue_submit *vk_submit)
+ 
+    for (uint32_t i = 0; i < cmdbuf_count; i++) {
+       struct tu_cmd_buffer *cmd_buffer = cmd_buffers[i];
++      tu_frame_event(42,(uintptr_t)submit,(uintptr_t)cmd_buffer,i,cmdbuf_count);
+       struct tu_cs *cs = &cmd_buffer->cs;
+ 
+       if (perf_pass_index != ~0) {
+diff --git a/src/freedreno/vulkan/tu_shader.cc b/src/freedreno/vulkan/tu_shader.cc
+index 8c228e9ff66..d99d55c4020 100644
+--- a/src/freedreno/vulkan/tu_shader.cc
++++ b/src/freedreno/vulkan/tu_shader.cc
+@@ -3858,10 +3858,21 @@ tu_empty_fs_create(struct tu_device *dev, struct tu_shader **shader,
+    for (unsigned i = 0; i < MAX_SETS; i++)
+       (*shader)->dynamic_descriptor_sizes[i] = -1;
+ 
+-   struct ir3_shader *ir3_shader =
+-      ir3_shader_from_nir(dev->compiler, fs_b.shader, &options);
+-   (*shader)->variant = ir3_shader_create_variant(ir3_shader, &key, false);
+-   ir3_shader_destroy(ir3_shader);
++   struct ir3_shader_variant *cached =
++      dev->builtin_variants[GLOBAL_SH_COUNT + fragment_density_map];
++   if (cached) {
++      /* The shader object owns its variant independently of the global
++       * builtin context: normal shader destruction remains unchanged. */
++      ralloc_steal(NULL, cached);
++      (*shader)->variant = cached;
++      dev->builtin_variants[GLOBAL_SH_COUNT + fragment_density_map] = NULL;
++      ralloc_free(fs_b.shader);
++   } else {
++      struct ir3_shader *ir3_shader =
++         ir3_shader_from_nir(dev->compiler, fs_b.shader, &options);
++      (*shader)->variant = ir3_shader_create_variant(ir3_shader, &key, false);
++      ir3_shader_destroy(ir3_shader);
++   }
+ 
+    return tu_upload_shader(dev, *shader);
+ }
+diff --git a/src/util/cache_ops_aarch64.c b/src/util/cache_ops_aarch64.c
+index d56ab8a9ece..2ab772b4dcd 100644
+--- a/src/util/cache_ops_aarch64.c
++++ b/src/util/cache_ops_aarch64.c
+@@ -29,9 +29,16 @@
+ static uint32_t
+ get_ctr_el0(void)
+ {
++#if defined(__APPLE__)
++   /* Darwin does not let EL0 read CTR_EL0 (the instruction raises SIGILL, which would take down whichever system process hosts the
++    * driver). The Adreno 740 hosts are Cortex cores with 64-byte data cache lines: CWG = DminLine = 4 (16 words). A line size that is
++    * too small only costs extra cache maintenance operations; one that is too large would skip lines. */
++   return (4u << 24) | (4u << 16);
++#else
+    uint32_t ctr_el0;
+    __asm("mrs\t%x0, ctr_el0" : "=r"(ctr_el0));
+    return ctr_el0;
++#endif
+ }
+ 
+ static uint32_t
+diff --git a/src/vulkan/wsi/wsi_common_metal_layer.m b/src/vulkan/wsi/wsi_common_metal_layer.m
+index 67c3e7ff1cb..9fbb042629c 100644
+--- a/src/vulkan/wsi/wsi_common_metal_layer.m
++++ b/src/vulkan/wsi/wsi_common_metal_layer.m
+@@ -4,6 +4,7 @@
+  * SPDX-License-Identifier: MIT
+  */
+ 
++#include <TargetConditionals.h>
+ #include "wsi_common_metal_layer.h"
+ 
+ #import <QuartzCore/CAMetalLayer.h>
+@@ -137,7 +138,9 @@ void
+ wsi_metal_layer_set_immediate(const CAMetalLayer *metal_layer,
+                               bool enable_immediate)
+ {
++#if TARGET_OS_OSX
+    metal_layer.displaySyncEnabled = !enable_immediate;
++#endif /* iOS layers are always display synchronised */
+ }
+ 
+ VkResult
+@@ -169,7 +172,9 @@ wsi_metal_layer_configure(const CAMetalLayer *metal_layer,
+       metal_layer.maximumDrawableCount = image_count;
+       metal_layer.drawableSize = (CGSize){.width = width, .height = height};
+       metal_layer.opaque = enable_opaque;
++#if TARGET_OS_OSX
+       metal_layer.displaySyncEnabled = !enable_immediate;
++#endif
+       metal_layer.pixelFormat = metal_format;
+ 
+       metal_layer.colorspace = cg_color_space;
+diff --git a/src/freedreno/vulkan/tu_builtin_cache.cc b/src/freedreno/vulkan/tu_builtin_cache.cc
+new file mode 100644
+--- /dev/null
++++ b/src/freedreno/vulkan/tu_builtin_cache.cc
+@@ -0,0 +1,259 @@
++/* SPDX-License-Identifier: MIT */
++/* Driver-owned, build-time embedded builtin variants. This is not a general
++ * untrusted shader import API. Pack generation must use this exact compiler
++ * source/profile and GPU, and the final driver must carry the normal owner
++ * signature. No disk I/O, cache thread, fake completion or shader execution. */
++#include "tu_builtin_cache.h"
++#include "tu_device.h"
++#include "tu_shader.h"
++#include "tu_cs.h"
++#include "ir3/ir3_compiler.h"
++#include "ir3/ir3_shader.h"
++#include "util/blob.h"
++#include "util/mesa-blake3.h"
++
++#ifdef TU_BUILTIN_PACK_HEADER
++#include TU_BUILTIN_PACK_HEADER
++#endif
++
++static constexpr unsigned variant_count = GLOBAL_SH_COUNT + 2;
++static constexpr size_t max_pack_size = 4 * 1024 * 1024;
++static constexpr size_t max_variant_size = 256 * 1024;
++
++static void
++identity(struct tu_device *dev, struct blob *out)
++{
++   blob_write_bytes(out, "TUBUILT1", 8);
++   blob_write_uint32(out, 1);
++   blob_write_uint32(out, variant_count);
++   blob_write_bytes(out, TU_BUILTIN_SOURCE_ID, strlen(TU_BUILTIN_SOURCE_ID));
++   blob_write_uint32(out, dev->physical_device->dev_id.gpu_id);
++   blob_write_uint64(out, dev->physical_device->dev_id.chip_id);
++   blob_write_uint64(out, ir3_shader_debug_hash_key());
++   blob_write_uint32(out, sizeof(struct ir3_shader_variant));
++   blob_write_uint32(out, VARIANT_CACHE_SIZE);
++   blob_write_uint32(out, sizeof(struct ir3_const_state));
++   blob_write_uint32(out, sizeof(struct ir3_shader_key));
++   const struct ir3_compiler_options *o = &dev->compiler->options;
++   uint32_t flags = o->push_ubo_with_preamble | (o->disable_cache << 1) |
++      (o->storage_16bit << 2) | (o->storage_8bit << 3) |
++      (o->lower_base_vertex << 4) | (o->shared_push_consts << 5) |
++      (o->dual_color_blend_by_location << 6);
++   blob_write_uint32(out, flags);
++   blob_write_uint32(out, o->bindless_fb_read_descriptor);
++   blob_write_uint32(out, o->bindless_fb_read_slot);
++   blob_write_uint64(out, o->uche_trap_base);
++}
++
++static bool
++available(const struct blob_reader *in, size_t bytes)
++{
++   return !in->overrun && bytes <= (size_t)(in->end - in->current);
++}
++
++/* Read only after bounding the record and every allocation. Unlike the
++ * general IR3 disk-cache reader, failure is checked before dereferencing an
++ * allocation, and no allocation size is taken from an unchecked short blob. */
++static struct ir3_shader_variant *
++read_variant(struct blob_reader *in, struct ir3_compiler *compiler, void *owner)
++{
++   if (!available(in, sizeof(struct ir3_shader_key) + 8))
++      return NULL;
++   struct ir3_shader_key key;
++   blob_copy_bytes(in, &key, sizeof(key));
++   const struct ir3_shader_key zero_key = {};
++   if (memcmp(&key, &zero_key, sizeof(key)))
++      return NULL;
++   const uint32_t stage = blob_read_uint32(in);
++   const uint32_t mergedregs = blob_read_uint32(in);
++   if ((stage != MESA_SHADER_VERTEX && stage != MESA_SHADER_FRAGMENT) || mergedregs > 1)
++      return NULL;
++   struct ir3_shader_variant *v = rzalloc(owner, struct ir3_shader_variant);
++   if (!v)
++      return NULL;
++   v->compiler = compiler;
++   v->key = key;
++   v->type = (mesa_shader_stage) stage;
++   v->mergedregs = mergedregs;
++   v->const_state = rzalloc(v, struct ir3_const_state);
++   if (!v->const_state)
++      return NULL;
++   unsigned count = stage == MESA_SHADER_VERTEX && ir3_has_binning_vs(&key) ? 2 : 1;
++   for (unsigned i = 0; i < count; ++i) {
++      struct ir3_shader_variant *part = v;
++      if (i) {
++         part = rzalloc(v, struct ir3_shader_variant);
++         if (!part)
++            return NULL;
++         v->binning = part;
++         part->compiler = compiler;
++         part->key = key;
++         part->type = MESA_SHADER_VERTEX;
++         part->mergedregs = mergedregs;
++         part->binning_pass = true;
++         part->nonbinning = v;
++         part->const_state = v->const_state;
++      }
++      if (!available(in, VARIANT_CACHE_SIZE))
++         return NULL;
++      blob_copy_bytes(in, VARIANT_CACHE_PTR(part), VARIANT_CACHE_SIZE);
++      const size_t size = part->info.size;
++      if (!size || size > max_variant_size || size % 4 ||
++          part->info.sizedwords * sizeof(uint32_t) > size ||
++          part->info.constant_data_offset > size || !available(in, size))
++         return NULL;
++      part->bin = (uint32_t *) ralloc_size(part, size);
++      if (!part->bin)
++         return NULL;
++      blob_copy_bytes(in, part->bin, size);
++      if (!i) {
++         if (!available(in, sizeof(*part->const_state)))
++            return NULL;
++         blob_copy_bytes(in, part->const_state, sizeof(*part->const_state));
++      }
++      if (!compiler->info->props.load_shader_consts_via_preamble) {
++         if (!available(in, 4))
++            return NULL;
++         unsigned n = blob_read_uint32(in);
++         if (n > max_variant_size / 4 || !available(in, (size_t)n * 4))
++            return NULL;
++         part->imm_state.size = part->imm_state.count = n;
++         if (n) {
++            part->imm_state.values = (uint32_t *) ralloc_size(part, (size_t)n * 4);
++            if (!part->imm_state.values)
++               return NULL;
++            blob_copy_bytes(in, part->imm_state.values, (size_t)n * 4);
++         }
++      }
++   }
++   return v;
++}
++
++static bool
++decode(struct tu_device *dev, const void *data, size_t size, void *owner,
++       struct ir3_shader_variant **variants)
++{
++   if (strlen(TU_BUILTIN_SOURCE_ID) != 64 || !data || size > max_pack_size || size < 32)
++      return false;
++   uint8_t digest[BLAKE3_OUT_LEN];
++   _mesa_blake3_compute(data, size - sizeof(digest), digest);
++   if (memcmp(digest, (const uint8_t *)data + size - sizeof(digest), sizeof(digest)))
++      return false;
++   struct blob header;
++   blob_init(&header);
++   identity(dev, &header);
++   const bool matches = !header.out_of_memory && header.size <= size - sizeof(digest) &&
++                        !memcmp(header.data, data, header.size);
++   const size_t prefix = header.size;
++   blob_finish(&header);
++   if (!matches)
++      return false;
++   struct blob_reader in;
++   blob_reader_init(&in, (const uint8_t *)data + prefix, size - prefix - sizeof(digest));
++   for (unsigned i = 0; i < variant_count; ++i) {
++      if (!available(&in, 8) || blob_read_uint32(&in) != i)
++         return false;
++      const size_t length = blob_read_uint32(&in);
++      if (!length || length > max_variant_size || !available(&in, length))
++         return false;
++      struct blob_reader entry;
++      blob_reader_init(&entry, in.current, length);
++      variants[i] = read_variant(&entry, dev->compiler, owner);
++      if (!variants[i] || entry.overrun || entry.current != entry.end ||
++          variants[i]->type != (i < 3 ? MESA_SHADER_VERTEX : MESA_SHADER_FRAGMENT))
++         return false;
++      in.current += length;
++   }
++   uint64_t words = 0;
++   for (unsigned i = 0; i < GLOBAL_SH_COUNT; ++i)
++      words += align(variants[i]->info.sizedwords, 32);
++   return words <= ARRAY_SIZE(((struct tu6_global *)0)->shaders) &&
++          !in.overrun && in.current == in.end;
++}
++
++VkResult
++tu_builtin_pack_load(struct tu_device *dev)
++{
++#ifdef TU_BUILTIN_PACK_HEADER
++   void *owner = ralloc_context(NULL);
++   if (!owner)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   if (!decode(dev, tu_builtin_pack_bytes, sizeof(tu_builtin_pack_bytes), owner, dev->builtin_variants)) {
++      ralloc_free(owner);
++      memset(dev->builtin_variants, 0, sizeof(dev->builtin_variants));
++      /* A requested pack is mandatory: no silent runtime compiler fallback. */
++      return VK_ERROR_INITIALIZATION_FAILED;
++   }
++   dev->builtin_cache_owner = owner;
++#endif
++   return VK_SUCCESS;
++}
++
++/* Explicit offline tool interfaces. They never load a pack into a running
++ * device, replace a shader, submit commands, or change Vulkan feature reports. */
++extern "C" __attribute__((visibility("default"))) VkResult
++tu_export_builtin_shader_pack(VkDevice handle, size_t *size, void *data)
++{
++   VK_FROM_HANDLE(tu_device, dev, handle);
++   if (!dev || !size || strlen(TU_BUILTIN_SOURCE_ID) != 64)
++      return VK_ERROR_INITIALIZATION_FAILED;
++   struct blob out;
++   blob_init(&out);
++   identity(dev, &out);
++   for (unsigned i = 0; i < variant_count; ++i) {
++      const struct ir3_shader_variant *v = i < GLOBAL_SH_COUNT ? dev->global_shader_variants[i] :
++         (i == GLOBAL_SH_COUNT ? dev->empty_fs->variant : dev->empty_fs_fdm->variant);
++      if (!v) {
++         blob_finish(&out);
++         return VK_ERROR_INITIALIZATION_FAILED;
++      }
++      struct blob entry;
++      blob_init(&entry);
++      ir3_store_variant(&entry, v);
++      blob_write_uint32(&out, i);
++      blob_write_uint32(&out, entry.size);
++      blob_write_bytes(&out, entry.data, entry.size);
++      bool failed = entry.out_of_memory;
++      blob_finish(&entry);
++      if (failed) {
++         blob_finish(&out);
++         return VK_ERROR_OUT_OF_HOST_MEMORY;
++      }
++   }
++   if (out.out_of_memory || out.size > max_pack_size - BLAKE3_OUT_LEN) {
++      blob_finish(&out);
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++   uint8_t digest[BLAKE3_OUT_LEN];
++   _mesa_blake3_compute(out.data, out.size, digest);
++   blob_write_bytes(&out, digest, sizeof(digest));
++   if (out.out_of_memory || out.size > max_pack_size) {
++      blob_finish(&out);
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   }
++   VkResult result = VK_SUCCESS;
++   if (data) {
++      if (*size < out.size)
++         result = VK_INCOMPLETE;
++      else
++         memcpy(data, out.data, out.size);
++   }
++   *size = out.size;
++   blob_finish(&out);
++   return result;
++}
++
++extern "C" __attribute__((visibility("default"))) VkResult
++tu_validate_builtin_shader_pack(VkDevice handle, size_t size, const void *data)
++{
++   VK_FROM_HANDLE(tu_device, dev, handle);
++   if (!dev)
++      return VK_ERROR_INITIALIZATION_FAILED;
++   void *owner = ralloc_context(NULL);
++   if (!owner)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   struct ir3_shader_variant *variants[variant_count] = {};
++   bool valid = decode(dev, data, size, owner, variants);
++   ralloc_free(owner);
++   return valid ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
++}
+diff --git a/src/freedreno/vulkan/tu_builtin_cache.h b/src/freedreno/vulkan/tu_builtin_cache.h
+new file mode 100644
+--- /dev/null
++++ b/src/freedreno/vulkan/tu_builtin_cache.h
+@@ -0,0 +1,8 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef TU_BUILTIN_CACHE_H
++#define TU_BUILTIN_CACHE_H
++#include "tu_common.h"
++VkResult tu_builtin_pack_load(struct tu_device *dev);
++extern "C" VkResult tu_export_builtin_shader_pack(VkDevice device, size_t *size, void *data);
++extern "C" VkResult tu_validate_builtin_shader_pack(VkDevice device, size_t size, const void *data);
++#endif
+diff --git a/src/freedreno/vulkan/tu_frame_diagnostic.h b/src/freedreno/vulkan/tu_frame_diagnostic.h
+new file mode 100644
+--- /dev/null
++++ b/src/freedreno/vulkan/tu_frame_diagnostic.h
+@@ -0,0 +1,16 @@
++/* SPDX-License-Identifier: MIT */
++#pragma once
++#include <stdint.h>
++#include <stdlib.h>
++#ifdef __APPLE__
++extern "C" bool tu_darwin_frame_diagnostic(uint32_t,const void *,uint32_t);
++static inline void tu_frame_event(uint32_t event,uint64_t a=0,uint64_t b=0,uint64_t c=0,uint64_t d=0,uint64_t e=0,uint64_t f=0,uint64_t g=0,uint64_t h=0,uint64_t i=0,uint64_t j=0,uint64_t k=0,uint64_t l=0) {
++   static const bool on=getenv("SHENG_GPU_TRACE")!=nullptr;
++   if(!on || event)return;
++   /* Pass and submission records stay in this process's rings (frames.trace); none reach the kernel ring. */
++   struct {uint64_t seq,us;uint32_t event,pid;uint64_t v[12];} rec={0,0,event,0,{a,b,c,d,e,f,g,h,i,j,k,l}};
++   (void)tu_darwin_frame_diagnostic(0x7102,&rec,sizeof(rec));
++}
++#else
++static inline void tu_frame_event(uint32_t,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0,uint64_t=0) {}
++#endif
+diff --git a/src/freedreno/vulkan/tu_knl_darwin.cc b/src/freedreno/vulkan/tu_knl_darwin.cc
+new file mode 100644
+--- /dev/null
++++ b/src/freedreno/vulkan/tu_knl_darwin.cc
+@@ -0,0 +1,1769 @@
++#include "tu_frame_diagnostic.h"
++/*
++ * Native Darwin kernel backend for Turnip: talks to the NativeAdreno IOKit user client (NativeAdrenoABI.h, version 1).
++ * Modelled on tu_knl_kgsl.cc (no libdrm) and tu_knl_drm_msm.cc (the client chooses GPU addresses).
++ * SPDX-License-Identifier: MIT
++ */
++
++#include <errno.h>
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/mman.h>
++#include <unistd.h>
++
++#include <IOKit/IOKitLib.h>
++#include <dispatch/dispatch.h>
++#include <mach/mach.h>
++
++#include "NativeAdrenoABI.h"
++
++#include "util/os_time.h"
++#include "util/u_atomic.h"
++#include "util/rb_tree.h"
++#include "util/timespec.h"
++#include "util/u_debug.h"
++#include "util/u_vector.h"
++#include "vk_util.h"
++
++#include "tu_cmd_buffer.h"
++#include "tu_cs.h"
++#include "tu_device.h"
++#include "tu_dynamic_rendering.h"
++#include "tu_knl.h"
++#include "tu_queue.h"
++#include "tu_rmv.h"
++
++/* 'NTNL': first word of a tunnelled call, as served by the driver (NativeAdrenoPublish.cpp). */
++#define DW_TUNNEL_MAGIC 0x4e544e4cu
++
++/* One GPU per process: the kernel service has a single connection slot, so the connection and the fence bookkeeping are
++ * process state rather than per tu_device state. */
++static struct {
++   io_connect_t conn;
++   bool open;
++   pthread_mutex_t lock;
++   /* Fences of the submissions still possibly in flight, oldest first (the kernel keeps at most eight jobs). */
++   uint32_t inflight[8];
++   unsigned inflight_count;
++   /* Transport. On the tablet a sandboxed process (the Metal plugin inside SpringBoard) reaches the driver through the AGX accelerator
++    * service with open type 0x4147, and the sandbox profile decides which external-method selector numbers are admitted, so every ABI
++    * method travels as {magic, method, payload} through one admitted selector (the same tunnel the plugin's own test uses). Direct
++    * selectors (selector = ABI method) stay available for an unrestricted process that opens NativeAdrenoGpuPublished. */
++   bool tunnel;
++   uint32_t selector;
++   uint32_t last_fence;
++   NativeAdrenoAbiDeviceInfo info;
++   NativeAdrenoAbiParams params;
++} dw = { .lock = PTHREAD_MUTEX_INITIALIZER };
++
++/* Preserve the native handle, CPU view and IOVA until the captured ring fence
++ * actually completed. An unrelated later submission never extends this lease.
++ * The queue grows with what is waiting; destruction never waits. */
++struct darwin_retired_bo {
++   uint64_t handle, iova, size;
++   void *mapping;
++   uint32_t token, fence;
++   bool cacheable, read_only;
++};
++
++/* A freed BO whose fence completed stays whole (kernel handle, GPU mapping, CPU lease) in a size-class cache and is handed to the next
++ * allocation of its class: one BoAlloc + BoMap (the SMMU table update, about a millisecond) and one BoFree + unmap saved per reuse.
++ * Classes are the size rounded up to a quarter of its power of two (4 KiB steps up to 16 KiB). Replayable BOs (client addresses) and
++ * host imports never enter it. */
++/* No byte or entry limit: as Metal's own resource cache does, the cache gives everything back when the system reports memory pressure
++ * (DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, warning or critical, the signal Apple's frameworks purge on) and when an allocation or a GPU range
++ * cannot be had (then the allocation is tried again). */
++static volatile uint32_t darwin_memory_pressure;   /* bumped by the memory-pressure source; each device flushes once per change */
++struct darwin_cached_bo {
++   uint64_t handle, iova, size, stamp, freed_s;   /* freed_s: monotonic seconds when it entered the cache */
++   void *mapping;
++   uint32_t token;
++   bool read_only;
++};
++struct darwin_bo_cache_stats {
++   uint64_t lookups, hits, inserts, evictions, flushes, bytes_peak;
++};
++
++/* The GPU address space as two red-black trees over the free holes (Mesa's rb_tree, the same algorithm as XNU's libkern/tree.h): by
++ * address, to find a hole's neighbours when a range is freed and merge them, and by (size, address), to find the smallest hole that
++ * fits an allocation. Allocation, free and merge are all O(log n) in the number of holes; the heap it replaces (a list of holes) was
++ * walked from its head on every free and every allocation. */
++struct darwin_va_hole {
++   struct rb_node by_address, by_size;
++   uint64_t start, size;
++};
++struct darwin_va {
++   struct rb_tree address, size;
++   bool seeded;
++   uint64_t holes, allocs, frees, merges;
++   uint64_t used;   /* bytes handed out */
++};
++
++struct darwin_retire_state {
++   pthread_mutex_t lock;
++   struct darwin_retired_bo *entries;   /* a ring of `capacity` records, grown when full */
++   unsigned capacity, head, count;
++   VkResult failure;
++   uint64_t enqueued, reaped, pressure_waits;
++   struct darwin_cached_bo *cache;
++   unsigned cache_count, cache_capacity;
++   uint64_t cache_bytes, cache_stamp, cache_cleaned_s;
++   uint32_t pressure_seen;
++   struct darwin_bo_cache_stats cache_stats;
++   struct darwin_va va;
++};
++static struct darwin_retire_state *darwin_stats_state;   /* for tu_darwin_bo_cache_stats */
++
++extern "C" __attribute__((visibility("default"))) void tu_darwin_bo_cache_stats(uint64_t out[8]);
++extern "C" __attribute__((visibility("default"))) void
++tu_darwin_bo_cache_stats(uint64_t out[8])
++{
++   struct darwin_retire_state *retire = darwin_stats_state;
++   memset(out, 0, 8 * sizeof(uint64_t));
++   if (!retire)
++      return;
++   pthread_mutex_lock(&retire->lock);
++   out[0] = retire->cache_stats.lookups;
++   out[1] = retire->cache_stats.hits;
++   out[2] = retire->cache_stats.inserts;
++   out[3] = retire->cache_stats.evictions;
++   out[4] = retire->cache_stats.flushes;
++   out[5] = retire->cache_bytes;
++   out[6] = retire->cache_stats.bytes_peak;
++   out[7] = retire->va.holes;
++   pthread_mutex_unlock(&retire->lock);
++}
++
++/* The priority the driver was last given for this process (NativeAdrenoMethodSetPriority). */
++static NativeAdrenoAbiPriority dw_priority;
++static bool dw_priority_known;
++
++static kern_return_t
++dw_call(uint32_t method, const void *in, size_t in_size, void *out,
++        size_t out_size)
++{
++   size_t out_bytes = out_size;
++   if (!dw.tunnel)
++      return IOConnectCallStructMethod(dw.conn, method, in, in_size, out_size ? out : NULL,
++                                       out_size ? &out_bytes : NULL);
++   uint8_t buffer[8 + sizeof(NativeAdrenoAbiSubmit)];
++   if (in_size > sizeof(NativeAdrenoAbiSubmit))
++      return kIOReturnBadArgument;
++   const uint32_t header[2] = {DW_TUNNEL_MAGIC, method};
++   memcpy(buffer, header, sizeof(header));
++   if (in_size)
++      memcpy(buffer + sizeof(header), in, in_size);
++   return IOConnectCallStructMethod(dw.conn, dw.selector, buffer, sizeof(header) + in_size, out_size ? out : NULL,
++                                    out_size ? &out_bytes : NULL);
++}
++
++/* Finds an admitted selector: the driver answers a tunnel probe (method 0xffffffff) with success for every selector the sandbox lets through. */
++static bool
++dw_probe_selector(void)
++{
++   const uint32_t header[2] = {DW_TUNNEL_MAGIC, 0xffffffffu};
++   for (uint32_t s = 0; s < 256; s++) {
++      if (IOConnectCallStructMethod(dw.conn, s, header, sizeof(header), NULL, NULL) == KERN_SUCCESS) {
++         dw.selector = s;
++         return true;
++      }
++   }
++   return false;
++}
++
++static VkResult
++dw_open_connection(struct tu_instance *instance)
++{
++   /* TU_DARWIN_SERVICE names the IOKit service (default: the AGX accelerator the original Metal discovery finds), TU_DARWIN_OPEN_TYPE its open
++    * type (default 0x4147, the type the driver serves to the plugin). NativeAdrenoGpuPublished with type 0 is the unsandboxed direct form. */
++   const char *service_name = getenv("TU_DARWIN_SERVICE");
++   if (!service_name || !*service_name)
++      service_name = "IOAcceleratorES";
++   const char *type_text = getenv("TU_DARWIN_OPEN_TYPE");
++   uint32_t open_type = type_text && *type_text ? (uint32_t)strtoul(type_text, NULL, 0) : 0x4147u;
++   const bool direct = !strcmp(service_name, "NativeAdrenoGpuPublished");
++   if (direct && !(type_text && *type_text))
++      open_type = 0;
++   io_service_t service = IOServiceGetMatchingService(
++      kIOMainPortDefault, IOServiceMatching(service_name));
++   if (!service)
++      return VK_ERROR_INCOMPATIBLE_DRIVER;
++
++   kern_return_t kr = IOServiceOpen(service, mach_task_self(), open_type, &dw.conn);
++   IOObjectRelease(service);
++   if (kr != KERN_SUCCESS) {
++      return vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
++                               "IOServiceOpen(%s, 0x%x) failed: 0x%x", service_name, open_type, kr);
++   }
++   dw.tunnel = !direct;
++   if (dw.tunnel && !dw_probe_selector()) {
++      IOServiceClose(dw.conn);
++      dw.conn = 0;
++      return vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED, "no external-method selector is admitted for this process");
++   }
++
++   kr = dw_call(NativeAdrenoMethodQuery, NULL, 0, &dw.params, sizeof(dw.params));
++   if (kr == KERN_SUCCESS && dw.params.abi_version != NativeAdrenoAbiVersion)
++      kr = kIOReturnUnsupported;
++   if (kr == KERN_SUCCESS)
++      kr = dw_call(NativeAdrenoMethodGetDeviceInfo, NULL, 0, &dw.info, sizeof(dw.info));
++   if (kr != KERN_SUCCESS) {
++      IOServiceClose(dw.conn);
++      dw.conn = 0;
++      return vk_startup_errorf(instance, VK_ERROR_INITIALIZATION_FAILED,
++                               "NativeAdreno query failed: 0x%x", kr);
++   }
++   dw.open = true;
++   dw.inflight_count = 0;
++   dw.last_fence = 0;
++
++   /* Normal until Metal queues publish their current requests. An explicit environment override is also accepted. */
++   {
++      const char *want = getenv("METAL2VULKAN_QUEUE_PRIORITY");
++      NativeAdrenoAbiPriority priority = {.foreground = 1, .background = 3};
++      if (want && !strcmp(want, "high")) {
++         priority.foreground = 0;
++         priority.background = 2;
++      } else if (want && !strcmp(want, "low")) {
++         priority.foreground = 2;
++         priority.background = 2;
++      }
++      dw_priority = priority;
++      dw_priority_known = true;
++      (void)dw_call(NativeAdrenoMethodSetPriority, &priority, sizeof(priority), NULL, 0);
++   }
++   return VK_SUCCESS;
++}
++
++/* What the process's own Metal queues ask for (the frontend's setGPUPriority: and setBackgroundGPUPriority:), given to the driver as they
++ * come: the runtime sent the board's default at device open, before the process could ask. 0xffffffff keeps that value. False before the
++ * device is open or when the driver refuses it (a foreground priority of 3, the disabled level, is not a queue's foreground).
++ */
++extern "C" __attribute__((visibility("default"))) bool tu_darwin_set_priority(uint32_t foreground, uint32_t background);
++extern "C" __attribute__((visibility("default"))) bool
++tu_darwin_set_priority(uint32_t foreground, uint32_t background)
++{
++   if ((foreground != UINT32_MAX && (foreground > 5 || foreground == 3)) ||
++       (background != UINT32_MAX && background > 5))
++      return false;
++   pthread_mutex_lock(&dw.lock);
++   bool accepted = false;
++   if (dw_priority_known && dw.open) {
++      NativeAdrenoAbiPriority priority = dw_priority;
++      if (foreground != UINT32_MAX) priority.foreground = foreground;
++      if (background != UINT32_MAX) priority.background = background;
++      /* The frontend aggregates current live queues; lowering releases an old boost. */
++      accepted = (priority.foreground == dw_priority.foreground && priority.background == dw_priority.background) ||
++         dw_call(NativeAdrenoMethodSetPriority, &priority, sizeof(priority), NULL, 0) == KERN_SUCCESS;
++      if (accepted) dw_priority = priority;
++   }
++   pthread_mutex_unlock(&dw.lock);
++   return accepted;
++}
++
++/* A note for the kernel's log (NativeAdrenoMethodNote), from the host frontend: kind 1 a render pass, 2 a pipeline made or refused. The
++ * kernel adds the caller's pid. False before the device is open or when the driver refuses it.
++ */
++extern "C" __attribute__((visibility("default"))) bool tu_darwin_note(uint32_t kind, const uint32_t *words, uint32_t count);
++extern "C" __attribute__((visibility("default"))) bool
++tu_darwin_note(uint32_t kind, const uint32_t *words, uint32_t count)
++{
++   if (!dw.open || count > NativeAdrenoNoteWords)
++      return false;
++   NativeAdrenoAbiNote note = {};
++   note.kind = kind;
++   note.count = count;
++   memcpy(note.words, words, count * sizeof(uint32_t));
++   return dw_call(NativeAdrenoMethodNote, &note, sizeof(note), NULL, 0) == KERN_SUCCESS;
++}
++
++extern "C" __attribute__((visibility("default"))) const char *tu_darwin_frame_build_id(void);
++extern "C" __attribute__((visibility("default"))) const char *tu_darwin_frame_build_id(void) {
++#ifdef TU_BUILD_ID_OVERRIDE
++   return TU_BUILD_ID_OVERRIDE;
++#else
++   return "unknown";
++#endif
++}
++
++extern "C" __attribute__((visibility("default"))) bool
++tu_darwin_frame_diagnostic(uint32_t method,const void *data,uint32_t bytes)
++{
++   if(!dw.open || !data || method!=0x7102 ||
++      bytes!=120)return false;
++   return dw_call(method,data,bytes,NULL,0)==KERN_SUCCESS;
++}
++
++static void
++dw_close_connection(void)
++{
++   if (dw.open) {
++      IOServiceClose(dw.conn);
++      dw.conn = 0;
++      dw.open = false;
++   }
++}
++
++static VkResult
++dw_status_to_vk(struct tu_device *dev, kern_return_t kr, const char *what)
++{
++   if (kr == KERN_SUCCESS)
++      return VK_SUCCESS;
++   if (kr == kIOReturnTimeout)
++      return VK_TIMEOUT;
++   return vk_device_set_lost(&dev->vk, "%s failed: 0x%x", what, kr);
++}
++
++/* Waits for a fence in short kernel waits so the connection lock is never held for long. */
++static VkResult
++dw_wait_fence_raw(struct tu_device *dev, uint32_t fence, uint64_t abs_timeout_ns)
++{
++   for (;;) {
++      uint64_t now = os_time_get_nano();
++      /* The rest of the wait, at most 100 ms a call: the kernel sleeps between fence interrupts until the fence or the
++       * timeout. One 1 ms slice a call made a frame's wait several IOKit calls (i553: 258682 waits in 166 s, 97 % timed out). */
++      uint64_t slice = 100000000; /* 100 ms */
++      if (abs_timeout_ns != UINT64_MAX)
++         slice = abs_timeout_ns > now ? MIN2(abs_timeout_ns - now, slice) : 0;
++      NativeAdrenoAbiWaitFence req = {.fence = fence, .timeout_ns = slice};
++      kern_return_t kr = dw_call(NativeAdrenoMethodWaitFence, &req, sizeof(req), NULL, 0);
++      if (kr == KERN_SUCCESS)
++         return VK_SUCCESS;
++      if (kr != kIOReturnTimeout)
++         return dw_status_to_vk(dev, kr, "wait fence");
++      if (slice == 0)
++         return VK_TIMEOUT;
++      if (abs_timeout_ns != UINT64_MAX && os_time_get_nano() >= abs_timeout_ns)
++         return VK_TIMEOUT;
++   }
++}
++
++static VkResult darwin_collect_retired(struct tu_device *dev);
++
++static VkResult
++dw_wait_fence_locked_free(struct tu_device *dev, uint32_t fence, uint64_t abs_timeout_ns)
++{
++   VkResult result = dw_wait_fence_raw(dev, fence, abs_timeout_ns);
++   /* Fence observation is also a retirement opportunity, so a quiet application
++    * need not allocate another BO to release completed deferred storage. */
++   return result == VK_SUCCESS ? darwin_collect_retired(dev) : result;
++}
++
++static VkResult
++darwin_queue_wait_fence(struct tu_queue *queue, uint32_t fence, uint64_t timeout_ns)
++{
++   uint64_t abs = timeout_ns == UINT64_MAX ? UINT64_MAX : os_time_get_nano() + timeout_ns;
++   return dw_wait_fence_locked_free(queue->device, fence, abs);
++}
++
++static int
++darwin_submitqueue_new(struct tu_device *dev, struct tu_queue *queue)
++{
++   /* All Vulkan queues in this client use kernel queue 0. The kernel preserves its FIFO
++    * across ring/priority changes, so already-submitted sync dependencies remain ordered. */
++   queue->msm_queue_id = 0;
++   return 0;
++}
++
++static void
++darwin_submitqueue_close(struct tu_device *dev, struct tu_queue *queue)
++{
++}
++
++/* ---- GPU address space: the client picks addresses out of [va_start, va_start + va_size). ---- */
++
++static int
++darwin_va_cmp_address(const struct rb_node *a, const struct rb_node *b)
++{
++   const struct darwin_va_hole *x = rb_node_data(struct darwin_va_hole, a, by_address);
++   const struct darwin_va_hole *y = rb_node_data(struct darwin_va_hole, b, by_address);
++   return x->start > y->start ? -1 : x->start < y->start ? 1 : 0;
++}
++
++static int
++darwin_va_cmp_size(const struct rb_node *a, const struct rb_node *b)
++{
++   const struct darwin_va_hole *x = rb_node_data(struct darwin_va_hole, a, by_size);
++   const struct darwin_va_hole *y = rb_node_data(struct darwin_va_hole, b, by_size);
++   if (x->size != y->size)
++      return x->size > y->size ? -1 : 1;
++   return x->start > y->start ? -1 : x->start < y->start ? 1 : 0;
++}
++
++/* rb_tree_insert puts a node on the left when cmp(existing, new) < 0, so the comparators above answer the opposite of the natural order:
++ * the left subtree holds the smaller keys, first/next walk upwards, and both lookups below descend by hand. */
++static struct darwin_va_hole *
++darwin_va_smallest_fit(struct darwin_va *va, uint64_t size)
++{
++   struct rb_node *best = NULL;
++   for (struct rb_node *x = va->size.root; x;) {
++      if (rb_node_data(struct darwin_va_hole, x, by_size)->size >= size) {
++         best = x;
++         x = x->left;
++      } else {
++         x = x->right;
++      }
++   }
++   return best ? rb_node_data(struct darwin_va_hole, best, by_size) : NULL;
++}
++
++/* The hole with the largest start at or below the address. */
++static struct darwin_va_hole *
++darwin_va_hole_at_or_below(struct darwin_va *va, uint64_t address)
++{
++   struct rb_node *best = NULL;
++   for (struct rb_node *x = va->address.root; x;) {
++      if (rb_node_data(struct darwin_va_hole, x, by_address)->start <= address) {
++         best = x;
++         x = x->right;
++      } else {
++         x = x->left;
++      }
++   }
++   return best ? rb_node_data(struct darwin_va_hole, best, by_address) : NULL;
++}
++
++static bool
++darwin_va_add(struct darwin_va *va, uint64_t start, uint64_t size)
++{
++   if (!size)
++      return true;
++   struct darwin_va_hole *hole = (struct darwin_va_hole *)calloc(1, sizeof(*hole));
++   if (!hole)
++      return false;   /* the range is lost, not reused: never handed out twice */
++   hole->start = start;
++   hole->size = size;
++   rb_tree_insert(&va->address, &hole->by_address, darwin_va_cmp_address);
++   rb_tree_insert(&va->size, &hole->by_size, darwin_va_cmp_size);
++   ++va->holes;
++   return true;
++}
++
++static void
++darwin_va_del(struct darwin_va *va, struct darwin_va_hole *hole)
++{
++   rb_tree_remove(&va->address, &hole->by_address);
++   rb_tree_remove(&va->size, &hole->by_size);
++   --va->holes;
++   free(hole);
++}
++
++/* Takes [at, at + size) out of a hole that contains it; what is left on either side stays free. */
++static void
++darwin_va_carve(struct darwin_va *va, struct darwin_va_hole *hole, uint64_t at, uint64_t size)
++{
++   const uint64_t begin = hole->start, end = hole->start + hole->size;
++   darwin_va_del(va, hole);
++   darwin_va_add(va, begin, at - begin);
++   darwin_va_add(va, at + size, end - (at + size));
++   ++va->allocs;
++   va->used += size;
++}
++
++/* From the smallest hole that fits (best fit); a high allocation takes the end of it. 0 when nothing fits. */
++static uint64_t
++darwin_va_alloc(struct darwin_va *va, uint64_t size, uint64_t alignment, bool high)
++{
++   if (!size || !alignment || (alignment & (alignment - 1)))
++      return 0;
++   struct darwin_va_hole *hole = darwin_va_smallest_fit(va, size);
++   while (hole) {
++      const uint64_t end = hole->start + hole->size;
++      uint64_t at;
++      bool fits;
++      if (high) {
++         at = (end - size) & ~(alignment - 1);
++         fits = at >= hole->start;
++      } else {
++         at = (hole->start + alignment - 1) & ~(alignment - 1);
++         fits = at >= hole->start && at <= end && end - at >= size;
++      }
++      if (fits) {
++         darwin_va_carve(va, hole, at, size);
++         return at;
++      }
++      struct rb_node *next = rb_node_next(&hole->by_size);
++      hole = next ? rb_node_data(struct darwin_va_hole, next, by_size) : NULL;
++   }
++   return 0;
++}
++
++/* The range at a client-chosen address, when it is all free. */
++static bool
++darwin_va_alloc_at(struct darwin_va *va, uint64_t address, uint64_t size)
++{
++   struct darwin_va_hole *hole = darwin_va_hole_at_or_below(va, address);
++   if (!size || !hole || address - hole->start >= hole->size || hole->start + hole->size - address < size)
++      return false;
++   darwin_va_carve(va, hole, address, size);
++   return true;
++}
++
++/* Returns a range and merges it with the free holes that touch it. A range that overlaps a free hole is a double free: refused. */
++static void
++darwin_va_free(struct darwin_va *va, uint64_t address, uint64_t size)
++{
++   if (!size)
++      return;
++   struct darwin_va_hole *below = darwin_va_hole_at_or_below(va, address);
++   struct rb_node *after = below ? rb_node_next(&below->by_address) : rb_tree_first(&va->address);
++   struct darwin_va_hole *above = after ? rb_node_data(struct darwin_va_hole, after, by_address) : NULL;
++   if ((below && below->start + below->size > address) || (above && above->start < address + size)) {
++      mesa_loge("darwin: GPU range %#llx+%#llx freed over a free hole", (unsigned long long)address,
++                (unsigned long long)size);
++      return;
++   }
++   uint64_t begin = address, end = address + size;
++   if (below && below->start + below->size == address) {
++      begin = below->start;
++      darwin_va_del(va, below);
++      ++va->merges;
++   }
++   if (above && above->start == end) {
++      end = above->start + above->size;
++      darwin_va_del(va, above);
++      ++va->merges;
++   }
++   darwin_va_add(va, begin, end - begin);
++   ++va->frees;
++   va->used -= size;
++}
++
++static VkResult
++darwin_allocate_iova(struct tu_device *dev, uint64_t size, uint64_t client_iova,
++                     enum tu_bo_alloc_flags flags, uint64_t *iova)
++{
++   struct darwin_va *va = &((struct darwin_retire_state *)dev->darwin_retire)->va;
++   *iova = 0;
++   mtx_lock(&dev->vma_mutex);
++   if (!va->seeded) {
++      /* Nothing else allocates from the heap the device made: the whole range is free. */
++      va->seeded = true;
++      darwin_va_add(va, dev->physical_device->va_start, dev->physical_device->va_size);
++   }
++   if (flags & TU_BO_ALLOC_REPLAYABLE) {
++      if (client_iova) {
++         if (darwin_va_alloc_at(va, client_iova, size))
++            *iova = client_iova;
++         else {
++            mtx_unlock(&dev->vma_mutex);
++            return VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS;
++         }
++      } else {
++         *iova = darwin_va_alloc(va, size, os_page_size, true);
++      }
++   } else {
++      *iova = darwin_va_alloc(va, size, os_page_size, false);
++   }
++   mtx_unlock(&dev->vma_mutex);
++   return *iova ? VK_SUCCESS : VK_ERROR_OUT_OF_DEVICE_MEMORY;
++}
++
++static void
++darwin_free_iova(struct tu_device *dev, uint64_t iova, uint64_t size)
++{
++   struct darwin_va *va = &((struct darwin_retire_state *)dev->darwin_retire)->va;
++   mtx_lock(&dev->vma_mutex);
++   darwin_va_free(va, iova, size);
++   mtx_unlock(&dev->vma_mutex);
++}
++
++/* Hands the CPU lease, the kernel allocation and the GPU range of a BO back. VK_NOT_READY: the kernel still holds it (retry later);
++ * anything else is final (an unexpected kernel status loses the device). Called under retire->lock. */
++static VkResult
++darwin_release_native(struct tu_device *dev, struct darwin_retire_state *retire, uint64_t handle, uint64_t iova,
++                      uint64_t size, void **mapping, uint32_t *token)
++{
++   if (*token) {
++      if (*mapping) {
++         kern_return_t kr = IOConnectUnmapMemory64(dw.conn, *token, mach_task_self(), (mach_vm_address_t)(uintptr_t)*mapping);
++         if (kr != KERN_SUCCESS)
++            return retire->failure = vk_device_set_lost(&dev->vk, "deferred CPU unmap failed: 0x%x", kr);
++         *mapping = NULL;
++      }
++      NativeAdrenoAbiBoCpuUnmap undo = {.handle = handle, .token = *token};
++      kern_return_t kr = dw_call(NativeAdrenoMethodBoCpuUnmap, &undo, sizeof(undo), NULL, 0);
++      if (kr != KERN_SUCCESS)
++         return retire->failure = vk_device_set_lost(&dev->vk, "deferred CPU lease release failed: 0x%x", kr);
++      *token = 0;
++   }
++   NativeAdrenoAbiBoFree release = {.handle = handle};
++   kern_return_t kr = dw_call(NativeAdrenoMethodBoFree, &release, sizeof(release), NULL, 0);
++   if (kr == kIOReturnBusy)
++      return VK_NOT_READY;
++   if (kr != KERN_SUCCESS)
++      return retire->failure = vk_device_set_lost(&dev->vk, "deferred BoFree failed: 0x%x", kr);
++   darwin_free_iova(dev, iova, size);
++   return VK_SUCCESS;
++}
++
++/* The size class of an allocation: a multiple of 4 KiB, then of a quarter of the power of two below it (at most 12.5 % over). */
++static uint64_t
++darwin_size_class(uint64_t size)
++{
++   size = (size + 4095) & ~(uint64_t)4095;
++   if (size <= 16384)
++      return size;
++   const uint64_t step = ((uint64_t)1 << (63 - __builtin_clzll(size - 1))) / 4;
++   return (size + step - 1) / step * step;
++}
++
++static void
++darwin_cache_log(struct darwin_retire_state *retire)
++{
++   const struct darwin_bo_cache_stats *st = &retire->cache_stats;
++   fprintf(stderr, "NativeAdreno BO cache: %llu allocations, %llu reused (%llu.%llu%%), %llu cached now (%llu MiB), %llu evicted, %llu flushed, %llu free GPU ranges\n",
++           (unsigned long long)st->lookups, (unsigned long long)st->hits, (unsigned long long)(st->hits * 100 / st->lookups),
++           (unsigned long long)(st->hits * 1000 / st->lookups % 10), (unsigned long long)retire->cache_count,
++           (unsigned long long)(retire->cache_bytes >> 20), (unsigned long long)st->evictions, (unsigned long long)st->flushes,
++           (unsigned long long)retire->va.holes);
++}
++
++/* Drops the cache entry at the index for real. VK_NOT_READY keeps it. */
++static VkResult
++darwin_cache_evict(struct tu_device *dev, struct darwin_retire_state *retire, unsigned at)
++{
++   struct darwin_cached_bo *e = &retire->cache[at];
++   VkResult result = darwin_release_native(dev, retire, e->handle, e->iova, e->size, &e->mapping, &e->token);
++   if (result != VK_SUCCESS)
++      return result;
++   retire->cache_bytes -= e->size;
++   *e = retire->cache[--retire->cache_count];
++   ++retire->cache_stats.evictions;
++   return VK_SUCCESS;
++}
++
++/* Called under retire->lock with a BO whose fence completed. True: the cache took it whole. */
++static bool
++darwin_cache_put(struct tu_device *dev, struct darwin_retire_state *retire, const struct darwin_retired_bo *bo)
++{
++   if (retire->cache_count == retire->cache_capacity) {
++      const unsigned capacity = retire->cache_capacity ? retire->cache_capacity * 2 : 64;
++      struct darwin_cached_bo *cache = (struct darwin_cached_bo *)realloc(retire->cache, capacity * sizeof(*cache));
++      if (!cache)
++         return false;   /* the BO is released instead */
++      retire->cache = cache;
++      retire->cache_capacity = capacity;
++   }
++   retire->cache[retire->cache_count++] = {bo->handle, bo->iova, bo->size, ++retire->cache_stamp,
++                                           (uint64_t)(os_time_get_nano() / 1000000000), bo->mapping, bo->token, bo->read_only};
++   retire->cache_bytes += bo->size;
++   if (retire->cache_bytes > retire->cache_stats.bytes_peak)
++      retire->cache_stats.bytes_peak = retire->cache_bytes;
++   ++retire->cache_stats.inserts;
++   return true;
++}
++
++/* The most recently cached BO of a class (its pages are the warmest). A BO the caller needs zeroed must have a CPU view to zero it by. */
++static bool
++darwin_cache_get(struct darwin_retire_state *retire, uint64_t size, bool read_only, bool need_mapping, struct darwin_cached_bo *out)
++{
++   ++retire->cache_stats.lookups;
++   int best = -1;
++   for (unsigned i = 0; i < retire->cache_count; ++i) {
++      const struct darwin_cached_bo *e = &retire->cache[i];
++      /* The class asked for, or a BO up to a quarter larger (the smallest such, then the most recent). */
++      if (e->size >= size && e->size - size <= size / 4 && e->read_only == read_only && (!need_mapping || e->mapping) &&
++          (best < 0 || e->size < retire->cache[best].size ||
++           (e->size == retire->cache[best].size && e->stamp > retire->cache[best].stamp)))
++         best = (int)i;
++   }
++   if (best >= 0) {
++      *out = retire->cache[best];
++      retire->cache_bytes -= out->size;
++      retire->cache[best] = retire->cache[--retire->cache_count];
++      ++retire->cache_stats.hits;
++   }
++   if (!(retire->cache_stats.lookups & 4095))
++      darwin_cache_log(retire);
++   return best >= 0;
++}
++
++/* Memory ran out (kernel pool or GPU range): everything cached goes back. */
++static bool
++darwin_cache_flush(struct tu_device *dev, struct darwin_retire_state *retire)
++{
++   bool any = retire->cache_count != 0;
++   for (unsigned i = retire->cache_count; i-- > 0;)
++      darwin_cache_evict(dev, retire, i);
++   if (any)
++      ++retire->cache_stats.flushes;
++   return any;
++}
++
++/* Called under retire->lock: once per memory-pressure notification the whole cache goes back, and otherwise every BO not reused
++ * within a second of entering it, as freedreno's own BO cache keeps a freed BO (freedreno_bo_cache.c, fd_bo_cache_cleanup: "keep things
++ * in cache for at least 1 second", at most once a second). Without the second rule the cache held every BO the render server ever freed
++ * once the kernel stopped refusing allocations (untagged-7c2c611f: backboardd held 3099 MiB, the system's memory ran out). */
++static void
++darwin_cache_trim(struct tu_device *dev, struct darwin_retire_state *retire)
++{
++   const uint32_t pressure = p_atomic_read(&darwin_memory_pressure);
++   if (pressure != retire->pressure_seen) {
++      retire->pressure_seen = pressure;
++      darwin_cache_flush(dev, retire);
++      return;
++   }
++   const uint64_t now = (uint64_t)(os_time_get_nano() / 1000000000);
++   if (now == retire->cache_cleaned_s)
++      return;
++   retire->cache_cleaned_s = now;
++   for (unsigned i = retire->cache_count; i-- > 0;)
++      if (now - retire->cache[i].freed_s > 1)
++         darwin_cache_evict(dev, retire, i);
++}
++
++/* The process's memory-pressure source, made once: libdispatch delivers the kernel's memorystatus levels to it. */
++static void
++darwin_watch_memory_pressure(void)
++{
++   static pthread_once_t once = PTHREAD_ONCE_INIT;
++   pthread_once(&once, [] {
++      dispatch_source_t source = dispatch_source_create(DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0,
++                                                        DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL,
++                                                        dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
++      if (!source)
++         return;
++      dispatch_source_set_event_handler_f(source, [](void *) { p_atomic_inc(&darwin_memory_pressure); });
++      dispatch_activate(source);
++   });
++}
++
++/* Called under retire->lock. All fence polls are nonblocking. Failed/uncertain
++ * releases retain the record and the IOVA; a busy BO is retried by a later sweep. */
++static VkResult
++darwin_reap_locked(struct tu_device *dev, struct darwin_retire_state *retire)
++{
++   if (retire->failure != VK_SUCCESS)
++      return retire->failure;
++   /* Cache only within this sweep. Persisting a bare 32-bit fence across sweeps
++    * could mistake a later wrapped value for an old observed completion. */
++   uint32_t completed_fence = 0, pending_fence = 0;
++   bool have_completed_fence = false, have_pending_fence = false;
++   /* Every entry is looked at, not only the oldest: one BO behind a fence still in flight must not hold back the completed ones queued
++    * after it (they would miss the cache). Entries that are not done yet keep their order at the front of the ring. */
++   const unsigned total = retire->count;
++   unsigned kept = 0;
++   for (unsigned i = 0; i < total; ++i) {
++      struct darwin_retired_bo *bo = &retire->entries[(retire->head + i) % retire->capacity];
++      bool ready = true;
++      if (bo->fence) {
++         if (have_pending_fence && bo->fence == pending_fence) {
++            ready = false;
++         } else if (!have_completed_fence || bo->fence != completed_fence) {
++            VkResult result = dw_wait_fence_raw(dev, bo->fence, 0);
++            if (result == VK_TIMEOUT) {
++               ready = false;
++               have_pending_fence = true;
++               pending_fence = bo->fence;
++            } else if (result != VK_SUCCESS) {
++               return retire->failure = result;
++            } else {
++               have_completed_fence = true;
++               completed_fence = bo->fence;
++            }
++         }
++      }
++      if (ready && !(bo->cacheable && darwin_cache_put(dev, retire, bo))) {
++         VkResult released = darwin_release_native(dev, retire, bo->handle, bo->iova, bo->size, &bo->mapping, &bo->token);
++         if (released == VK_NOT_READY)
++            ready = false;   /* the kernel still holds it: try again at the next sweep */
++         else if (released != VK_SUCCESS)
++            return released;
++      }
++      if (ready) {
++         ++retire->reaped;
++      } else {
++         retire->entries[(retire->head + kept) % retire->capacity] = *bo;
++         ++kept;
++      }
++   }
++   for (unsigned i = kept; i < total; ++i)
++      retire->entries[(retire->head + i) % retire->capacity] = {};
++   retire->count = kept;
++   return VK_SUCCESS;
++}
++
++static VkResult
++darwin_collect_retired(struct tu_device *dev)
++{
++   struct darwin_retire_state *retire = (struct darwin_retire_state *)dev->darwin_retire;
++   pthread_mutex_lock(&retire->lock);
++   VkResult result = darwin_reap_locked(dev, retire);
++   if (result == VK_SUCCESS)
++      darwin_cache_trim(dev, retire);
++   pthread_mutex_unlock(&retire->lock);
++   return result;
++}
++
++static VkResult
++darwin_map_failure(struct tu_device *dev, uint64_t handle, uint64_t iova,
++                   uint64_t size, kern_return_t map_error, bool own_iova = true)
++{
++   NativeAdrenoAbiBoFree release = {.handle = handle};
++   kern_return_t cleanup = dw_call(NativeAdrenoMethodBoFree, &release, sizeof(release), NULL, 0);
++   if (cleanup == KERN_SUCCESS) {
++      if (own_iova)   /* a lazy BO's range is its sparse VMA's, which frees it */
++         darwin_free_iova(dev, iova, size);
++      return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY, "BoMap failed: 0x%x", map_error);
++   }
++   /* A failed map may have modified tables. Unknown cleanup never authorizes
++    * reusing its IOVA, even though no tu_bo could be published to the caller. */
++   struct darwin_retire_state *retire = (struct darwin_retire_state *)dev->darwin_retire;
++   pthread_mutex_lock(&retire->lock);
++   retire->failure = vk_device_set_lost(&dev->vk, "BoMap cleanup failed: 0x%x; retaining native allocation and IOVA", cleanup);
++   VkResult result = retire->failure;
++   pthread_mutex_unlock(&retire->lock);
++   return result;
++}
++
++/* ---- buffer objects ---- */
++
++static VkResult
++darwin_bo_init(struct tu_device *dev, struct vk_object_base *base,
++               struct tu_bo **out_bo, uint64_t size, uint64_t client_iova,
++               VkMemoryPropertyFlags mem_property,
++               enum tu_bo_alloc_flags flags, struct tu_sparse_vma *lazy_vma,
++               const char *name)
++{
++   MESA_TRACE_FUNC();
++   VkResult collected = darwin_collect_retired(dev);
++   if (collected != VK_SUCCESS)
++      return collected;
++
++   struct darwin_retire_state *retire = (struct darwin_retire_state *)dev->darwin_retire;
++   /* TU_DARWIN_BO_CACHE=0 turns the cache off (the host checks of the release paths need every free to reach the kernel). */
++   static const bool cache_enabled = debug_get_bool_option("TU_DARWIN_BO_CACHE", true);
++   /* A lazy BO lies at its sparse VMA's range (darwin_sparse_vma_init) and goes back with that range, never to the cache. */
++   const bool cacheable = cache_enabled && !(flags & TU_BO_ALLOC_REPLAYABLE) && !lazy_vma;
++   const bool read_only = !!(flags & TU_BO_ALLOC_GPU_READ_ONLY);
++   uint64_t alloc_size = cacheable ? darwin_size_class(size) : size;
++
++   uint64_t iova = 0, handle = 0;
++   void *cached_mapping = NULL;
++   uint32_t cached_token = 0;
++   bool reused = false;
++   if (cacheable) {
++      struct darwin_cached_bo hit;
++      pthread_mutex_lock(&retire->lock);
++      reused = darwin_cache_get(retire, alloc_size, read_only, !!(flags & TU_BO_ALLOC_INTERNAL_RESOURCE), &hit);
++      pthread_mutex_unlock(&retire->lock);
++      if (reused) {
++         handle = hit.handle;
++         alloc_size = hit.size;
++         iova = hit.iova;
++         cached_mapping = hit.mapping;
++         cached_token = hit.token;
++         /* Device-internal BOs may rely on the zeroes a new BO has; application memory may not. */
++         if ((flags & TU_BO_ALLOC_INTERNAL_RESOURCE) && cached_mapping)
++            memset(cached_mapping, 0, size);
++      }
++   }
++
++   for (bool flushed = false; !reused;) {
++      VkResult result = VK_SUCCESS;
++      if (lazy_vma)
++         iova = lazy_vma->msm.iova;
++      else
++         result = darwin_allocate_iova(dev, alloc_size, client_iova, flags, &iova);
++      if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY && !flushed) {
++         flushed = true;
++         pthread_mutex_lock(&retire->lock);
++         bool any = darwin_cache_flush(dev, retire);
++         pthread_mutex_unlock(&retire->lock);
++         if (any)
++            continue;
++      }
++      if (result != VK_SUCCESS)
++         return result;
++
++      NativeAdrenoAbiBoAlloc alloc = {.bytes = alloc_size, .align_log2 = 12, .contiguous = 0};
++      NativeAdrenoAbiBoAllocReply reply = {};
++      kern_return_t kr = dw_call(NativeAdrenoMethodBoAlloc, &alloc, sizeof(alloc), &reply, sizeof(reply));
++      if (kr != KERN_SUCCESS) {
++         if (!lazy_vma)
++            darwin_free_iova(dev, iova, alloc_size);
++         if (!flushed) {   /* memory may be held by cached BOs */
++            flushed = true;
++            pthread_mutex_lock(&retire->lock);
++            bool any = darwin_cache_flush(dev, retire);
++            pthread_mutex_unlock(&retire->lock);
++            if (any)
++               continue;
++         }
++         return vk_errorf(dev, VK_ERROR_OUT_OF_DEVICE_MEMORY, "BoAlloc failed: 0x%x", kr);
++      }
++
++      NativeAdrenoAbiBoMap map = {
++         .handle = reply.handle,
++         .iova = iova,
++         .permissions = read_only ? 1u : 3u,
++         .writeback = 0,
++         .shareability = 2,
++      };
++      NativeAdrenoAbiBoMapReply mapped = {};
++      kr = dw_call(NativeAdrenoMethodBoMap, &map, sizeof(map), &mapped, sizeof(mapped));
++      if (kr != KERN_SUCCESS) {
++         return darwin_map_failure(dev, reply.handle, iova, alloc_size, kr, !lazy_vma);
++      }
++      handle = reply.handle;
++      break;
++   }
++
++   uint32_t gem_handle = (uint32_t)handle;
++   struct tu_bo *bo = tu_device_lookup_bo(dev, gem_handle);
++   assert(bo && bo->gem_handle == 0);
++
++   name = tu_debug_bos_add(dev, size, name);
++
++   *bo = (struct tu_bo) {
++      .gem_handle = gem_handle,
++      .size = size,
++      .iova = iova,
++      .name = name,
++      .refcnt = 1,
++      .implicit_sync = !!(flags & TU_BO_ALLOC_IMPLICIT_SYNC),
++      .base = base,
++      .unique_id = handle,
++   };
++   bo->darwin_handle = handle;
++   bo->darwin_alloc_size = cacheable ? alloc_size : 0;
++   bo->darwin_read_only = read_only;
++   if (reused && cached_mapping) {
++      bo->map = cached_mapping;
++      bo->darwin_token = cached_token;
++      bo->never_unmap = true;
++   }
++   if (lazy_vma) {
++      lazy_vma->msm.backs_lazy_bo = true;   /* the range now goes back with the BO */
++      bo->lazy = true;
++   }
++
++   tu_dump_bo_init(dev, bo);
++   TU_RMV(bo_allocate, dev, bo);
++
++   *out_bo = bo;
++   if (flags & TU_BO_ALLOC_INTERNAL_RESOURCE) {
++      TU_RMV(internal_resource_create, dev, bo);
++      TU_RMV(resource_name, dev, bo, name);
++   }
++   return VK_SUCCESS;
++}
++
++/* VK_EXT_external_memory_host: the kernel pins the caller's pages (an IOSurface's) as a BO, which is then mapped into the GPU like any
++ * other. The CPU keeps the caller's own mapping, so there is no CPU-map token and the BO is "mapped" at the caller's pointer. */
++static VkResult
++darwin_bo_init_host(struct tu_device *dev, struct tu_bo **out_bo, void *pointer, uint64_t size)
++{
++   if (!(dw.params.flags & NativeAdrenoParamsHostImport))
++      return vk_error(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE);
++   VkResult collected = darwin_collect_retired(dev);
++   if (collected != VK_SUCCESS)
++      return collected;
++   uint64_t iova;
++   VkResult result = darwin_allocate_iova(dev, size, 0, TU_BO_ALLOC_NO_FLAGS, &iova);
++   if (result != VK_SUCCESS)
++      return result;
++
++   NativeAdrenoAbiBoImport import = {.address = (uint64_t)(uintptr_t)pointer, .bytes = size};
++   NativeAdrenoAbiBoAllocReply reply = {};
++   kern_return_t kr = dw_call(NativeAdrenoMethodBoImport, &import, sizeof(import), &reply, sizeof(reply));
++   if (kr != KERN_SUCCESS) {
++      darwin_free_iova(dev, iova, size);
++      return vk_errorf(dev, VK_ERROR_INVALID_EXTERNAL_HANDLE, "BoImport failed: 0x%x", kr);
++   }
++   NativeAdrenoAbiBoMap map = {.handle = reply.handle, .iova = iova, .permissions = 3u, .writeback = 0, .shareability = 2};
++   NativeAdrenoAbiBoMapReply mapped = {};
++   kr = dw_call(NativeAdrenoMethodBoMap, &map, sizeof(map), &mapped, sizeof(mapped));
++   if (kr != KERN_SUCCESS) {
++      return darwin_map_failure(dev, reply.handle, iova, size, kr);
++   }
++
++   uint32_t gem_handle = (uint32_t)reply.handle;
++   struct tu_bo *bo = tu_device_lookup_bo(dev, gem_handle);
++   assert(bo && bo->gem_handle == 0);
++   *bo = (struct tu_bo) {
++      .gem_handle = gem_handle,
++      .size = size,
++      .iova = iova,
++      .name = tu_debug_bos_add(dev, size, "host import"),
++      .refcnt = 1,
++      .unique_id = reply.handle,
++   };
++   bo->darwin_handle = reply.handle;
++   bo->darwin_token = 0;
++   bo->map = pointer;
++   bo->never_unmap = true;
++   tu_dump_bo_init(dev, bo);
++   TU_RMV(bo_allocate, dev, bo);
++   *out_bo = bo;
++   return VK_SUCCESS;
++}
++
++static VkResult
++darwin_bo_init_dmabuf(struct tu_device *dev, struct tu_bo **out_bo,
++                      uint64_t size, enum tu_bo_alloc_flags flags, int prime_fd)
++{
++   /* Darwin has no dmabuf; the later equivalent is an IOSurface import. */
++   return vk_error(dev, VK_ERROR_FEATURE_NOT_PRESENT);
++}
++
++static int
++darwin_bo_export_dmabuf(struct tu_device *dev, struct tu_bo *bo)
++{
++   return -1;
++}
++
++static VkResult
++darwin_bo_map(struct tu_device *dev, struct tu_bo *bo, void *placed_addr)
++{
++   NativeAdrenoAbiBoCpuMap req = {.handle = bo->darwin_handle};
++   NativeAdrenoAbiBoCpuMapReply reply = {};
++   kern_return_t kr = dw_call(NativeAdrenoMethodBoCpuMap, &req, sizeof(req), &reply, sizeof(reply));
++   if (kr != KERN_SUCCESS)
++      return vk_errorf(dev, VK_ERROR_MEMORY_MAP_FAILED, "BoCpuMap failed: 0x%x", kr);
++
++   mach_vm_address_t address = (mach_vm_address_t)(uintptr_t)placed_addr;
++   mach_vm_size_t length = 0;
++   /* IOUserClient::mapClientMemory64 takes the cache mode from THESE flags, not from the descriptor the driver returns, so a plain
++    * kIOMapAnywhere would give a cached mapping of memory the GPU reads non-cacheable. Write combine is Normal non-cacheable: the
++    * GPU sees CPU writes after a barrier, and memcpy/unaligned stores stay legal (device-memory mappings fault on those). */
++   /* With IO-coherent BOs (the kernel reports NativeAdrenoParamsOwnedCoherent) the GPU maps the pages write-back inner-shareable, so the CPU
++    * view is a write-back one too: a write-combined view of a page the GPU snoops and the kernel's cacheable alias would disagree. */
++   uint32_t options = (placed_addr ? 0 : kIOMapAnywhere) |
++                      ((dw.params.flags & NativeAdrenoParamsOwnedCoherent) ? kIOMapCopybackCache : kIOMapWriteCombineCache);
++   kr = IOConnectMapMemory64(dw.conn, reply.token, mach_task_self(), &address, &length, options);
++   if (kr != KERN_SUCCESS || !address || length < bo->size) {
++      NativeAdrenoAbiBoCpuUnmap undo = {.handle = bo->darwin_handle, .token = reply.token};
++      dw_call(NativeAdrenoMethodBoCpuUnmap, &undo, sizeof(undo), NULL, 0);
++      return vk_errorf(dev, VK_ERROR_MEMORY_MAP_FAILED, "IOConnectMapMemory64 failed: 0x%x", kr);
++   }
++
++   bo->map = (void *)(uintptr_t)address;
++   bo->darwin_token = reply.token;
++   /* The mapping belongs to the kernel descriptor; tu_bo_unmap() must not munmap() it. It goes away in bo_finish. */
++   bo->never_unmap = true;
++   TU_RMV(bo_map, dev, bo);
++   return VK_SUCCESS;
++}
++
++static void
++darwin_bo_allow_dump(struct tu_device *dev, struct tu_bo *bo)
++{
++}
++
++static void
++darwin_bo_set_metadata(struct tu_device *dev, struct tu_bo *bo, void *metadata,
++                       uint32_t metadata_size)
++{
++   if (metadata_size > NativeAdrenoAbiMetadataBytes)
++      return;
++   NativeAdrenoAbiMetadata req = {.handle = bo->darwin_handle, .bytes = metadata_size};
++   memcpy(req.text, metadata, metadata_size);
++   dw_call(NativeAdrenoMethodSetMetadata, &req, sizeof(req), NULL, 0);
++}
++
++static int
++darwin_bo_get_metadata(struct tu_device *dev, struct tu_bo *bo, void *metadata,
++                       uint32_t metadata_size)
++{
++   NativeAdrenoAbiMetadata req = {.handle = bo->darwin_handle,
++                                  .bytes = MIN2(metadata_size, NativeAdrenoAbiMetadataBytes)};
++   NativeAdrenoAbiMetadata reply = {};
++   if (dw_call(NativeAdrenoMethodGetMetadata, &req, sizeof(req), &reply, sizeof(reply)) != KERN_SUCCESS)
++      return -1;
++   memcpy(metadata, reply.text, MIN2(reply.bytes, metadata_size));
++   return 0;
++}
++
++/* Waits until every submission made so far has retired, so a freed buffer cannot still be in flight. The kernel also
++ * retires completed jobs itself; this only covers the window before the GPU passes the last fence. */
++static VkResult
++darwin_wait_idle(struct tu_device *dev)
++{
++   pthread_mutex_lock(&dw.lock);
++   uint32_t last = dw.last_fence;
++   pthread_mutex_unlock(&dw.lock);
++   if (last)
++      return dw_wait_fence_locked_free(dev, last, UINT64_MAX);   /* the kernel's hangcheck ends a hang */
++   return VK_SUCCESS;
++}
++
++static void
++darwin_bo_finish(struct tu_device *dev, struct tu_bo *bo)
++{
++   assert(bo->gem_handle);
++
++   u_rwlock_rdlock(&dev->dma_bo_lock);
++
++   if (!p_atomic_dec_zero(&bo->refcnt)) {
++      u_rwlock_rdunlock(&dev->dma_bo_lock);
++      return;
++   }
++
++   tu_debug_bos_del(dev, bo);
++   tu_dump_bo_del(dev, bo);
++
++   if (bo->map && bo->darwin_token)
++      TU_RMV(bo_unmap, dev, bo);
++   TU_RMV(bo_destroy, dev, bo);
++
++   struct darwin_retire_state *retire = (struct darwin_retire_state *)dev->darwin_retire;
++   pthread_mutex_lock(&retire->lock);
++   darwin_reap_locked(dev, retire);
++   if (retire->count == retire->capacity && retire->failure == VK_SUCCESS) {
++      /* The ring grows, its records in order from the head. */
++      const unsigned capacity = retire->capacity ? retire->capacity * 2 : 64;
++      struct darwin_retired_bo *entries = (struct darwin_retired_bo *)calloc(capacity, sizeof(*entries));
++      if (entries) {
++         for (unsigned i = 0; i < retire->count; ++i)
++            entries[i] = retire->entries[(retire->head + i) % retire->capacity];
++         free(retire->entries);
++         retire->entries = entries;
++         retire->capacity = capacity;
++         retire->head = 0;
++      }
++   }
++   if (retire->count < retire->capacity) {
++      pthread_mutex_lock(&dw.lock);
++      uint32_t fence = dw.last_fence;
++      pthread_mutex_unlock(&dw.lock);
++      unsigned slot = (retire->head + retire->count) % retire->capacity;
++      retire->entries[slot] = {bo->darwin_handle, bo->iova, bo->darwin_alloc_size ? bo->darwin_alloc_size : bo->size, bo->map,
++                               bo->darwin_token, fence, bo->darwin_alloc_size != 0, bo->darwin_read_only};
++      ++retire->count;
++      ++retire->enqueued;
++      darwin_reap_locked(dev, retire);
++   } else if (retire->failure == VK_SUCCESS) {
++      /* No reusable range is reported on error. The kernel still owns the handle
++       * and view; connection teardown must drain them, even if this record cannot fit. */
++      retire->failure = vk_device_set_lost(&dev->vk, "deferred BO queue cannot grow; retaining native allocation");
++   }
++   pthread_mutex_unlock(&retire->lock);
++
++   /* The BO structs live in a sparse array: zero the entry to mark it free. */
++   memset(bo, 0, sizeof(*bo));
++
++   u_rwlock_rdunlock(&dev->dma_bo_lock);
++}
++
++/* ---- submissions ---- */
++
++struct tu_darwin_queue_submit {
++   struct util_dynarray commands; /* NativeAdrenoAbiSubmitBuffer */
++};
++
++static void *
++darwin_submit_create(struct tu_device *device)
++{
++   return vk_zalloc(&device->vk.alloc, sizeof(struct tu_darwin_queue_submit), 8,
++                    VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++}
++
++static void
++darwin_submit_finish(struct tu_device *device, void *_submit)
++{
++   struct tu_darwin_queue_submit *submit = (struct tu_darwin_queue_submit *)_submit;
++   util_dynarray_fini(&submit->commands);
++   vk_free(&device->vk.alloc, submit);
++}
++
++static void
++darwin_submit_add_entries(struct tu_device *device, void *_submit,
++                          struct tu_cs_entry *entries, unsigned num_entries)
++{
++   struct tu_darwin_queue_submit *submit = (struct tu_darwin_queue_submit *)_submit;
++   NativeAdrenoAbiSubmitBuffer *cmds = (NativeAdrenoAbiSubmitBuffer *)
++      util_dynarray_grow(&submit->commands, NativeAdrenoAbiSubmitBuffer, num_entries);
++   for (unsigned i = 0; i < num_entries; i++) {
++      cmds[i] = (NativeAdrenoAbiSubmitBuffer) {
++         .handle = entries[i].bo->darwin_handle,
++         .iova = entries[i].bo->iova + entries[i].offset,
++         .bytes = entries[i].size,
++      };
++   }
++}
++
++static void
++darwin_submit_add_bind(struct tu_device *device, void *_submit,
++                       struct tu_sparse_vma *vma, uint64_t vma_offset,
++                       struct tu_bo *bo, uint64_t bo_offset, uint64_t size)
++{
++   UNREACHABLE("sparse binding is not supported by the NativeAdreno kernel client");
++}
++
++/* ---- synchronization: a sync is either signaled, unsignaled, or pending on one kernel fence ---- */
++
++enum darwin_sync_state {
++   DARWIN_SYNC_UNSIGNALED,
++   DARWIN_SYNC_SIGNALED,
++   DARWIN_SYNC_FENCE,
++};
++
++struct vk_darwin_sync {
++   struct vk_sync vk;
++   enum darwin_sync_state state;
++   uint32_t fence;
++};
++
++static VkResult
++vk_darwin_sync_init(struct vk_device *device, struct vk_sync *sync, uint64_t initial_value)
++{
++   struct vk_darwin_sync *s = container_of(sync, struct vk_darwin_sync, vk);
++   s->state = initial_value ? DARWIN_SYNC_SIGNALED : DARWIN_SYNC_UNSIGNALED;
++   s->fence = 0;
++   return VK_SUCCESS;
++}
++
++static void
++vk_darwin_sync_finish(struct vk_device *device, struct vk_sync *sync)
++{
++}
++
++static VkResult
++vk_darwin_sync_reset(struct vk_device *device, struct vk_sync *sync)
++{
++   struct vk_darwin_sync *s = container_of(sync, struct vk_darwin_sync, vk);
++   s->state = DARWIN_SYNC_UNSIGNALED;
++   s->fence = 0;
++   return VK_SUCCESS;
++}
++
++static VkResult
++vk_darwin_sync_move(struct vk_device *device, struct vk_sync *dst, struct vk_sync *src)
++{
++   struct vk_darwin_sync *d = container_of(dst, struct vk_darwin_sync, vk);
++   struct vk_darwin_sync *s = container_of(src, struct vk_darwin_sync, vk);
++   d->state = s->state;
++   d->fence = s->fence;
++   s->state = DARWIN_SYNC_UNSIGNALED;
++   s->fence = 0;
++   return VK_SUCCESS;
++}
++
++static VkResult
++darwin_sync_wait(struct tu_device *device, struct vk_darwin_sync *s, uint64_t abs_timeout_ns)
++{
++   if (s->state == DARWIN_SYNC_UNSIGNALED) {
++      /* Wait for the sync to resolve to a submission first (no wait-before-signal support in the kernel). */
++      if (abs_timeout_ns == 0)
++         return VK_TIMEOUT;
++
++      pthread_mutex_lock(&device->submit_mutex);
++      /* os_time_get_nano() is monotonic but Darwin condition variables wait on the realtime clock. */
++      struct timespec abstime;
++      {
++         uint64_t now = os_time_get_nano();
++         uint64_t relative = abs_timeout_ns > now ? abs_timeout_ns - now : 0;
++         clock_gettime(CLOCK_REALTIME, &abstime);
++         uint64_t nsec = (uint64_t)abstime.tv_nsec + relative % 1000000000ull;
++         abstime.tv_sec += relative / 1000000000ull + nsec / 1000000000ull;
++         abstime.tv_nsec = nsec % 1000000000ull;
++      }
++      while (s->state == DARWIN_SYNC_UNSIGNALED) {
++         int ret;
++         if (abs_timeout_ns == UINT64_MAX)
++            ret = pthread_cond_wait(&device->timeline_cond, &device->submit_mutex);
++         else
++            ret = pthread_cond_timedwait(&device->timeline_cond, &device->submit_mutex, &abstime);
++         if (ret != 0) {
++            assert(ret == ETIMEDOUT);
++            pthread_mutex_unlock(&device->submit_mutex);
++            return VK_TIMEOUT;
++         }
++      }
++      pthread_mutex_unlock(&device->submit_mutex);
++   }
++
++   switch (s->state) {
++   case DARWIN_SYNC_SIGNALED:
++      return VK_SUCCESS;
++   case DARWIN_SYNC_FENCE:
++      return dw_wait_fence_locked_free(device, s->fence, abs_timeout_ns);
++   default:
++      return VK_TIMEOUT;
++   }
++}
++
++static VkResult
++vk_darwin_sync_wait(struct vk_device *_device, struct vk_sync *sync, uint64_t wait_value,
++                    enum vk_sync_wait_flags wait_flags, uint64_t abs_timeout_ns)
++{
++   struct tu_device *device = container_of(_device, struct tu_device, vk);
++   struct vk_darwin_sync *s = container_of(sync, struct vk_darwin_sync, vk);
++
++   if (wait_flags & VK_SYNC_WAIT_PENDING)
++      return VK_SUCCESS;
++
++   return darwin_sync_wait(device, s, abs_timeout_ns);
++}
++
++static VkResult
++vk_darwin_sync_wait_many(struct vk_device *_device, uint32_t wait_count,
++                         const struct vk_sync_wait *waits,
++                         enum vk_sync_wait_flags wait_flags, uint64_t abs_timeout_ns)
++{
++   struct tu_device *device = container_of(_device, struct tu_device, vk);
++
++   if (wait_flags & VK_SYNC_WAIT_PENDING)
++      return VK_SUCCESS;
++
++   if (wait_flags & VK_SYNC_WAIT_ANY) {
++      /* Poll every sync in turn until one is done or the deadline passes. */
++      for (;;) {
++         for (uint32_t i = 0; i < wait_count; i++) {
++            struct vk_darwin_sync *s = container_of(waits[i].sync, struct vk_darwin_sync, vk);
++            if (darwin_sync_wait(device, s, 0) == VK_SUCCESS ||
++                (s->state == DARWIN_SYNC_FENCE &&
++                 dw_wait_fence_locked_free(device, s->fence, 0) == VK_SUCCESS))
++               return VK_SUCCESS;
++         }
++         if (abs_timeout_ns != UINT64_MAX && os_time_get_nano() >= abs_timeout_ns)
++            return VK_TIMEOUT;
++         usleep(200);
++      }
++   }
++
++   for (uint32_t i = 0; i < wait_count; i++) {
++      struct vk_darwin_sync *s = container_of(waits[i].sync, struct vk_darwin_sync, vk);
++      VkResult result = darwin_sync_wait(device, s, abs_timeout_ns);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++   return VK_SUCCESS;
++}
++
++const struct vk_sync_type vk_darwin_sync_type = {
++   .size = sizeof(struct vk_darwin_sync),
++   .features = (enum vk_sync_features)
++               (VK_SYNC_FEATURE_BINARY |
++                VK_SYNC_FEATURE_GPU_WAIT |
++                VK_SYNC_FEATURE_GPU_MULTI_WAIT |
++                VK_SYNC_FEATURE_CPU_WAIT |
++                VK_SYNC_FEATURE_CPU_RESET |
++                VK_SYNC_FEATURE_WAIT_ANY |
++                VK_SYNC_FEATURE_WAIT_PENDING),
++   .init = vk_darwin_sync_init,
++   .finish = vk_darwin_sync_finish,
++   .reset = vk_darwin_sync_reset,
++   .move = vk_darwin_sync_move,
++   .wait = vk_darwin_sync_wait,
++   .wait_many = vk_darwin_sync_wait_many,
++};
++
++static void
++darwin_note_fence(uint32_t fence)
++{
++   if (dw.inflight_count == 8) {
++      memmove(dw.inflight, dw.inflight + 1, 7 * sizeof(dw.inflight[0]));
++      dw.inflight_count = 7;
++   }
++   dw.inflight[dw.inflight_count++] = fence;
++   dw.last_fence = fence;
++}
++
++#ifdef __APPLE__
++/* The clock every trace of the stack uses (CLOCK_UPTIME_RAW: the kernel's mach_absolute_time and the frontend's nowUs()), so rows join by time. */
++static inline uint64_t tu_trace_clock_ns(void) {return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);}
++#else
++static inline uint64_t tu_trace_clock_ns(void) {return os_time_get_nano();}
++#endif
++
++/* The last 512 kernel submissions of this process (tu_darwin_submit_ring_read): when each was handed to the kernel, which fence it got,
++ * and where its time went before and inside the call (waiting for an unsubmitted sync, the kernel's ring having no room).
++ */
++struct tu_darwin_submit_rec {
++   uint64_t ns;            /* os_time_get_nano() when darwin_queue_submit began */
++   uint32_t seq;
++   uint32_t fence;         /* the kernel fence of the last chunk, 0 when nothing was run */
++   uint32_t sync_wait_us;  /* waiting for a sync that was not yet submitted */
++   uint32_t call_us;       /* the kernel calls, ring-space waits included */
++   uint32_t space_wait_us; /* of call_us, waiting for ring space */
++   uint16_t busy;          /* kIOReturnBusy answers */
++   uint8_t chunks;
++   uint8_t buffers;        /* indirect buffers in all chunks, 255 at most */
++};
++static_assert(sizeof(struct tu_darwin_submit_rec) == 32, "submit record");
++static struct tu_darwin_submit_rec darwin_submit_ring[512];
++static uint32_t darwin_submit_seq;
++
++/* The host's diagnostics switch (SHENG_DIAG, set by the plugin from sheng-diag=1): without it no submission is kept in the ring. */
++static bool
++darwin_submit_trace_on(void)
++{
++   static int on = -1;
++   if (on < 0)
++      on = getenv("SHENG_DIAG") != NULL;
++   return on;
++}
++
++extern "C" __attribute__((visibility("default"))) uint32_t tu_darwin_submit_ring_read(uint32_t from, struct tu_darwin_submit_rec *out,
++                                                                                    uint32_t max, uint32_t *newest);
++extern "C" __attribute__((visibility("default"))) uint32_t
++tu_darwin_submit_ring_read(uint32_t from, struct tu_darwin_submit_rec *out, uint32_t max, uint32_t *newest)
++{
++   const uint32_t last = p_atomic_read(&darwin_submit_seq);
++   *newest = last;
++   uint32_t first = from ? from : 1;
++   if (first > last)
++      return 0;
++   if (last - first >= 512)
++      first = last - 511;
++   uint32_t n = 0;
++   for (uint32_t s = first; s <= last && n < max; s++) {
++      const struct tu_darwin_submit_rec rec = darwin_submit_ring[s % 512];
++      if (rec.seq == s)
++         out[n++] = rec;
++   }
++   return n;
++}
++
++/* One kernel submission of up to NativeAdrenoAbiMaxBuffers indirect buffers; while the kernel's ring has no room (kIOReturnBusy, as msm
++ * waits for ring space) it waits for this client's oldest job, or yields when none is in flight. */
++static VkResult
++darwin_submit_chunk(struct tu_queue *queue, const NativeAdrenoAbiSubmitBuffer *entries,
++                    unsigned count, uint32_t *fence, struct tu_darwin_submit_rec *rec)
++{
++   struct tu_device *dev = queue->device;
++   NativeAdrenoAbiSubmit req = {};
++   req.buffer_count = count;
++   req.queue = 0;
++   for (unsigned i = 0; i < count; i++)
++      req.buffers[i] = entries[i];
++
++   for (;;) {
++      NativeAdrenoAbiSubmitReply reply = {};
++      const uint64_t began = tu_trace_clock_ns();
++      kern_return_t kr = dw_call(NativeAdrenoMethodSubmit, &req, sizeof(req), &reply, sizeof(reply));
++      rec->call_us += (uint32_t)MIN2((tu_trace_clock_ns() - began) / 1000, 0xffffffffull - rec->call_us);
++      if (kr == KERN_SUCCESS) {
++         *fence = (uint32_t)reply.fence;
++         return VK_SUCCESS;
++      }
++      if (kr != kIOReturnBusy)
++         return vk_device_set_lost(&dev->vk, "submit failed: 0x%x", kr);
++      rec->busy++;
++
++      pthread_mutex_lock(&dw.lock);
++      uint32_t oldest = dw.inflight_count ? dw.inflight[0] : 0;
++      pthread_mutex_unlock(&dw.lock);
++      const uint64_t waited = tu_trace_clock_ns();
++      if (!oldest)
++         sched_yield();
++      else if (dw_wait_fence_locked_free(dev, oldest, UINT64_MAX) != VK_SUCCESS)
++         return vk_device_set_lost(&dev->vk, "submit: waiting for ring space failed");
++      rec->space_wait_us += (uint32_t)((tu_trace_clock_ns() - waited) / 1000);
++   }
++}
++
++static VkResult
++darwin_queue_submit(struct tu_queue *queue, void *_submit,
++                    struct vk_sync_wait *waits, uint32_t wait_count,
++                    struct vk_sync_signal *signals, uint32_t signal_count,
++                    struct tu_u_trace_submission_data *u_trace_submission_data)
++{
++   struct tu_darwin_queue_submit *submit = (struct tu_darwin_queue_submit *)_submit;
++   struct tu_device *dev = queue->device;
++
++   /* Syncs belong to this client, whose Vulkan queues all use kernel queue 0.
++    * That queue stays on one ring until its outstanding prefix completes, including
++    * when its priority changes. A resolved fence therefore precedes this submission.
++    * Wait-before-signal still waits until the producer has submitted. */
++   struct tu_darwin_submit_rec rec = {};
++   rec.ns = tu_trace_clock_ns();
++   for (uint32_t i = 0; i < wait_count; i++) {
++      struct vk_darwin_sync *s = container_of(waits[i].sync, struct vk_darwin_sync, vk);
++      /* tu_queue_submit() holds submit_mutex here (tu_queue.cc), which the wait releases while it sleeps. */
++      tu_frame_event(43,(uintptr_t)submit,0,(uintptr_t)s,s->state,s->fence,waits[i].wait_value);
++      while (s->state == DARWIN_SYNC_UNSIGNALED)
++         pthread_cond_wait(&dev->timeline_cond, &dev->submit_mutex);
++   }
++   rec.sync_wait_us = (uint32_t)((tu_trace_clock_ns() - rec.ns) / 1000);
++
++   uint32_t fence = 0;
++   const unsigned total = util_dynarray_num_elements(&submit->commands, NativeAdrenoAbiSubmitBuffer);
++   if (total) {
++      const NativeAdrenoAbiSubmitBuffer *all =
++         util_dynarray_element(&submit->commands, NativeAdrenoAbiSubmitBuffer, 0);
++      for (unsigned at = 0; at < total; at += NativeAdrenoAbiMaxBuffers) {
++         unsigned count = MIN2(total - at, (unsigned)NativeAdrenoAbiMaxBuffers);
++         uint32_t chunk_fence = 0;
++         VkResult result = darwin_submit_chunk(queue, all + at, count, &chunk_fence, &rec);
++         if (result != VK_SUCCESS)
++            return result;
++         rec.chunks++;
++         pthread_mutex_lock(&dw.lock);
++         darwin_note_fence(chunk_fence);
++         pthread_mutex_unlock(&dw.lock);
++         fence = chunk_fence;
++         tu_frame_event(38,(uintptr_t)submit,chunk_fence,at,count,rec.busy,rec.space_wait_us,wait_count,signal_count);
++      }
++      p_atomic_set(&queue->fence, fence);
++      rec.buffers = MIN2(total, 255u);
++   } else {
++      /* Nothing to run: the signals resolve with the last earlier submission. */
++      fence = p_atomic_read(&queue->fence) > 0 ? (uint32_t)p_atomic_read(&queue->fence) : 0;
++   }
++
++   rec.fence = fence;
++   if (darwin_submit_trace_on()) {
++      const uint32_t seq = p_atomic_inc_return(&darwin_submit_seq);
++      rec.seq = seq;
++      darwin_submit_ring[seq % 512] = rec;
++   }
++
++   for (uint32_t i = 0; i < signal_count; i++) {
++      struct vk_darwin_sync *s = container_of(signals[i].sync, struct vk_darwin_sync, vk);
++      tu_frame_event(43,(uintptr_t)submit,1,(uintptr_t)s,s->state,fence,signals[i].signal_value);
++      s->fence = fence;
++      s->state = fence ? DARWIN_SYNC_FENCE : DARWIN_SYNC_SIGNALED;
++   }
++
++   if (u_trace_submission_data)
++      u_trace_submission_data->gpu_ts_offset = 0;
++   return VK_SUCCESS;
++}
++
++/* ---- device ---- */
++
++static VkResult
++darwin_device_init(struct tu_device *dev)
++{
++   dev->fd = -1;
++   /* The enumeration probe closed its connection; take the single slot for this device. */
++   if (!dw.open) {
++      VkResult result = dw_open_connection(dev->physical_device->instance);
++      if (result != VK_SUCCESS)
++         return result;
++   }
++   struct darwin_retire_state *retire = (struct darwin_retire_state *)
++      vk_zalloc(&dev->vk.alloc, sizeof(*retire), 8, VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
++   if (!retire) {
++      dw_close_connection();
++      return vk_error(dev, VK_ERROR_OUT_OF_HOST_MEMORY);
++   }
++   if (pthread_mutex_init(&retire->lock, NULL)) {
++      vk_free(&dev->vk.alloc, retire);
++      dw_close_connection();
++      return vk_error(dev, VK_ERROR_INITIALIZATION_FAILED);
++   }
++   dev->darwin_retire = retire;
++   darwin_stats_state = retire;
++   darwin_watch_memory_pressure();
++   retire->pressure_seen = p_atomic_read(&darwin_memory_pressure);
++   return VK_SUCCESS;
++}
++
++static void
++darwin_device_finish(struct tu_device *dev)
++{
++   /* Closing the connection makes the kernel drain the GPU and free every object this client created. */
++   dw_close_connection();
++   struct darwin_retire_state *retire = (struct darwin_retire_state *)dev->darwin_retire;
++   if (retire) {
++      /* Some CreateDevice failure paths already destroyed the VMA heap/mutex.
++       * Never return ranges here: they are either gone or about to be destroyed. */
++      if (debug_get_bool_option("TU_DARWIN_RETIRE_TRACE", false))
++         mesa_logi("darwin BO retirement: enqueued=%llu reaped=%llu pending-at-close=%u pressure=%llu",
++                   (unsigned long long)retire->enqueued, (unsigned long long)retire->reaped,
++                   retire->count, (unsigned long long)retire->pressure_waits);
++      if (retire->cache_stats.lookups)
++         darwin_cache_log(retire);
++      darwin_stats_state = NULL;
++      rb_tree_foreach_safe(struct darwin_va_hole, hole, &retire->va.address, by_address)
++         free(hole);
++      pthread_mutex_destroy(&retire->lock);
++      free(retire->entries);
++      free(retire->cache);
++      vk_free(&dev->vk.alloc, retire);
++      dev->darwin_retire = NULL;
++   }
++}
++
++static int
++darwin_device_get_gpu_timestamp(struct tu_device *dev, uint64_t *ts)
++{
++   NativeAdrenoAbiTimestamp reply = {};
++   if (dw_call(NativeAdrenoMethodGetTimestamp, NULL, 0, &reply, sizeof(reply)) != KERN_SUCCESS)
++      return -1;
++   *ts = reply.ticks;
++   return 0;
++}
++
++static int
++darwin_device_get_suspend_count(struct tu_device *dev, uint64_t *suspend_count)
++{
++   NativeAdrenoAbiStatus reply = {};
++   if (dw_call(NativeAdrenoMethodGetStatus, NULL, 0, &reply, sizeof(reply)) != KERN_SUCCESS)
++      *suspend_count = 0;
++   else
++      *suspend_count = reply.suspends;
++   return 0;
++}
++
++static VkResult
++darwin_device_check_status(struct tu_device *device)
++{
++   NativeAdrenoAbiStatus reply = {};
++   kern_return_t kr = dw_call(NativeAdrenoMethodGetStatus, NULL, 0, &reply, sizeof(reply));
++   if (kr == kIOReturnUnsupported)
++      return VK_SUCCESS; /* counters not attached in this kernel */
++   if (kr != KERN_SUCCESS)
++      return vk_device_set_lost(&device->vk, "error getting GPU status: 0x%x", kr);
++   if (reply.faults != device->fault_count) {
++      device->fault_count = reply.faults;
++      return vk_device_set_lost(&device->vk, "GPU faulted or hung");
++   }
++   return VK_SUCCESS;
++}
++
++/* Lazily allocated memory (VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT), as the msm backend gives it with a settable GPU address
++ * (msm_sparse_vma_init, msm_bo_init): the memory is a GPU range alone until a pass needs its bytes (tu_allocate_transient_attachments: a
++ * sysmem pass, a load or store, LRZ), when a BO is made at that range. A transient attachment a GMEM pass neither loads nor stores never
++ * gets one: Metal's memoryless textures, which Core Animation's render server uses for its intermediate targets, take no memory, as on
++ * Apple's GPUs (untagged-feaf29203: twelve 3048x2032 RGBA16F textures, 758 MiB, held as memory of their own without it). A BO made at
++ * the range owns it from then on and hands it back with itself, after its last submission (darwin_release_native); otherwise the VMA
++ * hands it back. */
++static VkResult
++darwin_sparse_vma_init(struct tu_device *dev, struct vk_object_base *base,
++                       struct tu_sparse_vma *out_vma, uint64_t *out_iova,
++                       enum tu_sparse_vma_flags flags, uint64_t size, uint64_t client_iova)
++{
++   if (flags & TU_SPARSE_VMA_MAP_ZERO)
++      return vk_error(dev, VK_ERROR_FEATURE_NOT_PRESENT);   /* no null mapping: sparse residency is not offered */
++   out_vma->flags = flags;
++   out_vma->msm.size = size;
++   out_vma->msm.backs_lazy_bo = false;
++   VkResult result = darwin_allocate_iova(dev, size, client_iova,
++                                          (flags & TU_SPARSE_VMA_REPLAYABLE) ? TU_BO_ALLOC_REPLAYABLE : TU_BO_ALLOC_NO_FLAGS,
++                                          &out_vma->msm.iova);
++   if (result != VK_SUCCESS)
++      return result;
++   *out_iova = out_vma->msm.iova;
++   return VK_SUCCESS;
++}
++
++static void
++darwin_sparse_vma_finish(struct tu_device *dev, struct tu_sparse_vma *vma)
++{
++   if (!vma->msm.backs_lazy_bo)
++      darwin_free_iova(dev, vma->msm.iova, vma->msm.size);
++}
++
++static const struct tu_knl darwin_knl_funcs = {
++   .name = "darwin",
++
++   .device_init = darwin_device_init,
++   .device_finish = darwin_device_finish,
++   .device_get_gpu_timestamp = darwin_device_get_gpu_timestamp,
++   .device_get_suspend_count = darwin_device_get_suspend_count,
++   .device_check_status = darwin_device_check_status,
++   .submitqueue_new = darwin_submitqueue_new,
++   .submitqueue_close = darwin_submitqueue_close,
++   .bo_init = darwin_bo_init,
++   .bo_init_dmabuf = darwin_bo_init_dmabuf,
++   .bo_init_host = darwin_bo_init_host,
++   .bo_export_dmabuf = darwin_bo_export_dmabuf,
++   .bo_map = darwin_bo_map,
++   .bo_allow_dump = darwin_bo_allow_dump,
++   .bo_finish = darwin_bo_finish,
++   .bo_set_metadata = darwin_bo_set_metadata,
++   .bo_get_metadata = darwin_bo_get_metadata,
++   .submit_create = darwin_submit_create,
++   .submit_finish = darwin_submit_finish,
++   .submit_add_entries = darwin_submit_add_entries,
++   .submit_add_bind = darwin_submit_add_bind,
++   .queue_submit = darwin_queue_submit,
++   .queue_wait_fence = darwin_queue_wait_fence,
++   .sparse_vma_init = darwin_sparse_vma_init,
++   .sparse_vma_finish = darwin_sparse_vma_finish,
++};
++
++VkResult
++tu_knl_darwin_load(struct tu_instance *instance)
++{
++   if (instance->vk.enabled_extensions.KHR_display) {
++      return vk_errorf(instance, VK_ERROR_INITIALIZATION_FAILED, "I can't KHR_display");
++   }
++
++   VkResult result = dw_open_connection(instance);
++   if (result != VK_SUCCESS) {
++      if (result != VK_ERROR_INCOMPATIBLE_DRIVER)
++         mesa_loge("NativeAdreno: could not open the kernel client (%d)", result);
++      return result;
++   }
++
++   struct tu_physical_device *device = (struct tu_physical_device *)
++      vk_zalloc(&instance->vk.alloc, sizeof(*device), 8, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
++   if (!device) {
++      dw_close_connection();
++      return vk_error(instance, VK_ERROR_OUT_OF_HOST_MEMORY);
++   }
++
++   const NativeAdrenoAbiDeviceInfo *info = &dw.info;
++
++   device->instance = instance;
++   device->local_fd = -1;
++   device->master_fd = -1;
++   device->kgsl_dma_fd = -1;
++   snprintf(device->fd_path, sizeof(device->fd_path), "NativeAdrenoGpu");
++
++   device->dev_id.chip_id = info->chip_id;
++   device->dev_id.gpu_id = ((info->chip_id >> 24) & 0xff) * 100 +
++                           ((info->chip_id >> 16) & 0xff) * 10 +
++                           ((info->chip_id >> 8) & 0xff);
++   /* The chip id decodes to the Adreno family only for kgsl-style ids; the freedreno device table matches this chip by
++    * chip id (0x43050a01) alone. */
++   if (info->chip_id == 0x43050a01)
++      device->dev_id.gpu_id = 740;
++   device->gmem_size = debug_get_num_option("TU_GMEM", info->gmem_bytes);
++   device->gmem_base = info->gmem_base;
++   device->uche_trap_base = info->uche_trap_base;
++
++   device->has_set_iova = !!(info->flags & NativeAdrenoDeviceClientIova);
++   device->va_start = info->va_start;
++   device->va_size = info->va_size;
++   /* Lazily allocated memory only where passes may keep attachments in tile memory (darwin_sparse_vma_init). With every pass in system
++    * memory (TU_DEBUG=sysmem) a lazy BO is backed in full at the first pass, on the render thread: 40-112 MiB wired inside
++    * vkCmdEndRenderPass, up to 340 ms each (untagged-3f2bd680), and freed again with the memory. Without the type a memoryless
++    * attachment is ordinary device memory, which the runtime places and keeps spare for the next one. */
++   device->has_lazy_bos = !TU_DEBUG(SYSMEM);
++   device->has_sparse = false;
++   device->has_sparse_prr = false;
++   device->has_raytracing = false;
++   device->has_preemption = false;
++   device->is_perf_cntr_selectable = false;
++   device->has_cached_coherent_memory = !!(info->flags & NativeAdrenoDeviceCachedCoherent);
++   device->has_host_import = !!(dw.params.flags & NativeAdrenoParamsHostImport);
++   device->submitqueue_priority_count = 1;
++
++   device->ubwc_config.highest_bank_bit = info->highest_bank_bit;
++   device->ubwc_config.bank_swizzle_levels = info->ubwc_swizzle;
++   device->ubwc_config.macrotile_mode =
++      info->macrotile_mode ? FDL_MACROTILE_8_CHANNEL : FDL_MACROTILE_4_CHANNEL;
++
++   device->timeline_type = vk_sync_timeline_get_type(&vk_darwin_sync_type);
++   device->sync_types[0] = &vk_darwin_sync_type;
++   device->sync_types[1] = &device->timeline_type.sync;
++   device->sync_types[2] = NULL;
++
++   device->heap.size = tu_get_system_heap_size(device);
++   device->heap.used = 0u;
++   device->heap.flags = VK_MEMORY_HEAP_DEVICE_LOCAL_BIT;
++
++   instance->knl = &darwin_knl_funcs;
++
++   result = tu_physical_device_init(device, instance);
++   /* The enumeration probe only needed the facts; the device takes the slot again in device_init. */
++   dw_close_connection();
++   if (result != VK_SUCCESS) {
++      mesa_loge("NativeAdreno: tu_physical_device_init failed (%d)", result);
++      vk_free(&instance->vk.alloc, device);
++      return result;
++   }
++
++   list_addtail(&device->vk.link, &instance->vk.physical_devices.list);
++   return VK_SUCCESS;
++}

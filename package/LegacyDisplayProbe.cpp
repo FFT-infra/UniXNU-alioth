@@ -407,6 +407,8 @@ extern "C" void flush_dcache64(uint64_t addr, unsigned count, int phys);
 
 // One reading of a surface's memory: every 4096th dword, bounded to 16384 samples. A 1080x2400 frame is
 // 6.5 MiB, so this walks the whole picture without costing a frame. The caller owns the descriptor.
+// The most saturated sample it found on the way, which SURFACEL prints.
+static unsigned bestPixelR, bestPixelG, bestPixelB, bestPixelSpread;
 static bool surfaceMeasure(IOMemoryDescriptor *memory, uint64_t stride, uint64_t height, unsigned *rows,
                            unsigned *litOut, unsigned *lumaOut, unsigned *hashOut) {
 	IOMemoryMap *map = memory->map(kIOMapAnywhere | kIOMapReadOnly | kIOMapCopybackCache);
@@ -421,14 +423,21 @@ static bool surfaceMeasure(IOMemoryDescriptor *memory, uint64_t stride, uint64_t
 	const uint64_t dwords = length / 4;
 	uint64_t lit = 0, luma = 0, samples = 0;
 	uint32_t hash = 2166136261u;
+	// The most saturated sample, so one row answers "is the picture coloured at all, and which
+	// channel leads". A neutral grey frame leaves spread 0; red and blue exchanged swaps R and B here.
+	unsigned bestSpread = 0, bestR = 0, bestG = 0, bestB = 0;
 	for (uint64_t i = 0; i < dwords && samples < 16384; i += 4096) {
 		const uint32_t pixel = base[i];
 		const uint32_t b = pixel & 0xff, g = (pixel >> 8) & 0xff, r = (pixel >> 16) & 0xff;
 		if (r | g | b) lit = lit + 1;
 		luma += (r * 299 + g * 587 + b * 114) / 1000;
+		const unsigned maxc = r > g ? (r > b ? r : b) : (g > b ? g : b);
+		const unsigned minc = r < g ? (r < b ? r : b) : (g < b ? g : b);
+		if (maxc - minc > bestSpread) { bestSpread = maxc - minc; bestR = r; bestG = g; bestB = b; }
 		hash ^= pixel; hash *= 16777619u;
 		samples = samples + 1;
 	}
+	bestPixelR = bestR; bestPixelG = bestG; bestPixelB = bestB; bestPixelSpread = bestSpread;
 	OSSafeReleaseNULL(map);
 	if (!samples) return false;
 	*rows = (*rows) + 1;
@@ -518,9 +527,46 @@ extern "C" void surfaceLateObserved(void) {
 	const uint64_t height = &native_legacy_surface_height ? native_legacy_surface_height(object) : 0;
 	if (!surfaceMeasure(memory, stride, height, &lateRows, &lateLit, &lateLuma, &lateSum)) return;
 	if (!&qcom_usb_debug_write) return;
-	char line[160];
-	const int n = snprintf(line, sizeof line, "SURFACEL n=%u nonblack=%u/1000 luma=%u sum=%08x\n",
-	                      lateRows, lateLit, lateLuma, lateSum);
+	// The surface's own first physical page and length, next to the import counters on the PANEL row:
+	// the only reading that ties "this frame's surface" to "the range the GPU imported". A read-only
+	// import of 2532 pages is a 1080x2400 unpadded buffer, while this surface's 4352 stride needs 2550,
+	// so equal sizes do not prove equal memory and the two numbers have to be printed together.
+	IOByteCount segment = 0;
+	const addr64_t firstPhysical = memory->getPhysicalSegment(0, &segment, kIOMemoryMapperNone);
+	// Does anything at all write this surface? On the first observation of a page it plants two words
+	// through a writable mapping, and every later observation reports whether they are still there.
+	// This opt-in intrusive probe observes only two words; survival does not prove the rest of the
+	// surface was untouched. Normal pixel qualification leaves the compositor's memory alone.
+	static addr64_t magicPage = 0;
+	static bool magicPlanted = false;
+	unsigned magic = 0;
+	unsigned magicEnabled = 0;
+	PE_parse_boot_argn("alioth-surface-magic", &magicEnabled, sizeof magicEnabled);
+	if (magicEnabled) {
+		// Uncached, so the plant reaches DRAM directly and the read sees what is really there: a
+		// cacheable mapping would need a clean whose direction depends on the kernel's helper.
+		IOMemoryMap *w = memory->map(kIOMapAnywhere | kIOMapInhibitCache);
+		if (w && w->getVirtualAddress() && w->getLength() >= 8192) {
+			volatile uint32_t *words = (volatile uint32_t *)w->getVirtualAddress();
+			if (firstPhysical != magicPage) {
+				words[0] = 0xdeadbeefu;
+				words[1024] = 0xfeedfaceu;
+				__asm__ volatile("dsb sy" ::: "memory");
+				magicPage = firstPhysical;
+				magicPlanted = true;
+				magic = 2;   // planted now
+			} else if (magicPlanted) {
+				magic = (words[0] == 0xdeadbeefu && words[1024] == 0xfeedfaceu) ? 1u : 0u;
+			}
+		}
+		OSSafeReleaseNULL(w);
+	}
+	char line[260];
+	const int n = snprintf(line, sizeof line, "SURFACEL n=%u nonblack=%u/1000 luma=%u sum=%08x pa=%llx seg=%llx bytes=%llu stride=%llu magic=%u mx=%u/%u/%u sp=%u\n",
+	                      lateRows, lateLit, lateLuma, lateSum,
+	                      (unsigned long long)firstPhysical, (unsigned long long)segment,
+	                      (unsigned long long)memory->getLength(), (unsigned long long)stride, magic,
+	                      bestPixelR, bestPixelG, bestPixelB, bestPixelSpread);
 	if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
 }
 

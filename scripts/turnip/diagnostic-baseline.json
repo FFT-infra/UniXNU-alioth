@@ -1,0 +1,11 @@
+{
+  "purpose": "Freeze current inspected Mesa, not claim equivalence to the old binary. Source validation stays mandatory. The inherited recorded patch set differs from source; no functional synchronization is made during this diagnostic build.",
+  "mesa_revision": "85fda3b36405bcaea8bffc64aa4f2651dc90770d",
+  "old_binary_source_id": "7f60e1e88f2e653d5d8d0b8578d5e7d9bbc7685c4ab14aca0fca4707b249b825",
+  "old_reported_diff_sha256": "9efea83ca58887e6c36d9fc71860613c00aeeb39d81da8adf1d8f53c70ee4406",
+  "current_orb_diff_sha256": "124d491ffc98f0e97f39952cce714d428f39a3e5e5e61c45bb4549d46dc111c0",
+  "old_untracked_sources_match": true,
+  "patches": [
+    "/Volumes/Disk/xinyang/Lab/Bridge/WorkSpace/alioth/NEW/UniXNU-alioth/patches/mesa/takeover-source-baseline.patch"
+  ]
+}

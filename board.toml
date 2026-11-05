@@ -320,7 +320,7 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # plugin's CDHash (bb44c4be) plus the same two original modules byte for byte, which the
 # script verifies against build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "1587e34750f40d9f4449c59e34f112fbc0e3019fffda617401d6a4b896cc2dd7",
+  "35684e79c41f8e7656f0059ee1dca1702270113171311e058a53b3ca2ad71d7f",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -436,6 +436,17 @@ kernel_args = [
   # SPIs, and XNU only enables a core's IPI after that core has taken one, so each core has to
   # signal itself. It is a component argument, not one of the documented boot arguments, and is
   # recorded as such in porting.toml.
+  # Back to 1 on 2026-11-06: the single-core control does not run. Three boots of sy803101/321/631,
+  # same image with only sheng-smp set to 0, produced 133 lines of console each, ending at
+  # "BOOTLOG beat 0 phase 5" with no SUPER row at all -- the board never reached the supervisor.
+  # So "run on one core and see whether the coin becomes a constant" cannot be asked this way, and
+  # the SMP hypothesis has no cheap A/B. Reading ArmCpu.cpp and the XNU side, the three ways a
+  # secondary core can go wrong are all silent (ArmCpu.cpp:588/590 parks in wfe before the core is
+  # marked Running; a registration that never completes ml_cpu_init_completed keeps every thread on
+  # the little cluster; a single lost self-IPI leaves that core un-signallable), but every one of
+  # them is a slowdown, not a boot that renders a dozen batches and then never presents. The
+  # counters that would settle it exist and are printed nowhere: armcpu_core_timer[],
+  # armcpu_core_sgi[], armcpu_spi_ipi_check[], armcpu_timer_short[] (ArmCpu.cpp:28-31).
   "sheng-smp=1",
   "armcpu-spi-ipi=1",
   "armcpu-self-ipi=1",
@@ -603,12 +614,12 @@ kernel_args = [
   # landed while the data store was still being written on every round, which is the most likely reason the
   # persisted userspace state degraded across boots (askers 7 -> 4 -> 3 -> 1 on 2026-11-04). The round
   # script waits 500 s for fastboot to match.
-  # 250 from 2026-11-05 19:1x at the user's request: the 240 s wait for the reset after a 160 s capture is
-  # most of a round's wall time. This is the value that was reverted on 2026-11-05 because `askers` fell to 1
-  # and `sw` to 0 with it; that was never an isolated test, so the next round that uses it must read `askers`,
-  # `sw`, the persistent log's `slots_written`, and whether the desktop appears before the reset. A regression
-  # there puts this back to 400.
-  "sheng-autoreset=250",
+  # Back to 400 on 2026-11-06. 250 was tried from 2026-11-05 19:1x for round wall time, and the regression the
+  # line above asked to watch for is what happened: sy1-sy5 ran 250 and reached the desktop on one boot of
+  # seven, with two distinct failure shapes (tf frozen at 840/841 with the display never owned; and a boot that
+  # stayed alive to 260 s with own=0). The 400 rounds before it read askers 5-8 with sw climbing. One variable
+  # changed against sy5, so this round measures the reset deadline and nothing else.
+  "sheng-autoreset=400",
   # The physical keys and the panel brightness are both compiled in and both called from
   # LegacyDisplayProbe (alioth_buttons_probe and alioth_backlight_probe, :951-954), but each
   # returns on its first line unless its own boot argument is present, so until these two
@@ -644,9 +655,17 @@ kernel_args = [
   # kIOHIDDigitizerEventFromEdgeTip, which is the only thing UIKit reads to classify an edge
   # touch; without it the home-swipe and the switcher gestures are type 0 and never recognise.
   # Only the bottom edge is marked and an unfilled begin position is skipped (NativeHidInput.cpp).
-  # Removed 2026-11-04: NativeHidInput.cpp:173 reads `e==1`, so passing 0 writes the default and
-  # spends 18 bytes of a command line that is at its 1000-byte limit.
-  # "sheng-touch-edge=0",
+  # Back on 2026-11-05: the note that removed it said passing 0 "writes the default", but
+  # NativeHidInput.cpp:173 is `applyEdge = PE_parse_boot_argn(...) && e==1`, so absent and 0 are both
+  # OFF - the boot arg is the whole switch. e4e3bed disabled it on 2026-11-02 and the home swipe and
+  # the switcher have been dead since; 28aa098 had turned it on and u244 confirmed it on the board.
+  "sheng-touch-edge=1",
+  # sheng-gpu-clients=2 refuses every GPU client after the first two. The desktop has only ever come
+  # up in boots where the client open failed (ok1, hh19312: SpringBoard no-device, compositor falls
+  # back to software); every boot that handed out a device stayed on the boot frame. That state used
+  # to arrive by luck, as a side effect of a poisoned submit. This asks for it on purpose, so the
+  # tablet is usable while the GPU path is still being fixed. Set it to a large number to undo.
+  # "sheng-gpu-clients=2",   # off for the 11-03 restore round: this round needs clients ON the GPU.
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
@@ -717,6 +736,13 @@ kernel_args = [
   # Mode 6 adds CX power-on, the GPU SMMU clock and the 200 MHz GMU clock. Judgement line:
   # "GPU m1 gcc=ok cc=ok smmu=ok gpu=ok io=0".
   "pipa-gpu=12",
+  # Restoring the configuration the GPU actually consumed a ring under. 11-01 and 11-03 both ran
+  # with write-combining off, the zap/secure-mode handshake done, and the hangcheck disabled; today
+  # all three are the other way. One round with all three back answers "is any of them the cause"
+  # before bisecting them one at a time (progress/2026-11-05-why-it-worked.md).
+  "sheng-gpu-wc=0",
+  "pipa-gpu-zap=1",
+  "sheng-gpu-norestart=1",
   # The PCIe controller steps; step 1 only reads, criterion gcc pcie_0_gdscr = 0x22f001.
   # Mounts the payload addon; the wallpaper overlay arrives through it.
   "sheng-gpu-addon=1",
@@ -748,7 +774,27 @@ kernel_args = [
   # Set back to 1 for the m23 probe round only: the whole-scanout fill and its read-back live in the GPU
   # client (GpuScanoutClient.h, kScanoutFillProbe), which exists only while this is 1. The panel will not
   # update on that round; the readings are MT4 f<result>/<per-mille seen> against the PANEL row.
-  "sheng-fb-gpu=0",
+  # 1 from 2026-11-06, following the reference board. UniXNU-sheng/board.toml passes
+  # sheng-fb-gpu=1 together with offline-legacy-cpu-present=1, so its composited frame is offered to
+  # the privileged GPU client instead of being copied by the CPU; this board passes the same gate
+  # through offline-legacy-retire=1 (NativeLegacyDisplay.cpp:920-923, one condition).
+  # The two entries above that kept this at 0 are older than the no-copy import work: mp1 measured a
+  # GPU fill that never reached panel memory, and the plugin has since grown the range remap that
+  # nmb_no_copy_remaps() counts (75a2a48) plus the surface write lock (5672fa9, narrowed 2026-11-06
+  # to first-map only). Whether the GPU now reaches 0x9c000000 is exactly what the PANEL row answers:
+  # the kernel reads that page through an uncached mapping, so a changed PANEL means the GPU wrote
+  # display memory and a static 911 means it wrote a copy.
+  # Held at 0 for the touch round: the desktop is up on this path and NativeGOPresenter.cpp:122
+  # removes the CPU copy when gpuMode is set, so turning it on now would trade a working display
+  # for the probe. The probe round is queued: with 1 the only judge is the PANEL row, because a
+  # GPU that cannot write 0x9c000000 leaves it at 911 and there is no frame either way.
+  # "sheng-fb-gpu=1",
+  #
+  # The known-image colour check (porting/gpu.md step 3) is held back: sheng-swaptest=1 plus
+  # sheng-gpu-trace=1 and sheng-diag-export=200 is 52 bytes, and the line is already at its limit.
+  # It also runs a Metal pass of its own in the render server, which is a second variable in a
+  # round whose only question is whether the boot reaches the desktop. Add it once a boot reaches
+  # the desktop every time; the sequence is recorded in progress/2026-11-06-turnip-patch-set.md.
   # The published-device pixel qualification: owned fixtures, exact expected pixels, CPU and GPU
   # readback checked apart. It answers whether this GPU's Metal stack can put pixels into an
   # imported IOSurface at all, which the display path cannot ask without the compositor's own frame.
@@ -779,7 +825,21 @@ kernel_args = [
   # second run — read with the TWRP reader, because the USB console carried no SUPER row at all — says
   # "stage=4 branch=0 flips=0 mapped=0 refused=0": the path armed and then nothing was ever offered.
   # Direct scanout stays the target; it needs its own round that finds how stage 4 stops the supervisor.
-  "sheng-dpu-scanout=0",
+  # Set to 0 on 2026-11-06, which is what the entry above already said to do and what the upstream
+  # display page documents: "直接扫描输出（`sheng-dpu-scanout=2`）为实验功能，默认关闭", and the
+  # porting order it gives is to validate the CPU presentation path first (pixel layout, stride,
+  # allocation size, cache handling) and only then enable GPU presentation. Every boot since
+  # 2026-11-04 has run the experimental path (VSYNC ds=4, "mapped and taken"), so the desktop's
+  # half-the-time result was measured on a path the reference does not use. This round takes the
+  # documented one and nothing else changes.
+  # Back to 2 the same night: three boots of s110423221/30452/38083 with 0 read ds=1, own=0, sw=0,
+  # PANEL=911 and no SURFACEL row at all -- the client never called the display, so the documented
+  # CPU presentation path puts nothing on this panel as the tree stands. The upstream page calls
+  # direct scanout experimental and off by default; on this board it is the only path that has ever
+  # drawn (2026-10-29 "GPUSWAP copied 92", fix125 522 flips, and ds=4 on every good boot since).
+  # Following the documented default here costs the desktop, so the deviation stands until the CPU
+  # path is made to present.
+  "sheng-dpu-scanout=2",
   # pipa-metal-withhold=none was tried on 2026-10-29: SpringBoard stops trapping but the
   # compositor then sends swaps with no surface (reason 1), so nothing draws. The default
   # withholds the Apple GPU families, which is the configuration where the desktop appears.
@@ -833,12 +893,17 @@ kernel_args = [
   # The tracer is opt-in (BootProcessProbe.c:104, and docs/zh/porting/log-capture.md gives
   # "sheng-log=1 boot-ui-trace=1" as the usage). Without it the probe returns before recording
   # anything, which is why every STK row was empty. It captures on its 44th..48th call (~90 s).
+  # On from 2026-11-06: the upstream display page's own next step for a boot that never presents is
+  # "先抓取显示服务和 SpringBoard 的等待链" (porting/display), and this is the documented tool. Slots 1
+  # and 2 are backboardd and SpringBoard by default (BootProcessProbe.c:35 trace_slot[]={0,1,1}), so
+  # the argument alone traces both. The capture runs on the 44th..48th call of the worker, about 90 s,
+  # which is after the point where a bad boot stops submitting and inside the stall.
   "boot-ui-trace=1",
   # trace=1 alone still records nothing for slots 1 and 2: BootProcessProbe.c only sets
   # trace_slot[] for focus3/focus4, and for focus/focus2 through boot-ui-follow. Without this the
   # probe walked the processes and stored no stack, which is why STK stayed empty with the trace on.
-  "boot-ui-follow=1",
-  "boot-ui-focus=SpringBoard",
+  # "boot-ui-follow=1",
+  # "boot-ui-focus=SpringBoard",
   # Slots 3 and 4 (PosterBoard, mediaserverd) are left out: PosterBoard has not appeared in any of
   # the boots that stop before the desktop, and a third and fourth trace cost 53 bytes the command
   # line does not have. Add them back when the render server is drawing.
@@ -928,6 +993,11 @@ display-scale = 3
 product-name = "iPad Pro (12.9-inch) (2nd generation)"
 product-description = "iPad Pro (12.9-inch) (2nd generation)"
 artwork-device-idiom = "pad"
+# The 8-bit BGRA framebuffer path is sRGB, and every sheng-family device record lists this line as
+# part of the display configuration ("The board configuration declares sRGB for the current 8-bit
+# framebuffer path", porting/display.md). The OS profile's default is P3, which this board does not
+# have a wide-gamut panel for, so the overlay names sRGB.
+artwork-display-gamut = "sRGB"
 
 [adt.product.u32]
 artwork-device-subtype = 2732

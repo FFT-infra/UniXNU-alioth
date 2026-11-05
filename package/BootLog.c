@@ -130,6 +130,13 @@ extern volatile uint32_t native_adreno_table_switches[8] __attribute__((weak_imp
 extern volatile uint32_t native_adreno_ttbr0_tlb[3] __attribute__((weak_import));
 /* [0] hangs, [1] restarts, [2] failed restarts, [3] the last hung fence, [4] the last restart s IOReturn, [5] replayed, [6] hangs with a guilty job, [7] hangs of the kernel s own VM. */
 extern volatile uint32_t native_adreno_recovery[8] __attribute__((weak_import));
+// Per-hang counters and the address-space residency: hangs/restarts/failed/replayed/guilty/kernel-VM, then
+// live/max VMs with the last table error and step, then the SMMU faults ended before a restart and their FSR.
+extern volatile uint32_t native_adreno_recovery_fault[5] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_hang_first[16] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_ring_pos[4] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_ring_stall[26] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_table_switches[8] __attribute__((weak_import));
 /* Where the last recover() stopped: [0] the step (1 fence read, 2 restart hook, 3 table write, 4 nop encode, 5 replay vm, 6 replay submit), [1] the IOReturn or value there, [2] fence, [3] last submitted. */
 extern volatile uint32_t native_adreno_recover_trace[4] __attribute__((weak_import));
 extern uint32_t native_gpu_restart_step;
@@ -214,6 +221,29 @@ extern volatile uint32_t native_touch_seq __attribute__((weak_import));
 extern volatile uint32_t native_touch_count __attribute__((weak_import));
 extern volatile unsigned native_touch_frame_raw[8] __attribute__((weak_import));
 extern volatile uint32_t native_touch_loop_step __attribute__((weak_import));
+extern volatile unsigned native_touch_frame_rc __attribute__((weak_import));
+extern volatile unsigned native_touch_irq_low __attribute__((weak_import));
+extern volatile uint32_t native_touch_core __attribute__((weak_import));
+// One declarator per line: the attribute belongs to the declarator it follows, so a list leaves
+// every name but the last strongly referenced and `&sym ? ...` then reads as always true (-Werror).
+extern volatile uint32_t armcpu_core_timer[8] __attribute__((weak_import));
+// Timer interrupts whose deadline was already past when the core got to them (fewer than 1000 ticks
+// ahead), and the last one's margin. A blocked IOSleep that never returns needs a missed deadline on
+// some core; these two say whether that is happening and on which.
+extern volatile uint32_t armcpu_timer_short[8] __attribute__((weak_import));
+extern volatile int32_t armcpu_timer_ahead[8] __attribute__((weak_import));
+extern volatile uint32_t armcpu_core_sgi[8] __attribute__((weak_import));
+extern volatile uint32_t armcpu_smp_running __attribute__((weak_import));
+extern volatile uint64_t armcpu_timer_interrupts __attribute__((weak_import));
+extern volatile uint64_t armcpu_ipi_interrupts __attribute__((weak_import));
+extern volatile uint64_t armcpu_ipi_sent __attribute__((weak_import));
+// quiesceCPU() turns the core's virtual timer off (CNTV_CTL=0) and its Group 1 interrupts off
+// (ICC_IGRPEN1_EL1=0); haltCPU() calls it. Only initCPU turns them back on, so a core that halts and
+// is woken by a path that does not re-init it stops taking timer interrupts, and any thread blocked
+// on a deadline there never wakes. These two counters say whether that path runs at all.
+extern volatile uint32_t armcpu_quiesce_calls __attribute__((weak_import));
+extern volatile uint32_t armcpu_halt_calls __attribute__((weak_import));
+extern volatile uint32_t armcpu_irq_phase __attribute__((weak_import));
 extern int boot_kthread_report(const char *, char *, unsigned) __attribute__((weak_import));
 extern volatile uint32_t native_touch_fail_step __attribute__((weak_import));
 extern volatile int32_t native_backlight_request[6] __attribute__((weak_import));
@@ -229,7 +259,11 @@ struct native_adreno_client_text {char name[20]; char text[64];};
 extern struct native_adreno_client_text native_adreno_client_text[8] __attribute__((weak_import));
 /* [0] the marker count, [1..16] the plugin's newest progress markers, from NativeAdrenoPublish.cpp. */
 extern volatile uint32_t native_adreno_metal_marks[17] __attribute__((weak_import));
-extern volatile uint32_t native_adreno_mount_fail[4] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_mount_fail[12] __attribute__((weak_import));
+// {site,count} pairs: which poison() call in NativeAdrenoSubmit.cpp refused, and how often.
+extern volatile uint32_t native_adreno_submit_poison[6] __attribute__((weak_import));
+// The hang-recovery step that refused (step, status) and the counters around it: hangs, restarts, failed.
+extern volatile uint32_t native_adreno_recovery[8] __attribute__((weak_import));
 /* The display service's own user-client record: whether any process opened it at all, which pid,
  * and the status of the last open. A boot that never takes the display splits in two here — nobody
  * opened it, or somebody opened it and never swapped. */
@@ -260,6 +294,9 @@ extern volatile uint32_t native_adreno_ring_log[4][4 + 112] __attribute__((weak_
 extern volatile uint32_t native_adreno_ring_log_count __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ib_log[4][6 + 96 + 96 + 2 + 16 + 80] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ib_log_count __attribute__((weak_import));
+extern volatile uint64_t *native_adreno_boundary_log __attribute__((weak_import));
+extern volatile uint32_t native_adreno_boundary_count __attribute__((weak_import));
+extern volatile uint32_t native_adreno_boundary_lost __attribute__((weak_import));
 /* The submission's coherence sample and the write-combined distrust count (NativeAdrenoSubmit.cpp:289-301): [0] samples taken,
  * [1..3] the cached and uncached reads of the first IB word, [4] submissions that found a dirty line and dropped write-combined,
  * [5..7] the first such sample. A third submission whose IB head reads as zeros is only "Metal wrote nothing" if [4] stays 0. */
@@ -1882,11 +1919,17 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
       // here; a boot that draws has it climbing.
       /* tf/lp are the touch loop's frame count and the step it is in. A boot that stops
        * compositing also stops that loop, and the two readings on one line are what say whether
-       * they are the same event without needing the persistent log, which stalls on its own. */
+       * they are the same event without needing the persistent log, which stalls on its own.
+       * tf alone cannot say why it stopped: step 0 covers the 6 ms sleep, and native_touch_frames
+       * is incremented only after a successful read, so "frozen at lp=0" is equally "every read
+       * failed" (FocalTouchProbe.cpp:614-626). tfrc is the last read's negative status, tfs the
+       * first failure's step, and tlow the IRQ line's low count, which climbs on every iteration
+       * whether the read succeeds or not. A frozen tf with tlow climbing is a dead controller; a
+       * frozen tf with tlow frozen is a thread that is no longer scheduled. */
       // wdt is the arm flag and the pet count: a boot whose supervisor runs has pets climbing once
       // a second, so a pet count that stops while this row keeps printing is a watchdog write that
       // no longer lands, and a row that stops printing is a supervisor that stopped.
-      const int n = snprintf(line, sizeof line, "SUPER t=%us runs=%u calls=%u mon=%llu sw=%u/%u/%u own=%u prep=%u data=%u tf=%u lp=%u vr=%u wdt=%d/%d u=%08x d=%08x bg=%08x ns=%u\n", elapsed,
+      const int n = snprintf(line, sizeof line, "SUPER t=%us runs=%u calls=%u mon=%llu sw=%u/%u/%u own=%u prep=%u data=%u tf=%u lp=%u tc=%u tfrc=%u tfs=%u tlow=%u vr=%u wdt=%d/%d u=%08x d=%08x bg=%08x ns=%u\n", elapsed,
                              boot_log_super_runs, boot_log_tick_calls,
                              &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL,
                              &native_legacy_swap_validation_calls ? native_legacy_swap_validation_calls : 0u,
@@ -1897,6 +1940,10 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                              &native_data_persist_state ? (unsigned)__atomic_load_n(&native_data_persist_state, __ATOMIC_RELAXED) : 0u,
                              &native_touch_frames ? __atomic_load_n(&native_touch_frames, __ATOMIC_RELAXED) : 0u,
                              &native_touch_loop_step ? __atomic_load_n(&native_touch_loop_step, __ATOMIC_RELAXED) : 0u,
+                             &native_touch_core ? __atomic_load_n(&native_touch_core, __ATOMIC_RELAXED) : 0u,
+                             &native_touch_frame_rc ? __atomic_load_n(&native_touch_frame_rc, __ATOMIC_RELAXED) : 0u,
+                             &native_touch_fail_step ? __atomic_load_n(&native_touch_fail_step, __ATOMIC_RELAXED) : 0u,
+                             &native_touch_irq_low ? __atomic_load_n(&native_touch_irq_low, __ATOMIC_RELAXED) : 0u,
                              &native_legacy_swap_validation_reason ? native_legacy_swap_validation_reason : 0u,
                              boot_reset_wdt_stats[0], boot_reset_wdt_stats[1],
                              &native_legacy_swap_req ? native_legacy_swap_req[0] : 0u,
@@ -1904,6 +1951,46 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                              &native_legacy_swap_req ? native_legacy_swap_req[2] : 0u,
                              &native_legacy_swap_req ? native_legacy_swap_req[3] : 0u);
       if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+      /* Per-core interrupt health, next to the row it explains. On this board two different timed
+       * waits stop about six seconds into the boot while the supervisor's own one keeps ticking:
+       * the boot-progress monitor stops after seven iterations in every boot, and the touch loop
+       * freezes at about 840 frames with native_touch_frame_rc, native_touch_fail_step and
+       * native_touch_irq_low all at zero, i.e. asleep in clock_delay_until after a successful read
+       * and never woken (2026-11-06, console-s903542: tf=839 lp=0 tfrc=0 tfs=0 tlow=0 while the
+       * desktop was up and sw=8). ArmCpu counts each core's architectural timer interrupts and
+       * SGI 0 in armcpu_core_timer[] and armcpu_core_sgi[], and both were printed nowhere. A core
+       * whose timer count freezes while another's climbs is a core that stopped taking its timer,
+       * which is the one failure that would leave a thread blocked in a deadline wait for ever
+       * without failing a single read. irq/ipi/sent are the totals and what the kernel asked for. */
+      if (&armcpu_core_timer) {
+        char core[192];
+        int cn = snprintf(core, sizeof core, "CPUT t=%us irq=%llu ipi=%llu sent=%llu |", elapsed,
+                          (unsigned long long)(&armcpu_timer_interrupts ? __atomic_load_n(&armcpu_timer_interrupts, __ATOMIC_RELAXED) : 0ull),
+                          (unsigned long long)(&armcpu_ipi_interrupts ? __atomic_load_n(&armcpu_ipi_interrupts, __ATOMIC_RELAXED) : 0ull),
+                          (unsigned long long)(&armcpu_ipi_sent ? __atomic_load_n(&armcpu_ipi_sent, __ATOMIC_RELAXED) : 0ull));
+        unsigned cores = &armcpu_smp_running ? armcpu_smp_running : 1u;
+        if (cores > 8) cores = 8;
+        for (unsigned c = 0; c < cores && cn > 0 && (unsigned)cn < sizeof core - 24; ++c)
+          cn += snprintf(core + cn, sizeof core - (unsigned)cn, " c%u=%u/%u",
+                         c, __atomic_load_n(&armcpu_core_timer[c], __ATOMIC_RELAXED),
+                         __atomic_load_n(&armcpu_core_sgi[c], __ATOMIC_RELAXED));
+        if (cn > 0) {core[cn++] = '\n'; if (&qcom_usb_debug_write) qcom_usb_debug_write(core, (size_t)cn);}
+        // Same cores again, from the deadline side: how often the architectural timer was already past due and
+        // how far ahead the last one was. A thread blocked in a timed wait whose deadline is skipped here never
+        // wakes, so this is the row that turns "the touch loop stopped" into a timer question.
+        if (&armcpu_timer_short) {
+          char miss[192];
+          int mn = snprintf(miss, sizeof miss, "CPUTM t=%us q=%u h=%u irqph=%u |", elapsed,
+                            &armcpu_quiesce_calls ? __atomic_load_n(&armcpu_quiesce_calls, __ATOMIC_RELAXED) : 0u,
+                            &armcpu_halt_calls ? __atomic_load_n(&armcpu_halt_calls, __ATOMIC_RELAXED) : 0u,
+                            &armcpu_irq_phase ? __atomic_load_n(&armcpu_irq_phase, __ATOMIC_RELAXED) : 0u);
+          for (unsigned c = 0; c < cores && mn > 0 && (unsigned)mn < sizeof miss - 22; ++c)
+            mn += snprintf(miss + mn, sizeof miss - (unsigned)mn, " c%u=%u/%d",
+                           c, __atomic_load_n(&armcpu_timer_short[c], __ATOMIC_RELAXED),
+                           __atomic_load_n(&armcpu_timer_ahead[c], __ATOMIC_RELAXED));
+          if (mn > 0) {miss[mn++] = '\n'; if (&qcom_usb_debug_write) qcom_usb_debug_write(miss, (size_t)mn);}
+        }
+      }
       // The refresh tick and the direct-scanout window, on the console. The six vsync counters
       // existed but nothing printed them (they were "kept for a future reader"), and the DPU
       // window's state only reached the UFS slot -- which is exactly the half a boot that stops
@@ -1945,12 +2032,28 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
         extern volatile uint64_t native_adreno_readonly_imports;
         extern volatile uint64_t native_adreno_readonly_address;
         extern volatile uint64_t native_adreno_readonly_bytes;
+        // The read-only import's first physical page: compared with gop= above, this says whether the
+        // range that could not be wired for writing is the framebuffer itself or something else.
+        extern volatile uint64_t native_adreno_readonly_phys;
+        // The three most recent frame-sized imports' first physical pages, newest first. The framebuffer
+        // is one of them; if none of these is 9c000000, the GPU's copy never had the panel's pages.
+        extern volatile uint64_t native_adreno_large_imports[11];
+        // The process whose range had to be imported read-only: a render server's own surfaces and a
+        // sampler's read-only texture look identical in the counters, and only one of them is a fault.
+        extern char native_adreno_readonly_proc[17];
+        // FSR/FAR/FSYNR0 of the SMMU context the GPU runs on. stall_on_fault=0 and no fault interrupt mean a
+        // refused store is dropped silently, so this is the only place the refusal shows.
+        extern bool native_adreno_fault_read(uint32_t *);
+        // The page-table class the last imported range was programmed with: permissions, cache index, shareability.
+        extern volatile uint32_t native_adreno_map_attrs[4];
+        uint32_t fault[4] = {0, 0, 0, 0};
+        if (&native_adreno_fault_read) native_adreno_fault_read(fault);
         extern volatile uint32_t native_adreno_import_plain_writable;
         extern volatile uint64_t native_adreno_readonly_large[3];
         extern volatile uint64_t native_adreno_import_diag[10];
-        char q[320];
+        char q[640];
         const int qn = snprintf(q, sizeof q,
-                                "PANEL nonblack=%u/1000 luma=%u rgb=%u/%u/%u sum=%08x gpu off=%llu comp=%llu fail=%llu aban=%llu gop=%llx/%llx fen=%u/%u/%u/%u ro=%llu roa=%llx/%llu pw=%u imp=%llu/%llu rlg=%llu/%llx/%llu\n",
+                                "PANEL nonblack=%u/1000 luma=%u rgb=%u/%u/%u sum=%08x gpu off=%llu comp=%llu fail=%llu aban=%llu gop=%llx/%llx fen=%u/%u/%u/%u ro=%llu roa=%llx/%llu pw=%u imp=%llu/%llu rlg=%llu/%llx/%llu rop=%llx lip=%llx,%llx,%llx lsp=%llu/%llx ropn=%s fs=%x/%x/%x/%x ma=%u/%u/%u cp=%u/%x tlb=%u/%u/%x\n",
                                 p[0], p[1], p[2], p[3], p[4], p[5],
                                 &native_gop_gpu_offers ? (unsigned long long)native_gop_gpu_offers : 0ULL,
                                 &native_gop_gpu_completions ? (unsigned long long)native_gop_gpu_completions : 0ULL,
@@ -1967,7 +2070,21 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                                 (unsigned long long)native_adreno_import_diag[1],
                                 (unsigned long long)native_adreno_readonly_large[0],
                                 (unsigned long long)native_adreno_readonly_large[1],
-                                (unsigned long long)native_adreno_readonly_large[2]);
+                                (unsigned long long)native_adreno_readonly_large[2],
+                                (unsigned long long)native_adreno_readonly_phys,
+                                (unsigned long long)native_adreno_large_imports[1],
+                                (unsigned long long)native_adreno_large_imports[3],
+                                (unsigned long long)native_adreno_large_imports[5],
+                                (unsigned long long)native_adreno_large_imports[7],
+                                (unsigned long long)native_adreno_large_imports[9],
+                                native_adreno_readonly_proc[0] ? native_adreno_readonly_proc : "-",
+                                fault[0], fault[1], fault[2], fault[3],
+                                native_adreno_map_attrs[0], native_adreno_map_attrs[1], native_adreno_map_attrs[2],
+                                &native_adreno_cp_aperture ? native_adreno_cp_aperture[3] : 0u,
+                                &native_adreno_cp_aperture ? native_adreno_cp_aperture[2] : 0u,
+                                &native_adreno_ttbr0_tlb ? native_adreno_ttbr0_tlb[0] : 0u,
+                                &native_adreno_ttbr0_tlb ? native_adreno_ttbr0_tlb[1] : 0u,
+                                &native_adreno_ttbr0_tlb ? native_adreno_ttbr0_tlb[2] : 0u);
         if (qn > 0 && &qcom_usb_debug_write)
           qcom_usb_debug_write(q, (size_t)qn < sizeof q ? (size_t)qn : sizeof q - 1);
       }
@@ -2028,21 +2145,117 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
         if (&native_adreno_metal_marks)
           for (unsigned i = 1; i < 17 && rn + 8 < sizeof ring; ++i)
             rn += (size_t)snprintf(ring + rn, sizeof ring - rn, " %x", native_adreno_metal_marks[i]);
-        char g[640];
-        int gn = snprintf(g, sizeof g, "GPUCLI clients=%u mountfail=%u/%x/%u askers=%u[%s] disp=%u/%d/%x marks=%u%s txt=%s:%.60s\n",
+        // The other processes' lines. One text row per process was printed and the rest were unreachable:
+        // a boot has more than one Metal client and the one that matters (the compositor) is not always the
+        // first to arrive, so the row carries up to three.
+        char rest[260];
+        size_t xn = 0;
+        rest[0] = 0;
+        if (&native_adreno_client_text)
+          for (unsigned i = 0; i < 8 && xn + 78 < sizeof rest; ++i)
+            if (native_adreno_client_text[i].name[0] && strcmp(native_adreno_client_text[i].name, who) != 0)
+              xn += (size_t)snprintf(rest + xn, sizeof rest - xn, " %s:%.52s |", native_adreno_client_text[i].name,
+                                     native_adreno_client_text[i].text[0] ? native_adreno_client_text[i].text : "-");
+        char g[960];
+        int gn = snprintf(g, sizeof g, "GPUCLI clients=%u mountfail=%u/%x/%u d=%u%u%u/%u/%u/%u ps=%u/%u,%u/%u rc=%u/%x/%u/%u askers=%u[%s] disp=%u/%d/%x marks=%u%s txt=%s:%.60s%s\n",
                           named,
                           &native_adreno_mount_fail ? native_adreno_mount_fail[0] : 0u,
                           &native_adreno_mount_fail ? native_adreno_mount_fail[1] : 0u,
                           &native_adreno_mount_fail ? native_adreno_mount_fail[3] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[4] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[5] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[6] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[7] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[8] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[9] : 0u,
+                          &native_adreno_submit_poison ? native_adreno_submit_poison[0] : 0u,
+                          &native_adreno_submit_poison ? native_adreno_submit_poison[1] : 0u,
+                          &native_adreno_submit_poison ? native_adreno_submit_poison[2] : 0u,
+                          &native_adreno_submit_poison ? native_adreno_submit_poison[3] : 0u,
+                          &native_adreno_recover_trace ? native_adreno_recover_trace[0] : 0u,
+                          &native_adreno_recover_trace ? native_adreno_recover_trace[1] : 0u,
+                          &native_adreno_recovery ? native_adreno_recovery[0] : 0u,
+                          &native_adreno_recovery ? native_adreno_recovery[2] : 0u,
                           askers, names,
                           native_legacy_client_calls,
                           native_legacy_client_pid,
                           (unsigned)native_legacy_client_status,
                           &native_adreno_metal_marks ? native_adreno_metal_marks[0] : 0u,
                           ring,
-                          who, txt);
+                          who, txt, rest);
         if (gn > 0 && &qcom_usb_debug_write)
           qcom_usb_debug_write(g, (size_t)gn < sizeof g ? (size_t)gn : sizeof g - 1);
+      }
+      // The first GPU hang of the boot, once: what the CP was executing and where its pointers were. A steady state of one hang
+      // per submission says less than the hang that started it.
+      static int hang1_printed = 0;
+      if (!hang1_printed && &native_adreno_hang_first && native_adreno_hang_first[0] && &qcom_usb_debug_write) {
+        char h1[240];
+        const int hn = snprintf(h1, sizeof h1,
+            "HANG1 n=%u fence=%u ring=%u pid=%d wc=%u xvm=%u rp=%x wp=%x cps=%x rbbm=%x ib1=%x rem=%x act=%u w0=%08x d=%u st=%x\n",
+            native_adreno_hang_first[0], native_adreno_hang_first[1], native_adreno_hang_first[2],
+            (int)native_adreno_hang_first[3], native_adreno_hang_first[4], native_adreno_hang_first[5],
+            native_adreno_hang_first[6], native_adreno_hang_first[7], native_adreno_hang_first[8],
+            native_adreno_hang_first[9], native_adreno_hang_first[10], native_adreno_hang_first[11],
+            native_adreno_hang_first[12], native_adreno_hang_first[13], native_adreno_hang_first[14],
+            native_adreno_hang_first[15]);
+        if (hn > 0) qcom_usb_debug_write(h1, (size_t)hn < sizeof h1 ? (size_t)hn : sizeof h1 - 1);
+        hang1_printed = 1;
+      }
+      // The words the command processor stopped on, once: three rows of eight, read at the read pointer it never left.
+      static int stall_printed = 0;
+      if (!stall_printed && &native_adreno_ring_stall && native_adreno_ring_stall[24] && &qcom_usb_debug_write) {
+        for (unsigned b = 0; b < 3; ++b) {
+          char rs[200];
+          const int rn = snprintf(rs, sizeof rs, "RINGSTALL at=%x wp=%x %u %08x %08x %08x %08x %08x %08x %08x %08x\n",
+              native_adreno_ring_stall[24], native_adreno_ring_stall[25], b,
+              native_adreno_ring_stall[b * 8 + 0], native_adreno_ring_stall[b * 8 + 1],
+              native_adreno_ring_stall[b * 8 + 2], native_adreno_ring_stall[b * 8 + 3],
+              native_adreno_ring_stall[b * 8 + 4], native_adreno_ring_stall[b * 8 + 5],
+              native_adreno_ring_stall[b * 8 + 6], native_adreno_ring_stall[b * 8 + 7]);
+          if (rn > 0) qcom_usb_debug_write(rs, (size_t)rn < sizeof rs ? (size_t)rn : sizeof rs - 1);
+        }
+        stall_printed = 1;
+      }
+      // One row for the GPU's own health, every tenth second: what hung, whether the restart took, what was replayed,
+      // how many address spaces are resident, and whether an SMMU fault was left latched before a restart.
+      if (elapsed % 10 == 0 && &qcom_usb_debug_write) {
+        char h[220];
+        const int hn = snprintf(h, sizeof h,
+                                "GPUHANG h=%u r=%u f=%u fence=%u st=%x rp=%u g=%u kv=%u vm=%u/%u/%u tst=%x/%x flt=%u/%x rb=%x/%x sc=%u/%u\n",
+                                &native_adreno_recovery ? native_adreno_recovery[0] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[1] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[2] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[3] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[4] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[5] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[6] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[7] : 0u,
+                                &native_adreno_table_switches ? native_adreno_table_switches[4] : 0u,
+                                &native_adreno_table_switches ? native_adreno_table_switches[5] : 0u,
+                                &native_adreno_table_switches ? native_adreno_table_switches[2] : 0u,
+                                &native_adreno_table_switches ? native_adreno_table_switches[7] : 0u,
+                                &native_adreno_table_switches ? native_adreno_table_switches[6] : 0u,
+                                &native_adreno_recovery_fault ? native_adreno_recovery_fault[0] : 0u,
+                                &native_adreno_recovery_fault ? native_adreno_recovery_fault[1] : 0u,
+                                &native_adreno_ring_pos ? native_adreno_ring_pos[0] : 0u,
+                                &native_adreno_ring_pos ? native_adreno_ring_pos[1] : 0u,
+                                &native_adreno_ring_pos ? native_adreno_ring_pos[2] : 0u,
+                                &native_adreno_ring_pos ? native_adreno_ring_pos[3] : 0u);
+        if (hn > 0) qcom_usb_debug_write(h, (size_t)hn < sizeof h ? (size_t)hn : sizeof h - 1);
+      }
+      // The probe's LIVE counters (row 25) and its HANG record (row 26), on the console. They carry the readings no
+      // other row has: the read pointer the CP actually wrote into the memptrs shadow (not the CP_RB_RPTR register,
+      // which this A650 does not keep authoritative), the SQE microcode's program counter, the three ROQ occupancies,
+      // the ring's base and control words and the AHB/AON registers. Until now these rows went only to the persistent
+      // UFS log, which on this board stops after about four seconds, so every GPU stall since 2026-11-03 was invisible.
+      if (elapsed % 10 == 0 && &native_gpu_rows && &qcom_usb_debug_write) {
+        char gr[300];
+        for (unsigned r = 25; r <= 26; ++r) {
+          if (!native_gpu_rows[r][0]) continue;
+          const int gn = snprintf(gr, sizeof gr, "GPUROW%d %s\n", r, native_gpu_rows[r]);
+          if (gn > 0) qcom_usb_debug_write(gr, (size_t)gn < sizeof gr ? (size_t)gn : sizeof gr - 1);
+        }
       }
       // The Metal bridge's own telemetry table, on the console. It lives in the UFS slot ([metal table]),
       // and the slot is what a boot that stops early never writes — but this table is filled by the render
@@ -2058,6 +2271,48 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
             if (sn > 0) qcom_usb_debug_write(s, (size_t)sn < sizeof s ? (size_t)sn : sizeof s - 1);
             ++printed;
           }
+      }
+      // Owned qualification reserves rows 18..47; emit raw bytes as well as its verdict.
+      if (&native_adreno_metal_rows && elapsed % 10 == 0 && &qcom_usb_debug_write) {
+        for (unsigned r = 18; r < 48; ++r) if (native_adreno_metal_rows[r][0] &&
+            (r >= 46 || !strncmp((const char *)native_adreno_metal_rows[r], "PP ", 3) ||
+             !strncmp((const char *)native_adreno_metal_rows[r], "BC ", 3))) {
+          char line[112];
+          const int n = snprintf(line, sizeof line, "PIX%u %.94s\n", r, native_adreno_metal_rows[r]);
+          if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+        }
+      }
+      if (&native_gpu_rows && elapsed % 10 == 0 && &qcom_usb_debug_write) {
+        unsigned pixelCheck = 0;
+        PE_parse_boot_argn("alioth-pixel-check", &pixelCheck, sizeof pixelCheck);
+        if (pixelCheck) for (unsigned r = 29; r <= 31; ++r) if (native_gpu_rows[r][0]) {
+          char line[288];
+          const int n = snprintf(line, sizeof line, "PREG%u %.255s\n", r, native_gpu_rows[r]);
+          if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+        }
+      }
+      if (&native_adreno_boundary_log && native_adreno_boundary_log && &qcom_usb_debug_write) {
+        static uint32_t boundaryPrinted;
+        const uint32_t total=__atomic_load_n(&native_adreno_boundary_count,__ATOMIC_ACQUIRE);
+        if (elapsed % 10 == 0) {
+          char line[80];const int n=snprintf(line,sizeof line,"BNS rows=%u lost=%u\n",total,native_adreno_boundary_lost);
+          if(n>0)qcom_usb_debug_write(line,(size_t)n<sizeof line?(size_t)n:sizeof line-1);
+        }
+        for (;boundaryPrinted<total && boundaryPrinted<128;++boundaryPrinted) {
+          const volatile uint64_t *r=native_adreno_boundary_log+boundaryPrinted*64;
+          char line[256];
+          int n=snprintf(line,sizeof line,"BND%u s=%llu a=%llu pid=%llu f=%llu h=%llx io=%llx bytes=%llu pa=%llx v=%llx ps=%llx\n",
+            boundaryPrinted,r[1],r[0],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9]);
+          if(n>0)qcom_usb_debug_write(line,(size_t)n<sizeof line?(size_t)n:sizeof line-1);
+          n=snprintf(line,sizeof line,"BNT%u vm=%llx table_at_note=%llx cpu=%llx cw=%llu dm=%llx lost=%u\n",
+            boundaryPrinted,r[12],r[13],r[14],r[11],r[10],native_adreno_boundary_lost);
+          if(n>0)qcom_usb_debug_write(line,(size_t)n<sizeof line?(size_t)n:sizeof line-1);
+          for(unsigned first=0;first<16;first+=8)for(unsigned view=0;view<2;++view) {
+            n=snprintf(line,sizeof line,"BN%c%u w%u",view?'P':'C',boundaryPrinted,first);
+            for(unsigned k=0;k<8;++k)n+=snprintf(line+n,sizeof line-(size_t)n," %08x",(uint32_t)r[(view?32:16)+first+k]);
+            if(n>0 && (size_t)n+1<sizeof line){line[n++]='\n';qcom_usb_debug_write(line,(size_t)n);}
+          }
+        }
       }
       // Where the four traced processes sit, on the console: [stacks] lives in the slot, and the slot
       // is what freezes on the boots that stop before the desktop. Two rows per role is the main
