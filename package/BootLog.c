@@ -1902,6 +1902,20 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
       const int bn = snprintf(b, sizeof b, "SUPRUN n=%u t=%us pre-pet\n", boot_log_super_runs, elapsed);
       if (bn > 0) qcom_usb_debug_write(b, (size_t)bn < sizeof b ? (size_t)bn : sizeof b - 1);
     }
+    /* The image's own name on the console, once. Until now sheng-build-tag reached only the
+       persistent-log header (BootProgress.c:947) and the boot page, so 0 of 298 saved console
+       captures could say which image they came from, and the 2026-10-30 u268/u269 rounds ran an
+       older slot image while the operators believed they were testing a new build. The Darwin
+       version string is no substitute: it is byte-identical across images that print different
+       row sets. porting.toml's packaging area asks for exactly this reading. */
+    if (boot_log_super_runs == 1 && &qcom_usb_debug_write) {
+      char tag[32] = {0};
+      PE_parse_boot_argn("sheng-build-tag", tag, sizeof tag);
+      tag[sizeof tag - 1] = 0;
+      char b[64];
+      const int bn = snprintf(b, sizeof b, "BUILD tag=%s\n", tag[0] ? tag : "none");
+      if (bn > 0) qcom_usb_debug_write(b, (size_t)bn < sizeof b ? (size_t)bn : sizeof b - 1);
+    }
     // One register write a second. Its absence is the signal: a supervisor that stops, and a
     // deadline whose software reset failed, both end in the same hardware bark.
     if (!reset_pet_stopped && &boot_reset_pet) boot_reset_pet();
