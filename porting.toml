@@ -67,6 +67,7 @@ inputs = [
   "NEW/uefi-alioth, a Mu-Silicium port for this board; upstream is Project-Silicium/Mu-Silicium. The board platform is Platforms/Xiaomi/aliothPkg/, the SoC support is Silicon/Qualcomm/KonaPkg/, and the EDK II tree is the Mu_Basecore submodule.",
   "The firmware volume is 3 MiB at 0x9FC00000 (Resources/Configs/alioth.toml [uefi_fd], base 0x9FC00000, size 0x300000), which MemoryMapLib places between Display Reserved (0x9C000000+0x02400000) and UEFI Stack (0x9FF90000+0x00040000).",
   "The frame buffer is the phone's own cont_splash_region: 0x9C000000, 0x2300000 bytes, 1080x2400 at 32 bpp with 4320-byte rows. The firmware hands it over in the memory map and UniXNU republishes it to the OS.",
+  "Firmware versions, which porting/steps asks for in its first step. What is recorded: the vendor kernel this port was read against is Linux 4.19.312 (reference/k40-kernel/Makefile VERSION 4 PATCHLEVEL 19 SUBLEVEL 312). What is not: the phone's own stock firmware build, that is XBL/ABL, the modem, the ADSP and the other DSP images, has no version recorded anywhere in this repository and no dump of it is kept. That is an outstanding input rather than a completed one, and it matters because a vendor firmware update can move the reserved regions and the PAS image layouts this port reads.",
   "No Android vendor blob is consumed. proprietary-files.txt records that the UEFI firmware, the device tree, the kernel and kexts, both root volumes and the Data seed are all built from source or taken from the target IPSW.",
 ]
 configuration = [
