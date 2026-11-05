@@ -320,7 +320,7 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # plugin's CDHash (21a11822) plus the same two original modules byte for byte, which the
 # script verifies against build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "8e4385b6d471352eba7d4f5d8ede9aff012da64bc00989625c801f3984d1efa7",
+  "482604c519b759f9590c0aedbff348c1f9332fbee26dc33d735810a80b775f48",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -564,7 +564,7 @@ kernel_args = [
   "offline-legacy-validate=1",
   "offline-legacy-phase=4",
   "offline-legacy-transfer=1",
-  "offline-legacy-cpu-present=1",
+  "offline-legacy-retire=1",
   # offline-legacy-dump-at is gone. It gated native_legacy_dump_state(), which was removed when
   # the cell painter replaced the panic dump, so the argument had been a dead key: present on the
   # command line, read by nothing. The text channel below replaces it properly.
@@ -744,12 +744,22 @@ kernel_args = [
   # client (GpuScanoutClient.h, kScanoutFillProbe), which exists only while this is 1. The panel will not
   # update on that round; the readings are MT4 f<result>/<per-mille seen> against the PANEL row.
   "sheng-fb-gpu=0",
+  # The published-device pixel qualification: owned fixtures, exact expected pixels, CPU and GPU
+  # readback checked apart. It answers whether this GPU's Metal stack can put pixels into an
+  # imported IOSurface at all, which the display path cannot ask without the compositor's own frame.
+  # The display surface's two-word write probe: proves whether anything writes the frame the
+  # display was handed. Off by default because it is intrusive.
   # Direct scanout and its colour order. These two are not optional: fix159 booted without them
   # and the digitizer reported power=01 (monitor) with contacts=0 all run, while fix160, the same
   # kernel with these two arguments, reached the desktop and answered touch. They were dropped
   # from the round script when the commands moved to unixnu build payload, and every image from
   # fix156 to fix159 lost touch with them.
   "sheng-fb-bgra=1",
+  # 2026-11-05 tu0 round: sheng-fb-bgra=1 above also makes the plugin set TU_DEBUG=sysmem,nocb, and that sysmem
+  # render path writes no pixels on this build: the panel stayed on the boot frame while every swap was accepted.
+  # nocb alone reaches the desktop (PANEL sum changed, SURFACEnonblack 224/1000, the desktop visible by eye).
+  # sheng-tu-debug overrides the plugin's choice; set it to sysmem,nocb to test that path again.
+  "sheng-tu-debug=nocb",
   # 2026-11-04 dpu0 round: 2 takes the direct path as soon as NativeUfs has installed the display
   # bank's stage-1 window (native_ufs_dpu_state bit 31) and flips the VIG pipes straight onto the
   # compositor's surface; 0 leaves the display on the buffer the firmware is already scanning and
@@ -829,7 +839,6 @@ kernel_args = [
   # probe walked the processes and stored no stack, which is why STK stayed empty with the trace on.
   "boot-ui-follow=1",
   "boot-ui-focus=SpringBoard",
-  "boot-ui-focus2=backboardd",
   # Slots 3 and 4 (PosterBoard, mediaserverd) are left out: PosterBoard has not appeared in any of
   # the boots that stop before the desktop, and a third and fourth trace cost 53 bytes the command
   # line does not have. Add them back when the render server is drawing.
