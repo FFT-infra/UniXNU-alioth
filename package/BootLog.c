@@ -244,6 +244,13 @@ extern volatile uint64_t armcpu_ipi_sent __attribute__((weak_import));
 extern volatile uint32_t armcpu_quiesce_calls __attribute__((weak_import));
 extern volatile uint32_t armcpu_halt_calls __attribute__((weak_import));
 extern volatile uint32_t armcpu_irq_phase __attribute__((weak_import));
+// boot-ui-trace's worker: how many times it was entered, how many captures it started, and whether one
+// is still in flight. Six "STK none" rows on 2026-11-06 could mean the worker never reached its 44th
+// call, or that a capture started and never finished; these four numbers separate them.
+extern volatile unsigned boot_process_attempts __attribute__((weak_import));
+extern volatile unsigned boot_process_passes __attribute__((weak_import));
+extern volatile unsigned boot_process_seen __attribute__((weak_import));
+extern volatile unsigned boot_process_busy __attribute__((weak_import));
 extern int boot_kthread_report(const char *, char *, unsigned) __attribute__((weak_import));
 extern volatile uint32_t native_touch_fail_step __attribute__((weak_import));
 extern volatile int32_t native_backlight_request[6] __attribute__((weak_import));
@@ -2003,6 +2010,19 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                            c, __atomic_load_n(&armcpu_timer_short[c], __ATOMIC_RELAXED),
                            __atomic_load_n(&armcpu_timer_ahead[c], __ATOMIC_RELAXED));
           if (mn > 0) {miss[mn++] = '\n'; if (&qcom_usb_debug_write) qcom_usb_debug_write(miss, (size_t)mn);}
+        }
+        /* The boot-ui-trace worker, on the console. The stack capture needs boot-ui-trace=1 and runs on
+           the worker's 44th..48th call, about 90 s; on 2026-11-06 the console showed six "STK none" rows
+           and there was no way to tell whether the worker never got that far or a capture started and
+           never returned. a= entered, p= captures started, s= processes seen, b= one still in flight. */
+        if (&boot_process_attempts) {
+          char row[96];
+          const int rn = snprintf(row, sizeof row, "PROC t=%us a=%u p=%u s=%u b=%u\n", elapsed,
+                                  __atomic_load_n(&boot_process_attempts, __ATOMIC_RELAXED),
+                                  &boot_process_passes ? __atomic_load_n(&boot_process_passes, __ATOMIC_RELAXED) : 0u,
+                                  &boot_process_seen ? __atomic_load_n(&boot_process_seen, __ATOMIC_RELAXED) : 0u,
+                                  &boot_process_busy ? __atomic_load_n(&boot_process_busy, __ATOMIC_RELAXED) : 0u);
+          if (rn > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(row, (size_t)rn);
         }
       }
       // The refresh tick and the direct-scanout window, on the console. The six vsync counters
