@@ -109,7 +109,13 @@ void boot_process_capture(void) {
  // on a user-page fault with the task lock held. A boot without the argument never reaches here.
  static unsigned calls;
  const unsigned call = ++calls;   // one worker thread calls this; no atomic needed
- if (call < 44 || call > 48) return;
+ /* The worker ticks every 2000 ms (BootProgress.c:1250), so call N is about 2N seconds in. The window
+  * used to be calls 44..48 only, about 88-96 s. On 2026-11-06 that window produced no rows at all --
+  * five attempts entered and the console still read "STK none" -- while the same boot reached the
+  * desktop, so the render server may simply not have been running yet when the capture fired. Three
+  * windows instead of one: about 88 s, 148 s and 208 s. A stalled boot is still stalled at all three. */
+ const bool window = (call >= 44 && call <= 46) || (call >= 74 && call <= 76) || (call >= 104 && call <= 106);
+ if (!window) return;
  // Exactly one capture worker. Refuse reentry without waiting or modifying its
  // partial results, including in host failure-injection checks.
  if(__atomic_exchange_n(&boot_process_busy,1,__ATOMIC_ACQUIRE))return;
