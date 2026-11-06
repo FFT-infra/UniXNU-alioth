@@ -743,6 +743,18 @@ kernel_args = [
   "sheng-gpu-wc=0",
   "pipa-gpu-zap=1",
   "sheng-gpu-norestart=1",
+  # The GPU busy-counter poll in GpuProbe.cpp hangs the core it runs on. native_gpu_freq_tick is
+  # called from boot_log_tick, which the page monitor calls, and its default is ON: every boot
+  # lost one core about seven seconds in, that core never took its timer interrupt again, and
+  # every thread asleep on it was lost for good. Which thread was lost decided the symptom --
+  # mediaserverd never started and the screen stayed black, the touch loop froze, or the monitor
+  # itself stopped and the log went with it. The GICR row named the victim (nm=boot_progress,
+  # ac=6f/4, pr=92) and the step counters put it inside native_gpu_freq_tick (ms=4 ts=4 mon=7).
+  # With this argument the same image keeps all eight cores (deaf=00, wd=0/00 for the whole
+  # round), the monitor turns once a second instead of stopping at seven, the desktop comes up at
+  # t=80s and the touch loop keeps counting. Re-enabling it needs the GMU's clock proven on at
+  # the moment of the read, not just the GX rail.
+  "sheng-gpu-dynfreq=0",
   # The PCIe controller steps; step 1 only reads, criterion gcc pcie_0_gdscr = 0x22f001.
   # Mounts the payload addon; the wallpaper overlay arrives through it.
   "sheng-gpu-addon=1",
