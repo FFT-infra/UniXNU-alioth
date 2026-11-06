@@ -2430,6 +2430,62 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
   }
 }
 
+/* Core health from a thread of its own. Every other row on this console comes from the supervisor,
+ * so a boot whose supervisor is the victim of a wedged core prints nothing at all -- and that is
+ * exactly the shape of the 2026-11-06 rounds w11114382 and g21019511, where SUPRUN stops at one
+ * second and the rest of the capture is userspace exits. This thread does nothing but sleep and
+ * read ArmCpu's counters, so it can outlive the supervisor and still name the core.
+ *
+ * The mask names cores whose architectural-timer count has not moved for two consecutive samples.
+ * A merely idle core also stops arming its timer, so the mask alone is not proof: the series is.
+ * A core that counted thousands of timer interrupts in the first seconds and then stops for the
+ * rest of the boot is wedged; one that was never busy was only idle. Print the row, not a verdict. */
+static void core_health_thread(void *arg, wait_result_t result)
+{
+  (void)arg; (void)result;
+  if (!&armcpu_core_timer) return;
+  thread_set_thread_name(current_thread(), "corehealth");
+  uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
+  const uint64_t start = log_ticks();
+  static uint32_t last[8];
+  static uint8_t unmoved[8];
+  unsigned runs = 0;
+  for (;;) {
+    IOSleep(10000);
+    ++runs;
+    if (!&qcom_usb_debug_write) continue;
+    const unsigned elapsed = (unsigned)((log_ticks() - start) / f);
+    unsigned cores = (&armcpu_smp_running ? (unsigned)__atomic_load_n(&armcpu_smp_running, __ATOMIC_RELAXED) : 0u) + 1u;
+    if (cores > 8) cores = 8;
+    char row[320];
+    int n = snprintf(row, sizeof row, "CORES t=%us runs=%u |", elapsed, runs);
+    for (unsigned c = 0; c < cores && n > 0 && (unsigned)n < sizeof row - 24; ++c)
+      n += snprintf(row + n, sizeof row - (unsigned)n, " c%u=%u/%u",
+                    c, __atomic_load_n(&armcpu_core_timer[c], __ATOMIC_RELAXED),
+                    __atomic_load_n(&armcpu_core_sgi[c], __ATOMIC_RELAXED));
+    unsigned deaf = 0, badStep = 0, failed = 0;
+    for (unsigned c = 0; c < cores; ++c) {
+      const uint32_t now = __atomic_load_n(&armcpu_core_timer[c], __ATOMIC_RELAXED);
+      if (now == last[c]) {if (unmoved[c] < 255) ++unmoved[c];}
+      else {unmoved[c] = 0; last[c] = now;}
+      if (unmoved[c] >= 2) deaf |= 1u << c;
+    }
+    if (&armcpu_smp_step)
+      for (unsigned c = 0; c < 8; ++c) {
+        const uint32_t st = __atomic_load_n(&armcpu_smp_step[c], __ATOMIC_RELAXED);
+        if (st && st != 7) badStep |= 1u << c;
+      }
+    if (&armcpu_smp_fail)
+      for (unsigned c = 0; c < 8; ++c)
+        if (__atomic_load_n(&armcpu_smp_fail[c], __ATOMIC_RELAXED)) failed |= 1u << c;
+    if (n > 0 && (unsigned)n < sizeof row - 32)
+      n += snprintf(row + n, sizeof row - (unsigned)n, " run=%u deaf=%02x st=%02x fl=%02x",
+                    &armcpu_smp_running ? (unsigned)__atomic_load_n(&armcpu_smp_running, __ATOMIC_RELAXED) : 0u,
+                    deaf, badStep, failed);
+    if (n > 0) {row[n++] = '\n'; qcom_usb_debug_write(row, (size_t)n < sizeof row ? (size_t)n : sizeof row - 1);}
+  }
+}
+
 // Called by the board page's monitor once a second; starts the writer the first time when sheng-log=1.
 void boot_log_tick(unsigned now) {
   uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
@@ -2446,6 +2502,13 @@ void boot_log_tick(unsigned now) {
     // after the start, before UFS and this log exist (int-229: a duplicate class at PE_lockdown_iokit). So the first tick, independent of
     // sheng-log, marks the cell (any restart is fastboot) and arms the hypervisor's watchdog, which bites half a minute after the pings stop:
     // after the autoreset deadline, or when a panic parks the cores.
+    /* The core-health thread is independent of every switch: it is the only reading left on a boot
+     * whose supervisor stalls, and it costs one sleeping thread that reads seven counters. */
+    if (&armcpu_core_timer) {
+      thread_t cth;
+      if (kernel_thread_start_priority(core_health_thread, 0, BASEPRI_KERNEL, &cth) == KERN_SUCCESS)
+        thread_deallocate(cth);
+    }
     uint32_t autoreset = 0;
     // The probe is called for its text, not for a verdict: what the cell held at boot is worth
     // recording, but it must not decide whether the cell may be rewritten. It used to be the gate
