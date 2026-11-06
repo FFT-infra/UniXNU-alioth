@@ -84,3 +84,15 @@ GPUFB  checksum 4dccbc6e changes 6 (+3) nonblack 28/1000 luma 6
 - `PANEL luma` 稳定在壁纸应有的亮度，而不是 5；
 - `diag` 里的 `screen.bgrx` 出现壁纸颜色，而不是近黑；
 - `GPUROW23` 两轮都 `3 3`（自检第一轮的 0 需要修掉）。
+
+## 8. 更正（同日）
+
+本文件第 4、5 节的判读有误，已由 `progress/2026-11-07-idle-produces-no-frames.md` 更正：
+
+- 「白一帧后转黑」不是内容错误，是**空转不产生帧**。全部轮次对照显示，凡是出现可见桌面的
+  轮次都有真实手指触屏（8–27 次），三个无人触屏的轮次都停在近黑。
+  `reference.md:3350` 已记录 `native-touch=0` 时 `prep=11 sw=11`，空转需要输入才启动。
+- `GPUFB sided 0/1000` 不能证明壁纸层不存在：g1 有人触屏、面板是 luma 135 的真桌面，
+  `sided` 同样接近 0。撤回把它当作壁纸缺席证据的写法。
+- of6 证明的是 GPU 零拷贝链路成立（`copied 0`、`offered 12 done 12`、`sub 61/61`、
+  `GPUHANG h=0`），没有证明桌面内容正确。
