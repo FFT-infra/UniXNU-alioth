@@ -1535,13 +1535,14 @@ int ucRound(IOService *svc) {
                      * before the flush that sets the fence, so the target says whether the GPU executed the
                      * IB at all. Without this a timed-out wait cannot be told from a lost fence write. */
                     __asm__ volatile("dsb sy" ::: "memory");
-                    /* The four words go into the publish row whether the fence came back or not: matched
-                     * says how many agreed but not which one did not, and the difference between "the CP
-                     * wrote nothing" and "the CP wrote past the third marker" is the whole reading. */
+                    /* Keep all four words in the publish row. The fourth is a CPU sentinel, not a
+                     * word the CP writes: a fresh BO's zero fill can land after this sentinel, so
+                     * the verdict counts only the three CP_MEM_WRITE markers. See the note in
+                     * selfTest() and NativeAdrenoMemory.cpp's zero-fill cache handling. */
                     native_gpu_publish[10] = tw[0]; native_gpu_publish[11] = tw[1];
                     native_gpu_publish[12] = tw[2]; native_gpu_publish[13] = tw[3];
                     if (completed)
-                        matched = (tw[0] == values[0]) + (tw[1] == values[1]) + (tw[2] == values[2]) + (tw[3] == 0xdeadbeef);
+                        matched = (tw[0] == values[0]) + (tw[1] == values[1]) + (tw[2] == values[2]);
                 }
                 NativeAdrenoAbiTimestamp ts{};
                 step(ucCall(uc, NativeAdrenoMethodGetTimestamp, nullptr, &ts));
@@ -1621,7 +1622,7 @@ bool selfTest() {
     /* Signed: ucRound answers -1 when a round fails, and that stored in the uint32_t array is
      * 0xffffffff, which a ">= 3" test reads as the largest possible pass. fix28 showed it: rounds
      * -1 -1 beside METAL ok. */
-    const bool ok = int32_t(native_gpu_publish[8]) >= 3 && int32_t(native_gpu_publish[9]) >= 3;
+    const bool ok = int32_t(native_gpu_publish[8]) == 3 && int32_t(native_gpu_publish[9]) == 3;
     publishRow(ok ? "ok" : "self test failed");
     return ok;
 }
