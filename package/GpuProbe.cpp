@@ -1942,7 +1942,12 @@ void gpuThread(void *, wait_result_t) {
         if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
     };
     if (gMode >= 11 && irq && publish()) {
-        if (selfTest() && gMode >= 12) metal();
+        /* The reference board (UniXNU-sheng/package/GpuPowerProbe.cpp:1561-1565) runs the
+         * user-client self-test only as an opt-in diagnostic and still publishes Metal when
+         * sheng-gpu-metal=1. Mode 12 is this board's equivalent. Keep the self-test rows for
+         * diagnosis, but do not let a failed first round gate service registration. */
+        (void)selfTest();
+        if (gMode >= 12) metal();
         verdict(native_gpu_rows[kRowZap]);
         verdict(native_gpu_rows[kRowIrq]);
         verdict(native_gpu_rows[kRowMetal]);

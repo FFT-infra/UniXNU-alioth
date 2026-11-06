@@ -1463,8 +1463,9 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // round. The mode (0), the publication and user-client counters (23), the live counters (25)
   // The mode (0), the publication and user-client counters (23), the Metal registration (24),
   // the live counters (25) and the CP hardware-error row (31) are what a stall needs. Row 24
-  // answers "did selfTest() pass and register the accelerator", which is the gate that decides
-  // whether any user client can open the driver at all (uc 0/0 vs uc 16/19).
+  // names the Metal registration or, when the opt-in self-test is on, its diagnostic verdict.
+  // Following the reference board, the self-test does not gate registration: the published
+  // IOAcceleratorES service is what lets user clients open the driver.
   if (&native_gpu_rows && native_gpu_rows[0][0]) {
     static const int gpuRows[] = {0, 3, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 31};
     char row[300];   // a GPU row is now up to 256 bytes, plus "GPUROWnn " and the NUL
