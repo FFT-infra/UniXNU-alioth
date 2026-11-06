@@ -167,3 +167,51 @@ HEIC 引用: 0
 ```
 
 这是目前唯一有源码与实测两边证据的壁纸根因。of9 用这份新 overlay 构建，用来验证。
+
+## 9. 更正与排除（of9 / of9b）
+
+### 9.1 第 8 节的 overlay 修法被证伪，已回退
+
+按第 8 节把三种引用全部改成裸文件名后，of9b 的画面变成近黑：
+
+```
+of9b  SURFACEL nonblack=28/1000 luma=6  mx=0/0/0 sp=0
+of8   SURFACEL nonblack=987/1000 luma=237 mx=0/122/255 sp=255   （官方 overlay）
+```
+
+同一镜像、同一路径，只有 overlay 不同。裸文件名让 CoreAnimation 解析失败，
+CollectionsPoster 画了黑底。**官方 overlay 的 `"/J120.png"` 形式是可用的**，
+第 8 节把 `"J120.HEIC"` 残留当成根因是错的。`44acb69` 已回退。
+
+所以：overlay 不是壁纸缺席的原因，至少不是当前的主因。
+
+### 9.2 挂载点选对了变体（排除）
+
+三个 7570 变体的 `Wallpaper.plist`：
+
+| 变体 | 声明 |
+| --- | --- |
+| `7570.iPadOS_17_Flat-1024w-1366h@2x~ipad` | `productTypes = [iPad7,1, iPad7,2]` |
+| `7570.iPadOS_17-1024w-1366h@2x~ipad` | `unsupportedProductTypes = [iPad7,1, iPad7,2]` |
+| `7570.iPadOS_17-834w-1112h@2x~ipad` | 未声明 |
+
+本板是 iPad7,1，只有 Flat 变体把它列进支持列表。
+`patches/xnu/zzy-native-gpu-addon-mount.patch:314-322` 挂的正是 Flat 的 `.ca`。
+**变体选择正确，这条假设排除。**
+
+### 9.3 仍然成立的方向
+
+`g1` 那轮 Metal 已发布、CollectionsPoster 已连上 GPU，壁纸仍然没有。
+所以「GPU 没发布」不是充分条件。
+
+现在唯一没读过的关键数据是**壁纸选择本身**。它存在
+`<PosterBoard 容器>/Library/Application Support/PRBPosterExtensionDataStore/61/
+PBFPosterExtensionDataStoreSQLiteDatabase.sqlite3` 的 `posterAttributes` /
+`posterMetadata` 表里，而现有探针只读了第 1 页的 schema，从未读过行。
+
+`/private/tmp/wpvol2/Library/Wallpaper/DefaultWallpapers~ipad.plist` 给出默认选择
+`collectionIdentifier 62879BFA-...`（= `iPadOS_17~ipad`）+ `wallpaperIdentifier 7570`，
+且该 collection 的 `order = [7570]`。所以「选择指向不存在的 collection」不成立。
+
+下一步：把 `[wallpaper db]` 探针从「读 schema」扩到「读 `posterAttributes` 的行」，
+一轮就能分开「选择没提交」与「选择提交了但渲染没交付」。
