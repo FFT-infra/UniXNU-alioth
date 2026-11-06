@@ -84,6 +84,42 @@ static inline int32_t bg_sram_current_ua(uint16_t raw) {
   return (int32_t)(((int64_t)(int16_t)raw * BG_SRAM_CURRENT_DENMTR) / BG_DENR);
 }
 
+// Every measurement is read as a pair: the value at one address and its shadow copy six bytes
+// later, retried until the two agree (fg-util.c:1014-1050). The retry is not optional -- a single
+// read can return one byte of an old value and one of a new one while the gauge updates.
+//
+// The vendor loop that does this is wrong in two directions, and this port implements what it
+// meant rather than what it does. `while (tries++ < MAX_READ_TRIES) { ...; if (match) break; }`
+// followed by `if (tries == MAX_READ_TRIES) return -EINVAL;` leaves tries at 6 when the loop runs
+// to the end, so a pair that NEVER matches falls through and its torn value is returned as good;
+// and a match on the fifth and last try leaves tries at 5, so a good read is reported as an
+// error. package/tests/battery_host.c reproduces the vendor loop and asserts both outcomes.
+// BG_PAIR_TRIES is
+// the driver's own MAX_READ_TRIES, and the loop below is a plain counted loop: after this many
+// tries with no agreement the read fails, which is the only reading of the driver's intent that
+// is safe.
+typedef int (*bg_read_fn)(void *ctx, uint32_t apid, uint8_t addr, uint8_t out[2]);
+enum { BG_PAIR_TRIES = 5 };
+
+// Read one two-byte value and its copy, and hand back the assembled word. Returns 0 on a matching
+// pair and -1 if no try agreed or the bus read failed. The two bytes of one read are taken back
+// to back, as the vendor driver's fg_read(fg, addr, buf, 2) does, so the caller's read function
+// must perform a burst read rather than two one-byte accesses.
+static inline int bg_read_pair(bg_read_fn read, void *ctx, uint32_t apid,
+                               uint8_t value_addr, uint8_t copy_addr, bool swapped,
+                               uint16_t *out) {
+  for (int t = 0; t < BG_PAIR_TRIES; t++) {
+    uint8_t v[2], c[2];
+    if (read(ctx, apid, value_addr, v) != 0) return -1;
+    if (read(ctx, apid, copy_addr, c) != 0) return -1;
+    if (v[0] == c[0] && v[1] == c[1]) {
+      *out = bg_word(v[0], v[1], swapped);
+      return 0;
+    }
+  }
+  return -1;
+}
+
 // State of charge is a raw percentage in both paths: PARAM(BATT_SOC, ..., 4, 1, 1, 0, ...) in
 // qpnp-fg-gen4.c:417 has numerator and denominator 1, so there is nothing to convert. It is kept
 // as a function anyway, so that a caller cannot mistake it for a value needing scaling.
