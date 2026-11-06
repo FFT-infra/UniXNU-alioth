@@ -275,9 +275,14 @@ static int sheng_wallpaper_reset_files(proc_t p, uint64_t scratch) {
  * word, little endian as they sit in the file. A binary plist keeps its strings verbatim, so the identifier is readable in the
  * dump. sheng-wallpaper-probe=1. */
 volatile int32_t sheng_wallpaper_cfg[2 + 128] = {0};
+// 0 until sheng_wallpaper_read_cfg is entered, so a probe that never ran and one that read nothing
+// stop looking the same on the console. The path it opens carries a container UUID that changes
+// when the app's container is recreated, which is a silent failure otherwise.
+volatile int32_t sheng_wallpaper_probe_ran = 0;
 static int sheng_wallpaper_read_cfg(proc_t p, uint64_t scratch) {
  static const char path[] =
   "/private/var/mobile/Containers/Data/Application/21211B1B-49C3-4486-803E-7E7ABCD864ED/Library/Preferences/com.apple.PosterBoard.plist";
+ sheng_wallpaper_probe_ran=1;
  int error=copyout(path,scratch,sizeof(path));
  if(error)return error;
  int32_t fd=-1,result=0;

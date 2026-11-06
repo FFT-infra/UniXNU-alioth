@@ -80,6 +80,7 @@ extern volatile uint32_t native_legacy_swap_req[12] __attribute__((weak_import))
 extern volatile uint32_t native_legacy_prepare_calls __attribute__((weak_import));
 /* [0] status, [1] bytes, [2..] the bytes of the PosterBoard wallpaper choice. */
 extern volatile int32_t sheng_wallpaper_cfg[130] __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_probe_ran __attribute__((weak_import));
 extern volatile int native_gpu_addon2_status __attribute__((weak_import));
 extern volatile int native_gpu_addon3_stage __attribute__((weak_import));
 extern volatile int native_gpu_addon3_status __attribute__((weak_import));
@@ -641,6 +642,15 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       crow[n] = 0;
       at = put(out, at, cap, crow, sizeof crow);
     }
+  } else if (&sheng_wallpaper_probe_ran && sheng_wallpaper_probe_ran) {
+    /* The probe ran and said nothing: status 0 with no bytes is a file that opened empty, a
+     * positive status is the errno of the open. Either way the row must print, or a stale
+     * container UUID in the probe path looks exactly like a probe that never ran. */
+    char crow[80];
+    snprintf(crow, sizeof crow, "[wallpaper cfg] ran status=%d bytes=%d",
+             &sheng_wallpaper_cfg ? (int)sheng_wallpaper_cfg[0] : -1,
+             &sheng_wallpaper_cfg ? (int)sheng_wallpaper_cfg[1] : -1);
+    at = put(out, at, cap, crow, sizeof crow);
   } else if (&sheng_wallpaper_cfg && sheng_wallpaper_cfg[0]) {
     char crow[60];
     snprintf(crow, sizeof crow, "[wallpaper cfg] unreadable status=%d", sheng_wallpaper_cfg[0]);
