@@ -10,6 +10,7 @@
 // 16 MiB area at the window's tail; the UI's pipeline caches outgrew it in int-148 and int-149.)
 // The header is written last in each round, so a reader never trusts a slot or an export the header does not count yet.
 #include <kern/thread.h>
+#include <kern/task.h>
 #include <kern/processor.h>
 #include <arm/cpu_data_internal.h>
 #include <kern/clock.h>
@@ -18,6 +19,11 @@
 #include <kern/misc_protos.h>
 #include <IOKit/IOLib.h>
 
+// proc_name(int, char *, int), from bsd/sys/proc.h. Declared by hand: that header pulls a second set of
+// the exported bsd headers and -Werror rejects the resulting macro redefinitions. thread_get_thread_name
+// (osfmk/kern/thread.h) is declared for the same reason: keeping thread.h out avoids its macro set.
+extern void proc_name(int, char *, int) __attribute__((weak_import));
+extern void thread_get_thread_name(thread_t, char *) __attribute__((weak_import));
 extern int native_ufs_log_open(uint64_t *, uint64_t *, const char **) __attribute__((weak_import));
 extern int native_ufs_log_write(uint64_t, uint32_t, const void *) __attribute__((weak_import));
 extern int native_ufs_log_read(uint64_t, uint32_t, void *) __attribute__((weak_import));
@@ -2512,9 +2518,17 @@ static void core_health_thread(void *arg, wait_result_t result)
      * pending, enabled, active and WAKER. A core that is pending but never takes the interrupt is masked or
      * halted; one whose enables are clear had its GIC turned off; one with nothing pending is not targeted. */
     if (deaf != 0 && &armcpu_core_gicr_probe) {
-      char gr[256];
-      int m = snprintf(gr, sizeof gr, "GICR t=%us deaf=%02x", elapsed, deaf);
-      for (unsigned c = 0; c < cores && m > 0 && (unsigned)m < sizeof gr - 64; ++c) {
+      char gr[512];
+      /* The two step counters belong to the threads that most often go deaf, so they sit in the
+       * header (they are global, not per core) where this row can still print them from a healthy
+       * core. ms is the page monitor's step when it last moved, ts the log tick's: a monitor that
+       * ran seven times and then stopped leaves ms at the call it never returned from, which is
+       * the only reading that separates "it is spinning inside X" from "it is parked". */
+      int m = snprintf(gr, sizeof gr, "GICR t=%us deaf=%02x ms=%u ts=%u mon=%llu", elapsed, deaf,
+                       &boot_progress_monitor_step ? (unsigned)__atomic_load_n(&boot_progress_monitor_step, __ATOMIC_RELAXED) : 0u,
+                       (unsigned)boot_log_tick_step,
+                       &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL);
+      for (unsigned c = 0; c < cores && m > 0 && (unsigned)m < sizeof gr - 96; ++c) {
         if (!((deaf >> c) & 1u)) continue;
         uint32_t p[5] = {0, 0, 0, 0, 0};
         const int ok = armcpu_core_gicr_probe(c, p);
@@ -2531,14 +2545,40 @@ static void core_health_thread(void *arg, wait_result_t result)
         /* What that core was running when it stopped taking interrupts. The idle thread answers "it
          * went to sleep and never came back"; a real thread answers "it is stuck in kernel code", and
          * its id names the process. Read without a lock: this is a diagnostic snapshot, not a use. */
-        unsigned long long ac = 0, acstate = 0;
+        unsigned long long ac = 0, acstate = 0, cont = 0;
+        char nm[24] = "-";
+        unsigned pri = 0;
         cpu_data_t *cd = cpu_datap((int)c);
         thread_t at = cd ? cd->cpu_active_thread : NULL;
-        if (at) { ac = (unsigned long long)at->thread_id; acstate = (unsigned long long)at->state; }
-        m += snprintf(gr + m, sizeof gr - (unsigned)m, " c%u=%s%x/%x/%x/%x/%x ph%u age%us ac=%llx/%llx",
+        if (at) {
+          ac = (unsigned long long)at->thread_id; acstate = (unsigned long long)at->state;
+          /* XNU names its own kernel threads, and thread_get_thread_name reads that name without
+           * taking a lock: it is a memcpy off a field set at creation. "kernel-high" is the
+           * thread-call group that IOTimerEventSource callbacks run on, so this one field separates
+           * a wedged timer callback from every other kernel thread. */
+          if (&thread_get_thread_name) thread_get_thread_name(at, nm);
+          /* The kernel routine a continuation thread is parked on, and the process it belongs to.
+           * A thread whose state is TH_RUN with a continuation is inside kernel code, not asleep;
+           * the address resolves against the kernel image's own symbols, the name needs no resolver.
+           * proc_name is declared here because bsd/sys/proc.h drags in a second set of the exported
+           * bsd headers and -Werror rejects the macro redefinitions. bsd_info is deliberately not
+           * dereferenced: struct proc is not a kernel-internal layout this file may name. */
+          cont = (unsigned long long)(uintptr_t)at->continuation;
+          pri = (unsigned)at->sched_pri;
+          /* arm64 keeps the task behind thread_ro (there is no thread->t_task), and the read-only
+           * zone is exactly what makes this dereference safe while the thread is running. */
+          const int pid = at->t_tro ? task_pid(at->t_tro->tro_task) : 0;
+          if (pid > 0 && &proc_name) {
+            char pn[24] = "-";
+            proc_name(pid, pn, (int)sizeof pn);
+            /* The kernel thread's name wins only if it exists; otherwise the process owns the row. */
+            if (nm[0] == '-' || nm[0] == 0) snprintf(nm, sizeof nm, "%s", pn);
+          }
+        }
+        m += snprintf(gr + m, sizeof gr - (unsigned)m, " c%u=%s%x/%x/%x/%x/%x ph%u age%us ac=%llx/%llx nm=%s k=%llx pr=%u",
                       c, ok == 0 ? "" : "?",
                       (unsigned)p[0], (unsigned)p[1], (unsigned)p[2], (unsigned)p[3], (unsigned)p[4],
-                      ph, age, ac, acstate);
+                      ph, age, ac, acstate, nm, cont, pri);
       }
       if (m > 0 && (unsigned)m < sizeof gr) {gr[m++] = '\n'; qcom_usb_debug_write(gr, (size_t)m < sizeof gr ? (size_t)m : sizeof gr - 1);}
     }
