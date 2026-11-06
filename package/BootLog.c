@@ -643,6 +643,10 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
         crow[n++] = (c >= 0x20 && c < 0x7f) ? (char)c : '.';
       }
       crow[n] = 0;
+      /* This is the only row that says which collection PosterBoard stored, and it was persistent
+       * log only until 2026-11-06, which is why a round could see bytes=148 and no content. */
+      if (&qcom_usb_debug_write) {char cl[112]; const int cn = snprintf(cl, sizeof cl, "%s\n", crow);
+        if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
       at = put(out, at, cap, crow, sizeof crow);
     }
   }
