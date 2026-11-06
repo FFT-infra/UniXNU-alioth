@@ -131,3 +131,39 @@ wallpaper region (rows 60..180, left half): 全部 (242,242,247)
 
 判据：壁纸区域出现非 `(242,242,247)` 的像素，或 `screen.bgrx` 里 `(242,242,247)` 的
 份额显著下降。
+
+## 8. 找到壁纸读不到的源码原因
+
+真实 bundle 的 `main.caml` 对每张图有**三种引用形式**：
+
+```
+"/assets/J120.HEIC"     assets/J120.HEIC     "J120.HEIC"
+```
+
+`NEW/UniXNU/scripts/make-wallpaper-overlay.py:53` 只替换了前两种：
+
+```python
+main_caml.replace(f'"/assets/{image}.HEIC"', f'"/{png}.png"')
+         .replace(f'"assets/{image}.HEIC"', f'"{png}.png"')
+```
+
+于是 `"J120.HEIC"` 原样留下。overlay 只带 PNG，不带 HEIC，文档却仍向 ImageIO 要一个
+HEIC——而这块板没有硬件 HEVC 解码器（`reference.md` 记过 `J120.HEIC` 读不出来）。
+另外替换后的 `"/J120.png"` 带前导斜杠，会解析到卷根，同样找不到 `.ca` 下的文件。
+
+实测确认：`tmp/wallpaper-official-flat/main.caml` 里 `J120.HEIC` 出现 1 次，
+`"/J120.png"` 与 `"J120.png"` 并存。
+
+修法（`c63c74d`）：三种形式全部替换成**裸文件名**，因为 overlay 的 PNG 就放在
+`main.caml` 旁边（内核把 addon 的 `wallpaper/*` 挂到
+`7570.iPadOS_17_Flat-1024w-1366h@2x~ipad.ca/`，见
+`patches/xnu/zzy-native-gpu-addon-mount.patch:314-322`）。
+
+重新生成后的 overlay：
+
+```
+refs: "J120-Dark.png"  "J120.png"
+HEIC 引用: 0
+```
+
+这是目前唯一有源码与实测两边证据的壁纸根因。of9 用这份新 overlay 构建，用来验证。
