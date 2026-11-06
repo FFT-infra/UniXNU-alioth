@@ -82,7 +82,27 @@ of1 同段约 1 次交换/秒。两者触控输入不同，且都没有 GPU 交�
 `sheng-vsync=120` 只是请求值。下一轮必须带 `sheng-gpu-trace=1`、
 `sheng-gpu-perf=1` 和诊断导出，在同一触控场景比较七个延迟阶段。
 
-## 6. 边界与下一步
+## 6. 持久日志
+
+`tmp/read-log.sh --diag` 通过 a 槽 TWRP 读回持久日志，读到
+`build/sheng-logs/of1-00000000d8036a27/latest.txt`。该日志 tag 为 `of1`、
+uptime 397 s，与 of1 对应的 in-kernel autoreset 一致。关键行：
+
+```
+A files=17 wr=0 same=17 fail=0 err=0 mount=5/0 mount2=5/0 mount3=5/0
+GPUROW23 PUBLISH self test failed ... rounds 1 4
+GPUROW24 SELFTEST rounds 1 4 first 0 at 0 steps 36/36 r1 18/18
+[bo pool] 0 MiB ... in use 0 MiB (peak 0)
+[fence wait] calls=2 timeouts=0 ... outer waits=2 us=24
+[vm kinds] owned n=20 mean=0us spans=20
+```
+
+`wr=0 same=17` 说明本轮所有 addon 文件在 Data 卷里已经一致，写入器没有改动；
+17 个文件与 `gpu-official-flat.gpuaddon` 清单一致。诊断导出没有产生：
+reader 明确报 `diag_bytes 0; the boot did not pass sheng-diag-export`，
+所以本轮不能构建 shader pipeline pack，也没有 GPU trace 导出。
+
+## 7. 边界与下一步
 
 - self-test 失败连续出现两次，按 `PLAN_NEW.md` 的停手条件不再追加同类板轮。
 - 下一步在源码里查 `ucRound()` 第 1 轮为何只返回 1：三 marker、fence、
