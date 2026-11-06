@@ -629,6 +629,13 @@ kernel_args = [
   #   alioth-bl=1   drive the panel's DCS 0x51 register over DSI0's TPG command FIFO.
   #                 alioth-bl-level sets the level; mode 2 and 3 add readback and sweep.
   # Both are read-only probes until a mode above 1 is asked for.
+  # Restored 2026-11-07 after a same-day removal that did not hold. of11 ran with these two plus
+  # boot-ui-trace=1 and read `deaf=00`, every core counting, sw=231, desktop. of12 and of12b ran
+  # with all three removed (to make room for sheng-diag-export, sheng-wallpaper-db and sheng-wp)
+  # and both read `deaf=1e` with c4 frozen at 15143/2295 from t=10 s on, the touch poller stopped
+  # at frames=99, calls=6, sw=0, no desktop. That is one variable group and two rounds, so it does
+  # not say which of the three matters; it says the group does. Do not trade these away for
+  # command-line bytes again without a round that adds them back one at a time.
   "alioth-bt=1",
   "alioth-bl=1",
   # sheng-data-persist=2 opens the Data store read-write. Without it the seed is what the kernel
@@ -944,6 +951,12 @@ kernel_args = [
   # and 2 are backboardd and SpringBoard by default (BootProcessProbe.c:35 trace_slot[]={0,1,1}), so
   # the argument alone traces both. The capture runs on the 44th..48th call of the worker, about 90 s,
   # which is after the point where a bad boot stops submitting and inside the stall.
+  # Restored 2026-11-07. It was removed the same day to make room for sheng-diag-export and
+  # sheng-wallpaper-db, and the two rounds without it (of12b, of13) both read `deaf=1e` with c4
+  # frozen at 15143/15967 from t=10 s on, while of11 with it read `deaf=00` and c4 climbing
+  # 428660 -> 3125522. That is one variable and three rounds, so it is a correlation, not a
+  # cause; it is back because of11 is the only round that reached sw=231 unattended, and this
+  # argument was in it.
   "boot-ui-trace=1",
   # trace=1 alone still records nothing for slots 1 and 2: BootProcessProbe.c only sets
   # trace_slot[] for focus3/focus4, and for focus/focus2 through boot-ui-follow. Without this the

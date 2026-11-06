@@ -329,11 +329,27 @@ extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak
  * here fabricates a report or bypasses the driver. Off unless the argument is given. */
 static uint32_t synthHoldMs, synthAtMs = 60000, synthState, synthStartMs;
 static unsigned synthLog;
+/* The gesture the contact performs. A contact held still at the centre is a long press, and on
+ * of8 that opened Settings: the screenshot the round exported was Settings, not the home screen,
+ * so every reading taken from it (the "wallpaper area is solid (242,242,247)") measured the
+ * grouped table background of a settings page and not the wallpaper. A swipe up from the bottom
+ * edge asks for the home screen and changes nothing else, which is what an unattended round wants:
+ * the display keeps drawing (the compositor draws on input) and the surface stays the home screen.
+ * sheng-touch-synth-swipe=1 selects it; the default stays the centre press. */
+static unsigned synthSwipe;
+static uint32_t synthSwipeMs = 300;
+/* The settle is counted from the first frame this probe publishes, not from the platform counter.
+ * Measured on of8: absolutetime_to_nanoseconds(mach_absolute_time()) already read 550,420,918 us
+ * at the first publish(), so comparing it against sheng-touch-synth-at=60000 fired the contact on
+ * the very first frame instead of 60 s into the boot, and the tap landed while the lock screen
+ * still owned the display. */
+static uint32_t synthFirstMs;
 
 static void synthTap(unsigned nowMs) {
     if (!synthHoldMs) return;
+    if (!synthFirstMs) synthFirstMs = nowMs ? nowMs : 1;
     if (synthState == 0) {
-        if (nowMs < synthAtMs) return;
+        if (nowMs - synthFirstMs < synthAtMs) return;
         synthState = 1;
         synthStartMs = nowMs;
         if (!synthLog) {synthLog = 1; if (&qcom_usb_debug_write) qcom_usb_debug_write("TOUCHSYNTH down\n", 16);}
@@ -344,6 +360,12 @@ static void synthTap(unsigned nowMs) {
         if (&qcom_usb_debug_write) qcom_usb_debug_write("TOUCHSYNTH up\n", 14);
     }
 }
+
+/* Module scope, not a block local: the synthetic contact's address escapes the block that makes
+ * it, and the loop below reads c[i] long after that block has ended. Measured on of8, where the
+ * local was a block local: TOUCHTAP printed x=0 y=20319 (the panel's own phantom contact) while
+ * the tap was set to the centre, so the read landed on the dead stack slot. */
+static struct Fts5652Contact synthContact;
 
 void publish(const struct Fts5652Contact *c, unsigned count) {
     int xs[12], ys[12], ids[12];
@@ -356,14 +378,28 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
         const unsigned nowMs = (unsigned)(ns / 1000000);
         synthTap(nowMs);
         if (synthState == 1) {
-            struct Fts5652Contact tap = {};
-            tap.id = 0;
-            tap.x = FTS5652_AXIS_X / 2;
-            tap.y = FTS5652_AXIS_Y / 2;
-            tap.event = 2;      /* move: published as a held contact, not as a lift */
-            tap.pressure = 60;
-            tap.area = 9;       /* the vendor driver substitutes 9 for a zero area (focaltech_core.c:508) */
-            c = &tap;
+            memset(&synthContact, 0, sizeof synthContact);
+            synthContact.id = 0;
+            if (synthSwipe) {
+                /* A swipe up from the bottom edge: y walks from just inside the panel's bottom
+                 * toward the middle over synthSwipeMs, x stays centred. UIKit reads the edge
+                 * flag from the begin position, which is why the begin is a few units above 0
+                 * rather than exactly 0 (a begin at 0,0 reads as an edge touch on every side). */
+                const uint32_t span = FTS5652_AXIS_Y / 2;
+                uint32_t held = nowMs - synthStartMs;
+                if (held > synthSwipeMs) held = synthSwipeMs;
+                synthContact.x = FTS5652_AXIS_X / 2;
+                synthContact.y = (uint32_t)(FTS5652_AXIS_Y - 40u -
+                                            (int32_t)span * (int32_t)held / (int32_t)synthSwipeMs);
+                if (synthContact.y >= FTS5652_AXIS_Y) synthContact.y = FTS5652_AXIS_Y - 1;
+            } else {
+                synthContact.x = FTS5652_AXIS_X / 2;
+                synthContact.y = FTS5652_AXIS_Y / 2;
+            }
+            synthContact.event = 2;      /* move: published as a held contact, not as a lift */
+            synthContact.pressure = 60;
+            synthContact.area = 9;       /* the vendor driver substitutes 9 for a zero area (focaltech_core.c:508) */
+            c = &synthContact;
             count = 1;
         }
     }
@@ -712,16 +748,20 @@ static Session gTouchSession;
 bool touchProbeStart(void) {
     Session &s = gTouchSession;
     /* sheng-touch-synth=<ms>: hold one synthetic contact for <ms>, once per boot, at
-     * sheng-touch-synth-at=<ms> (default 60 s, after the desktop is up). See synthTap(). */
+     * sheng-touch-synth-at=<ms> counted from the first published frame (default 60 s, after the
+     * desktop is up). sheng-touch-synth-swipe=1 makes the contact a swipe up from the bottom edge
+     * instead of a press held at the centre. See synthTap(). */
     {
         unsigned hold = 0;
         if (PE_parse_boot_argn("sheng-touch-synth", &hold, sizeof hold) && hold) {
             synthHoldMs = hold;
             unsigned at = 0;
             if (PE_parse_boot_argn("sheng-touch-synth-at", &at, sizeof at) && at) synthAtMs = at;
+            unsigned swipe = 0;
+            if (PE_parse_boot_argn("sheng-touch-synth-swipe", &swipe, sizeof swipe) && swipe) synthSwipe = 1;
             if (&qcom_usb_debug_write) {
-                char text[80];
-                int n = snprintf(text, sizeof text, "TOUCHSYNTH cfg hold=%u at=%u\n", synthHoldMs, synthAtMs);
+                char text[96];
+                int n = snprintf(text, sizeof text, "TOUCHSYNTH cfg hold=%u at=%u swipe=%u\n", synthHoldMs, synthAtMs, synthSwipe);
                 if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof text ? (size_t)n : sizeof text - 1);
             }
         }
