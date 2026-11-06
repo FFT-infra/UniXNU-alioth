@@ -703,6 +703,15 @@ kernel_args = [
   # Mode 6 adds CX power-on, the GPU SMMU clock and the 200 MHz GMU clock. Judgement line:
   # "GPU m1 gcc=ok cc=ok smmu=ok gpu=ok io=0".
   "pipa-gpu=12",
+  # The GPU busy-counter poll in GpuProbe.cpp hangs the core it runs on. native_gpu_freq_tick is
+  # called from boot_log_tick, which the page monitor calls, and its own default is ON: every boot
+  # lost one core about seven seconds in, that core never took its timer interrupt again, and every
+  # thread asleep on it was lost for good. Which thread it was decided the symptom -- the render
+  # server never starting and a black screen, a frozen touch loop, or the monitor stopping at its
+  # seventh round and taking the log with it. Turning it off kept all eight cores for two whole
+  # rounds, with the desktop up at t=80s and the touch loop counting. Re-enabling it needs the GMU
+  # clock proven on at the moment of the read; the gColdOk && gx_on test does not prove that.
+  "sheng-gpu-dynfreq=0",
   # The PCIe controller steps; step 1 only reads, criterion gcc pcie_0_gdscr = 0x22f001.
   # Mounts the payload addon; the wallpaper overlay arrives through it.
   "sheng-gpu-addon=1",
