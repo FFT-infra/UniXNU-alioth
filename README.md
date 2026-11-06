@@ -71,6 +71,18 @@ Run from the UniXNU checkout:
 Read [porting](https://unixnu.com/porting/) and the
 [bring-up order](https://unixnu.com/porting/bring-up) before the first build.
 
+## Host tests
+
+`package/tests/` holds tests that need no device and no XNU SDK: each builds one pure-logic header
+with a host compiler and asserts its constants against `reference/k40-kernel`. Run them all with:
+
+```sh
+sh scripts/run-host-tests.sh
+```
+
+The record cites each one as host evidence, so a change to a header those tests cover should keep
+this script green before the change reaches a device round.
+
 ## Layout
 
 | Path | Contents |
