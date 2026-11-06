@@ -1729,7 +1729,11 @@ void boot_log_tick(unsigned now) {
    * because the MDP block is unclocked at display start and reads return zero there; by the time the log has run for a few seconds
    * the panel is powered and the registers answer. */
   if (&alioth_dpu_probe_tick) alioth_dpu_probe_tick(now);
-  if (&native_gpu_freq_tick) native_gpu_freq_tick(now);
+  /* The GPU frequency sample used to be called here, once a second. It is not any more: it reads
+   * GMU registers, and this tick cannot promise their clock is on. On 2026-11-06 that read stopped
+   * the core running this loop about seven seconds into every boot, and every thread asleep on that
+   * core was lost with it. The sample now needs its caller to declare the GPU powered
+   * (native_gpu_freq_powered), which no diagnostic path may do. */
   /* Phase heartbeat: once a second is too much, once on every change plus every tenth second
    * otherwise. A writer that stops leaves its last phase on the console and nothing else. */
   static unsigned last_phase = ~0U, last_at;

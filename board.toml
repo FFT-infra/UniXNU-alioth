@@ -703,17 +703,21 @@ kernel_args = [
   # Mode 6 adds CX power-on, the GPU SMMU clock and the 200 MHz GMU clock. Judgement line:
   # "GPU m1 gcc=ok cc=ok smmu=ok gpu=ok io=0".
   "pipa-gpu=12",
-  # The GPU busy-counter poll in GpuProbe.cpp hangs the core it runs on. native_gpu_freq_tick is
-  # called from boot_log_tick, which the page monitor calls, and its own default is ON: every boot
-  # lost one core about seven seconds in, that core never took its timer interrupt again, and every
-  # thread asleep on it was lost for good. Which thread it was decided the symptom -- the render
-  # server never starting and a black screen, a frozen touch loop, or the monitor stopping at its
-  # seventh round and taking the log with it. Turning it off kept all eight cores for two whole
-  # rounds, with the desktop up at t=80s and the touch loop counting. Re-enabling it needs the GMU
-  # clock proven on at the moment of the read; the gColdOk && gx_on test does not prove that.
-  "sheng-gpu-dynfreq=0",
-  # The PCIe controller steps; step 1 only reads, criterion gcc pcie_0_gdscr = 0x22f001.
-  # Mounts the payload addon; the wallpaper overlay arrives through it.
+  # The GPU busy-counter poll in GpuProbe.cpp hangs the core it runs on, so it is off. It is off in
+  # code, not here: native_gpu_freq_tick returns unless its caller declares the GPU powered
+  # (native_gpu_freq_powered), nothing sets it, and the 1 Hz call from boot_log_tick is gone, so no
+  # diagnostic path can read a GMU register again. The boot argument sheng-gpu-dynfreq still exists
+  # and its default is 0 in GpuProbe.cpp.
+  #
+  # Why not a line here: unixnu.com/zh/xnu/boot-arguments caps the merged command line at 1000
+  # bytes, and this board's line measures 1008 with the argument present and 988 without it.
+  #
+  # What it cost while it was on (2026-11-02 to 2026-11-06): every boot lost one core about seven
+  # seconds in, that core never took its timer interrupt again, and every thread asleep on it was
+  # lost for good. Which thread it was decided the symptom -- the render server never starting so
+  # the screen stayed black, a frozen touch loop, or the page monitor stopping at its seventh round
+  # and taking the log with it. Re-enabling it needs the GMU's clock proven on at the moment of the
+  # read; gColdOk && gx_on only proves the GX rail is up.
   "sheng-gpu-addon=1",
   # The display hand-off (NativeGOPPresenter.cpp:94): with it the composited frame is offered to
   # the privileged GPU client instead of being copied by the CPU. The live row's swap counter
