@@ -743,18 +743,22 @@ kernel_args = [
   "sheng-gpu-wc=0",
   "pipa-gpu-zap=1",
   "sheng-gpu-norestart=1",
-  # The GPU busy-counter poll in GpuProbe.cpp hangs the core it runs on. native_gpu_freq_tick is
-  # called from boot_log_tick, which the page monitor calls, and its default is ON: every boot
-  # lost one core about seven seconds in, that core never took its timer interrupt again, and
-  # every thread asleep on it was lost for good. Which thread was lost decided the symptom --
-  # mediaserverd never started and the screen stayed black, the touch loop froze, or the monitor
-  # itself stopped and the log went with it. The GICR row named the victim (nm=boot_progress,
-  # ac=6f/4, pr=92) and the step counters put it inside native_gpu_freq_tick (ms=4 ts=4 mon=7).
-  # With this argument the same image keeps all eight cores (deaf=00, wd=0/00 for the whole
-  # round), the monitor turns once a second instead of stopping at seven, the desktop comes up at
-  # t=80s and the touch loop keeps counting. Re-enabling it needs the GMU's clock proven on at
-  # the moment of the read, not just the GX rail.
-  "sheng-gpu-dynfreq=0",
+  # The GPU busy-counter poll in GpuProbe.cpp hangs the core it runs on, so it is off. It is off in
+  # code, not here: native_gpu_freq_tick now returns unless its caller declares the GPU powered
+  # (native_gpu_freq_powered), no caller does, and the old 1 Hz call from boot_log_tick is gone.
+  # The boot argument sheng-gpu-dynfreq still exists and still defaults to 0 in GpuProbe.cpp.
+  #
+  # Why not a line here: unixnu.com/zh/xnu/boot-arguments caps the merged command line at 1000
+  # bytes, and this board's line measures 1008 with sheng-gpu-dynfreq=0 present and 987 without
+  # it. The switch costs 21 bytes, so it lives in the default instead.
+  #
+  # What it cost while it was on (2026-11-02 to 2026-11-06): every boot lost one core about seven
+  # seconds in, that core never took its timer interrupt again, and every thread asleep on it was
+  # lost for good. Which thread it was decided the symptom -- mediaserverd never started and the
+  # screen stayed black, the touch loop froze, or the monitor stopped at its seventh round and the
+  # log went with it. The GICR row named the victim (nm=boot_progress, ac=6f/4, pr=92) and the step
+  # counters put it inside native_gpu_freq_tick (ms=4 ts=4 mon=7). Re-enabling it needs the GMU's
+  # clock proven on at the moment of the read; gColdOk && gx_on only proves the GX rail is up.
   # The PCIe controller steps; step 1 only reads, criterion gcc pcie_0_gdscr = 0x22f001.
   # Mounts the payload addon; the wallpaper overlay arrives through it.
   "sheng-gpu-addon=1",

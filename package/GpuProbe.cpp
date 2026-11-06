@@ -630,12 +630,30 @@ bool gpuVote(unsigned level) {
     return false;
 }
 bool gFreqStarted;
+/* The clock, not the rail. Every access in this function goes to a GMU register, and a GMU register
+ * read on a block whose clock is off does not fail: it never returns, the issuing core stops taking
+ * interrupts, and with cpu_idle_latency 0 every thread asleep on that core is lost for good. That is
+ * what happened on every boot from 2026-11-02 to 2026-11-06, when the 1 Hz log tick called this
+ * function and the core running the monitor died about seven seconds in.
+ *
+ * gColdOk and gx_on say the GPU's power rail is up. They do not say the GMU's clock is running, and
+ * the two are controlled separately on this SoC. So the sample is refused unless the caller declares
+ * it holds the device powered, and no caller does today. A real caller has to be a context that
+ * turned the clocks on itself -- Linux does it with pm_runtime_get_sync around every register access
+ * (drivers/gpu/drm/msm/adreno/a6xx_gpu.c). Ours would live in the Adreno driver, which is a shared
+ * component, so it is not something this device repository may add unilaterally.
+ */
+volatile int native_gpu_freq_powered;
+}
+extern "C" void native_gpu_freq_set_powered(int on) {
+    __atomic_store_n(&native_gpu_freq_powered, on ? 1 : 0, __ATOMIC_RELEASE);
 }
 extern "C" void native_gpu_freq_tick(unsigned now) {
     (void)now;
     static int on = -1;
-    if (on < 0) {unsigned v = 1; PE_parse_boot_argn("sheng-gpu-dynfreq", &v, sizeof v); on = v ? 1 : 0;}
+    if (on < 0) {unsigned v = 0; PE_parse_boot_argn("sheng-gpu-dynfreq", &v, sizeof v); on = v ? 1 : 0;}
     if (!on) return;
+    if (!__atomic_load_n(&native_gpu_freq_powered, __ATOMIC_ACQUIRE)) return;
     if (!gColdOk || !native_gpu_gx.gx_on) return;
     if (!gFreqStarted) {
         gFreqStarted = true;

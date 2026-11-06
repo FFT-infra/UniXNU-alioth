@@ -186,7 +186,7 @@ extern volatile uint32_t native_dpu_stats[20] __attribute__((weak_import));
  * alioth_dpu_probe_tick is defined at C linkage there. Weak so the archive still links when the probe is not built. */
 extern void alioth_dpu_probe_tick(unsigned now) __attribute__((weak_import));
 /* The GPU frequency governor, once a second: [0] level in force, [1] changes, [2] submissions last second, [3] ticks. */
-extern void native_gpu_freq_tick(unsigned now) __attribute__((weak_import));
+// native_gpu_freq_tick is deliberately not declared here any more: see the step-4 comment in boot_log_tick.
 extern volatile uint32_t native_gpu_freq[9] __attribute__((weak_import));
 /* The display bank's stage-1 window (NativeUfs's DpuWindow.h). native_ufs_dpu_state's bit 31 means the table was installed and
  * survived the 50 ms fault watch; any other value is the step that refused, and 0 means the window was never attempted.
@@ -2656,7 +2656,11 @@ void boot_log_tick(unsigned now) {
   boot_log_tick_step = 3;
   if (&alioth_dpu_probe_tick) alioth_dpu_probe_tick(cur_now);
   boot_log_tick_step = 4;
-  if (&native_gpu_freq_tick) native_gpu_freq_tick(cur_now);
+  /* The GPU frequency sample used to be called here, once a second. It is not any more: it reads
+   * GMU registers, and this tick is not a context that can promise their clock is on. On 2026-11-06
+   * that read stopped the core running this loop about seven seconds into every boot (GICR ms=4
+   * ts=4 mon=7), and every thread asleep on that core was lost with it. The sample now requires its
+   * caller to declare the GPU powered (native_gpu_freq_powered), which no diagnostic path may do. */
   boot_log_tick_step = 5;
   /* Phase heartbeat: once a second is too much, once on every change plus every tenth second
    * otherwise. A writer that stops leaves its last phase on the console and nothing else. */
