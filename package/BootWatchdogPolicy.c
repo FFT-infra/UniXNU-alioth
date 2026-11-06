@@ -279,6 +279,12 @@ volatile int32_t sheng_wallpaper_cfg[2 + 128] = {0};
 // stop looking the same on the console. The path it opens carries a container UUID that changes
 // when the app's container is recreated, which is a silent failure otherwise.
 volatile int32_t sheng_wallpaper_probe_ran = 0;
+// sheng-wallpaper-scan=1: how many containers carry PosterBoard in their metadata plist, walked from
+// the two container roots. The configuration probe opens a path with a container UUID baked in and now
+// reads ENOENT, so the first question is whether a PosterBoard container exists at all.
+volatile int32_t sheng_wallpaper_scan_ran = 0;
+volatile int32_t sheng_wallpaper_scan_app = -1;
+volatile int32_t sheng_wallpaper_scan_group = -1;
 static int sheng_wallpaper_read_cfg(proc_t p, uint64_t scratch) {
  static const char path[] =
   "/private/var/mobile/Containers/Data/Application/21211B1B-49C3-4486-803E-7E7ABCD864ED/Library/Preferences/com.apple.PosterBoard.plist";
@@ -344,6 +350,18 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
   if(wallpaper==1) {
    if((error=sheng_wallpaper_reset_files(p,scratch))) sheng_watchdog_policy_status=error;
    else printf("sheng wallpaper configuration reset\n");
+  }
+  int wscan=0;
+  PE_parse_boot_argn("sheng-wallpaper-scan",&wscan,sizeof(wscan));
+  // This function runs on every exec, and the walk reads a metadata plist in every container under
+  // two roots, so it cannot run every time. It also cannot run only once: the first exec is far too
+  // early for PosterBoard to have a container. Every two hundredth exec is late enough to see one and
+  // cheap enough to repeat, and the row prints whatever the last scan found.
+  static unsigned scan_tick;
+  if(wscan==1 && (scan_tick++ % 200)==0) {
+   sheng_wallpaper_scan_ran=1;
+   sheng_wallpaper_scan_app=(int32_t)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
+   sheng_wallpaper_scan_group=(int32_t)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Shared/AppGroup");
   }
   int wprobe=0;
   PE_parse_boot_argn("sheng-wallpaper-probe",&wprobe,sizeof(wprobe));
