@@ -39,8 +39,13 @@ static const char lite_jobs[]=
  // running system's msgbuf: com.apple.NanoUniverse.AegirProxyApp.AegirPoster and com.apple.WatchFacesWallpaperSupport.KaleidoscopePoster.
  // The short names com.apple.AegirPoster / com.apple.KaleidoscopePoster are the process names, not the labels, and a disabled key that
  // names nothing disables nothing (b0c316f did exactly that and the crash stayed).
- "com.apple.fairplayd.A2,com.apple.passd,com.apple.mobile.obliteration,"
- "com.apple.NanoUniverse.AegirProxyApp.AegirPoster,com.apple.WatchFacesWallpaperSupport.KaleidoscopePoster";
+ "com.apple.fairplayd.A2,com.apple.passd,com.apple.mobile.obliteration";
+
+// The two wallpaper extensions, kept apart from the list above because sheng-wallpaper-posters=1 puts
+// them back on their own. They faulted with SIGBUS (ESR 0x82000007) on a userspace pointer every boot
+// when the list above was written; that was 2026-11-06 and every boot then lost a core about seven
+// seconds in, so they are worth one round with the core loss fixed before they are written off.
+static const char lite_posters[]="com.apple.NanoUniverse.AegirProxyApp.AegirPoster,com.apple.WatchFacesWallpaperSupport.KaleidoscopePoster";
 static char policy[2048],jobs[200];
 volatile int sheng_watchdog_policy_status=-1;
 
@@ -345,6 +350,8 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  policy[0]=0;strlcat(policy,policy_head,sizeof(policy));
  if(enabled)strlcat(policy,policy_watchdogd,sizeof(policy));
  if(lite)for(const char *c=lite_jobs;*c;) {if((error=append_job(&c)))return error;}
+ {int posters=0;PE_parse_boot_argn("sheng-wallpaper-posters",&posters,sizeof posters);
+  if(lite && posters!=1)for(const char *c=lite_posters;*c;) {if((error=append_job(&c)))return error;}}
  for(const char *c=jobs;*c;) {if((error=append_job(&c)))return error;}
  strlcat(policy,policy_tail,sizeof(policy));
  const char *directory="/private/var/db/com.apple.xpc.launchd";
