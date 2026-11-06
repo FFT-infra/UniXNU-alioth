@@ -79,7 +79,9 @@ volatile int32_t sheng_wallpaper_scan[4] = {0};
 // The container the last walk matched. The configuration read builds its path from this instead of
 // a UUID baked into the source, which read ENOENT once the container had been recreated.
 char sheng_wallpaper_container[192];
-// sheng-wallpaper-list=1: the entry names under the directories that can hold the chosen poster.
+// sheng-wp=<1|2>: the entry names under the directories that can hold a chosen poster. 1 is the
+// Data container, 2 the system volume's wallpaper collections. The name is short because the
+// merged command line is capped at 1000 bytes and this argument competes with the board's own.
 // The plist in Library/Preferences turned out to be CoreAnimation settings, so the next thing to
 // look at is the directory listing rather than another guessed file.
 volatile int32_t sheng_wallpaper_list_ran = 0;
@@ -444,7 +446,14 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
    }
   }
   int wlist=0;
-  PE_parse_boot_argn("sheng-wallpaper-list",&wlist,sizeof(wlist));
+  PE_parse_boot_argn("sheng-wp",&wlist,sizeof(wlist));
+  if(wlist==2 && !sheng_wallpaper_list_ran) {
+   /* The system volume, not the Data container: which wallpaper collections and which variants
+    * this image really carries. The overlay mount targets a path inside one of these. */
+   sheng_wallpaper_list_ran=1;
+   sheng_wallpaper_list(p,scratch,"/Library/Wallpaper/Collections",'C');
+   sheng_wallpaper_list(p,scratch,"/Library/Wallpaper/Collections/iPadOS_17~ipad.wallpaperCollection/Wallpapers",'W');
+  }
   if(wlist==1 && !sheng_wallpaper_list_ran) {
    if(!sheng_wallpaper_container[0])
     (void)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");

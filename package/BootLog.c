@@ -654,6 +654,27 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
       at = put(out, at, cap, crow, sizeof crow);
     }
   }
+  {
+    /* The three addon mounts the kernel performs, with their verdicts. The wallpaper overlay is
+     * the third; a status other than 0 there means the mount the wallpaper depends on failed, and
+     * a status of 0 with no picture means the mount landed somewhere nothing renders. */
+    extern volatile int native_gpu_addon_stage __attribute__((weak_import));
+    extern volatile int native_gpu_addon_status __attribute__((weak_import));
+    extern volatile int native_gpu_addon2_stage __attribute__((weak_import));
+    extern volatile int native_gpu_addon2_status __attribute__((weak_import));
+    extern volatile int native_gpu_addon3_stage __attribute__((weak_import));
+    extern volatile int native_gpu_addon3_status __attribute__((weak_import));
+    if (&native_gpu_addon_status && &native_gpu_addon2_status && &native_gpu_addon3_status) {
+      char crow[120];
+      snprintf(crow, sizeof crow, "[addon] 1=%d/%d 2=%d/%d 3=%d/%d",
+        native_gpu_addon_stage, native_gpu_addon_status,
+        native_gpu_addon2_stage, native_gpu_addon2_status,
+        native_gpu_addon3_stage, native_gpu_addon3_status);
+      if (&qcom_usb_debug_write) {char cl[126]; const int cn = snprintf(cl, sizeof cl, "%s\n", crow);
+        if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
+      at = put(out, at, cap, crow, sizeof crow);
+    }
+  }
   if (&sheng_wallpaper_db_ran && sheng_wallpaper_db_ran && &sheng_wallpaper_db) {
     /* Page 1 of the poster store holds the schema, so these runs are the table names. */
     char crow[420];
