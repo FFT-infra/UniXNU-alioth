@@ -741,13 +741,19 @@ kernel_args = [
   # all three are the other way. One round with all three back answers "is any of them the cause"
   # before bisecting them one at a time (progress/2026-11-05-why-it-worked.md).
   "sheng-gpu-wc=0",
-  # pipa-gpu-zap=1 is NOT here, and that is deliberate. The bootloader has already loaded and
-  # authenticated the a650 zap before XNU runs, so the kernel PAS sequence is redundant
-  # (progress/2026-11-03-gpu-chain.md section 11: nozap reached the desktop, METAL ok). Its segment
-  # copy also reads pil_gpu_region, which TrustZone owns after authentication: when that read stalls
-  # the whole GPU probe never runs. Measured 2026-11-06 of3: one "ZAPSCM enter copy", no "done read",
+  # The kernel PAS sequence is not run: the bootloader has already loaded and authenticated the
+  # a650 zap before XNU runs (progress/2026-11-03-gpu-chain.md section 11). Its segment copy also
+  # reads pil_gpu_region, which TrustZone owns after authentication; when that read stalls the
+  # whole GPU probe never runs. Measured 2026-11-06 of3: one "ZAPSCM enter copy", no "done read",
   # zero GPUROW rows for the whole boot, while the CPU path still composited (sw=311 own=1).
-  # col2 (no zap) in the same tree reached the desktop with METAL ok and 5 GPU clients.
+  # Mode 3, not mode 0: mode 0 returns before CP_SET_SECURE_MODE(0), so the CP stays in secure
+  # mode. Measured 2026-11-07 of4 (mode 0): METAL ok and 9 GPU clients, but the first client IB
+  # never retired (GPUROW26 HANG ib1 100027000+3f4 ib2 10002c000+0, busy 1000,
+  # fence wait 6786 of 6864 timed out,
+  # GPUFRAME gpu offered 1 done 0, and every client read DeviceLost. Mode 3 skips the region copy
+  # and still sends CP_SET_SECURE_MODE(0) (GpuProbe.cpp leaveSecure), which is the step g1 had
+  # when it presented (gpu offered 59 done 59).
+  "pipa-gpu-nozap=3",
   "sheng-gpu-norestart=1",
   # The GPU busy-counter poll in GpuProbe.cpp hangs the core it runs on, so it is off. It is off in
   # code, not here: native_gpu_freq_tick now returns unless its caller declares the GPU powered
