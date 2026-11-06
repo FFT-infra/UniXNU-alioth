@@ -238,6 +238,22 @@ extern volatile uint32_t armcpu_smp_running __attribute__((weak_import));
 // row can say whether a core that stops taking interrupts ever claimed to be running at all.
 extern volatile uint32_t armcpu_smp_step[8] __attribute__((weak_import));
 extern volatile uint32_t armcpu_smp_fail[8] __attribute__((weak_import));
+// The liveness watchdog lives in ArmCpu: this file declares a core, ArmCpu records it, and with
+// armcpu-deaf-skip=1 its signalCPU stops poking that core. Both counters are here so a console row
+// can show the watchdog ran instead of leaving it to be inferred from an absent effect.
+extern volatile uint32_t armcpu_core_deaf_mask __attribute__((weak_import));
+extern volatile uint32_t armcpu_core_deaf_events __attribute__((weak_import));
+extern volatile uint64_t armcpu_ipi_skipped_deaf __attribute__((weak_import));
+extern void armcpu_core_note_deaf(uint32_t core) __attribute__((weak_import));
+// Reads the suspect core's own redistributor frame from a healthy core: pending, enabled, active and WAKER.
+// Pending-but-not-taken says the core is masked or halted; cleared enables say its GIC was turned off;
+// nothing pending says no sender targets it.
+extern int armcpu_core_gicr_probe(uint32_t core, uint32_t out[5]) __attribute__((weak_import));
+// The phase that core last wrote, and the count (units of 1024) at which it entered the handler. A deaf
+// core with phase 2 was inside the timer handler, 4 or 5 inside the IPI handler, 7 inside a device
+// handler, and 0 or 6 was not in a handler at all.
+extern volatile uint32_t armcpu_core_phase[8] __attribute__((weak_import));
+extern volatile uint32_t armcpu_core_irq_enter[8] __attribute__((weak_import));
 extern volatile uint64_t armcpu_timer_interrupts __attribute__((weak_import));
 extern volatile uint64_t armcpu_ipi_interrupts __attribute__((weak_import));
 extern volatile uint64_t armcpu_ipi_sent __attribute__((weak_import));
@@ -2457,9 +2473,9 @@ static void core_health_thread(void *arg, wait_result_t result)
     const unsigned elapsed = (unsigned)((log_ticks() - start) / f);
     unsigned cores = (&armcpu_smp_running ? (unsigned)__atomic_load_n(&armcpu_smp_running, __ATOMIC_RELAXED) : 0u) + 1u;
     if (cores > 8) cores = 8;
-    char row[320];
+    char row[384];
     int n = snprintf(row, sizeof row, "CORES t=%us runs=%u |", elapsed, runs);
-    for (unsigned c = 0; c < cores && n > 0 && (unsigned)n < sizeof row - 24; ++c)
+    for (unsigned c = 0; c < cores && n > 0 && (unsigned)n < sizeof row - 32; ++c)
       n += snprintf(row + n, sizeof row - (unsigned)n, " c%u=%u/%u",
                     c, __atomic_load_n(&armcpu_core_timer[c], __ATOMIC_RELAXED),
                     __atomic_load_n(&armcpu_core_sgi[c], __ATOMIC_RELAXED));
@@ -2469,6 +2485,10 @@ static void core_health_thread(void *arg, wait_result_t result)
       if (now == last[c]) {if (unmoved[c] < 255) ++unmoved[c];}
       else {unmoved[c] = 0; last[c] = now;}
       if (unmoved[c] >= 2) deaf |= 1u << c;
+      /* Declaring a core takes one more still sample than showing it: a core that merely lost one
+       * timer tick to a long mask-off section recovers on the next sample, and boot would stop
+       * poking it for good. Three still samples in a row is a core that stopped taking interrupts. */
+      if (unmoved[c] >= 3 && &armcpu_core_note_deaf) armcpu_core_note_deaf(c);
     }
     if (&armcpu_smp_step)
       for (unsigned c = 0; c < 8; ++c) {
@@ -2478,11 +2498,41 @@ static void core_health_thread(void *arg, wait_result_t result)
     if (&armcpu_smp_fail)
       for (unsigned c = 0; c < 8; ++c)
         if (__atomic_load_n(&armcpu_smp_fail[c], __ATOMIC_RELAXED)) failed |= 1u << c;
-    if (n > 0 && (unsigned)n < sizeof row - 32)
-      n += snprintf(row + n, sizeof row - (unsigned)n, " run=%u deaf=%02x st=%02x fl=%02x",
+    if (n > 0 && (unsigned)n < sizeof row - 96)
+      n += snprintf(row + n, sizeof row - (unsigned)n, " run=%u deaf=%02x st=%02x fl=%02x wd=%u/%02x skip=%llu",
                     &armcpu_smp_running ? (unsigned)__atomic_load_n(&armcpu_smp_running, __ATOMIC_RELAXED) : 0u,
-                    deaf, badStep, failed);
+                    deaf, badStep, failed,
+                    &armcpu_core_deaf_events ? (unsigned)__atomic_load_n(&armcpu_core_deaf_events, __ATOMIC_RELAXED) : 0u,
+                    &armcpu_core_deaf_mask ? (unsigned)__atomic_load_n(&armcpu_core_deaf_mask, __ATOMIC_RELAXED) : 0u,
+                    &armcpu_ipi_skipped_deaf ? (unsigned long long)__atomic_load_n(&armcpu_ipi_skipped_deaf, __ATOMIC_RELAXED) : 0ull);
     if (n > 0) {row[n++] = '\n'; qcom_usb_debug_write(row, (size_t)n < sizeof row ? (size_t)n : sizeof row - 1);}
+    /* One line for the suspect cores only, so the CORES row stays readable: the frame's own affinity, then
+     * pending, enabled, active and WAKER. A core that is pending but never takes the interrupt is masked or
+     * halted; one whose enables are clear had its GIC turned off; one with nothing pending is not targeted. */
+    if (deaf != 0 && &armcpu_core_gicr_probe) {
+      char gr[256];
+      int m = snprintf(gr, sizeof gr, "GICR t=%us deaf=%02x", elapsed, deaf);
+      for (unsigned c = 0; c < cores && m > 0 && (unsigned)m < sizeof gr - 64; ++c) {
+        if (!((deaf >> c) & 1u)) continue;
+        uint32_t p[5] = {0, 0, 0, 0, 0};
+        const int ok = armcpu_core_gicr_probe(c, p);
+        /* How long it has been inside the handler it last entered, in seconds. A phase that never
+         * changes and an age that keeps climbing is a core stuck in that one handler. */
+        unsigned ph = 0, age = 0;
+        if (&armcpu_core_phase && &armcpu_core_irq_enter) {
+          uint64_t now; __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(now));
+          const uint32_t entered = __atomic_load_n(&armcpu_core_irq_enter[c], __ATOMIC_RELAXED);
+          ph = __atomic_load_n(&armcpu_core_phase[c], __ATOMIC_RELAXED);
+          const uint64_t hz = f / 1024u;
+          if (hz && entered && (uint32_t)(now >> 10) > entered) age = (unsigned)(((uint32_t)(now >> 10) - entered) / hz);
+        }
+        m += snprintf(gr + m, sizeof gr - (unsigned)m, " c%u=%s%x/%x/%x/%x/%x ph%u age%us",
+                      c, ok == 0 ? "" : "?",
+                      (unsigned)p[0], (unsigned)p[1], (unsigned)p[2], (unsigned)p[3], (unsigned)p[4],
+                      ph, age);
+      }
+      if (m > 0 && (unsigned)m < sizeof gr) {gr[m++] = '\n'; qcom_usb_debug_write(gr, (size_t)m < sizeof gr ? (size_t)m : sizeof gr - 1);}
+    }
   }
 }
 
