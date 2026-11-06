@@ -234,6 +234,10 @@ extern volatile uint32_t armcpu_timer_short[8] __attribute__((weak_import));
 extern volatile int32_t armcpu_timer_ahead[8] __attribute__((weak_import));
 extern volatile uint32_t armcpu_core_sgi[8] __attribute__((weak_import));
 extern volatile uint32_t armcpu_smp_running __attribute__((weak_import));
+// Per-secondary bring-up step (1 nub started .. 7 running) and the check that failed, so the CPUT
+// row can say whether a core that stops taking interrupts ever claimed to be running at all.
+extern volatile uint32_t armcpu_smp_step[8] __attribute__((weak_import));
+extern volatile uint32_t armcpu_smp_fail[8] __attribute__((weak_import));
 extern volatile uint64_t armcpu_timer_interrupts __attribute__((weak_import));
 extern volatile uint64_t armcpu_ipi_interrupts __attribute__((weak_import));
 extern volatile uint64_t armcpu_ipi_sent __attribute__((weak_import));
@@ -1984,17 +1988,49 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
        * which is the one failure that would leave a thread blocked in a deadline wait for ever
        * without failing a single read. irq/ipi/sent are the totals and what the kernel asked for. */
       if (&armcpu_core_timer) {
-        char core[192];
+        char core[320];
         int cn = snprintf(core, sizeof core, "CPUT t=%us irq=%llu ipi=%llu sent=%llu |", elapsed,
                           (unsigned long long)(&armcpu_timer_interrupts ? __atomic_load_n(&armcpu_timer_interrupts, __ATOMIC_RELAXED) : 0ull),
                           (unsigned long long)(&armcpu_ipi_interrupts ? __atomic_load_n(&armcpu_ipi_interrupts, __ATOMIC_RELAXED) : 0ull),
                           (unsigned long long)(&armcpu_ipi_sent ? __atomic_load_n(&armcpu_ipi_sent, __ATOMIC_RELAXED) : 0ull));
-        unsigned cores = &armcpu_smp_running ? armcpu_smp_running : 1u;
+        /* The boot core is not one of the running secondaries, so the old bound (armcpu_smp_running) printed
+         * c0..c6 on an eight-core board and never c7. The row is the boot core plus every secondary that
+         * reported running, capped at the eight logical CPUs the device tree declares. */
+        unsigned cores = (&armcpu_smp_running ? (unsigned)__atomic_load_n(&armcpu_smp_running, __ATOMIC_RELAXED) : 0u) + 1u;
         if (cores > 8) cores = 8;
         for (unsigned c = 0; c < cores && cn > 0 && (unsigned)cn < sizeof core - 24; ++c)
           cn += snprintf(core + cn, sizeof core - (unsigned)cn, " c%u=%u/%u",
                          c, __atomic_load_n(&armcpu_core_timer[c], __ATOMIC_RELAXED),
                          __atomic_load_n(&armcpu_core_sgi[c], __ATOMIC_RELAXED));
+        /* A core whose timer count has not moved for two consecutive samples is deaf: it is taking no
+         * interrupt at all, not missing a deadline. XNU keeps it registered and can place a thread there,
+         * and that thread's wakeup never arrives. The mask says which cores a wakeup must avoid, and it
+         * costs nothing when every core is healthy (deaf=00 forever). */
+        static uint32_t lastTimer[8];
+        static uint8_t unmoved[8];
+        unsigned deaf = 0;
+        for (unsigned c = 0; c < cores; ++c) {
+          const uint32_t now = __atomic_load_n(&armcpu_core_timer[c], __ATOMIC_RELAXED);
+          if (now == lastTimer[c]) {if (unmoved[c] < 255) ++unmoved[c];}
+          else {unmoved[c] = 0; lastTimer[c] = now;}
+          if (unmoved[c] >= 2) deaf |= 1u << c;
+        }
+        /* What each core says about itself, from ArmCpu's own arrays: a step below 7 is a core that never
+         * reached running, and a nonzero fail says which check stopped it. Printed as masks so the row
+         * stays one line; both are zero on a healthy boot. */
+        unsigned badStep = 0, failed = 0;
+        if (&armcpu_smp_step)
+          for (unsigned c = 0; c < 8; ++c) {
+            const uint32_t st = __atomic_load_n(&armcpu_smp_step[c], __ATOMIC_RELAXED);
+            if (st && st != 7) badStep |= 1u << c;
+          }
+        if (&armcpu_smp_fail)
+          for (unsigned c = 0; c < 8; ++c)
+            if (__atomic_load_n(&armcpu_smp_fail[c], __ATOMIC_RELAXED)) failed |= 1u << c;
+        if (cn > 0 && (unsigned)cn < sizeof core - 32)
+          cn += snprintf(core + cn, sizeof core - (unsigned)cn, " run=%u deaf=%02x st=%02x fl=%02x",
+                         &armcpu_smp_running ? (unsigned)__atomic_load_n(&armcpu_smp_running, __ATOMIC_RELAXED) : 0u,
+                         deaf, badStep, failed);
         if (cn > 0) {core[cn++] = '\n'; if (&qcom_usb_debug_write) qcom_usb_debug_write(core, (size_t)cn);}
         // Same cores again, from the deadline side: how often the architectural timer was already past due and
         // how far ahead the last one was. A thread blocked in a timed wait whose deadline is skipped here never
