@@ -650,6 +650,11 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     snprintf(crow, sizeof crow, "[wallpaper cfg] ran status=%d bytes=%d",
              &sheng_wallpaper_cfg ? (int)sheng_wallpaper_cfg[0] : -1,
              &sheng_wallpaper_cfg ? (int)sheng_wallpaper_cfg[1] : -1);
+    /* put() writes the persistent log, not the console. This row is the only thing that says
+     * whether the probe path still resolves, and the console is the only channel a round can be
+     * read without booting the reader, so it goes to both. */
+    if (&qcom_usb_debug_write) {char cl[80]; const int cn = snprintf(cl, sizeof cl, "%s\n", crow);
+      if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
     at = put(out, at, cap, crow, sizeof crow);
   } else if (&sheng_wallpaper_cfg && sheng_wallpaper_cfg[0]) {
     char crow[60];
