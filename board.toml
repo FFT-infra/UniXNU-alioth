@@ -741,19 +741,23 @@ kernel_args = [
   # all three are the other way. One round with all three back answers "is any of them the cause"
   # before bisecting them one at a time (progress/2026-11-05-why-it-worked.md).
   "sheng-gpu-wc=0",
-  # The kernel PAS sequence is not run: the bootloader has already loaded and authenticated the
-  # a650 zap before XNU runs (progress/2026-11-03-gpu-chain.md section 11). Its segment copy also
-  # reads pil_gpu_region, which TrustZone owns after authentication; when that read stalls the
-  # whole GPU probe never runs. Measured 2026-11-06 of3: one "ZAPSCM enter copy", no "done read",
-  # zero GPUROW rows for the whole boot, while the CPU path still composited (sw=311 own=1).
-  # Mode 3, not mode 0: mode 0 returns before CP_SET_SECURE_MODE(0), so the CP stays in secure
-  # mode. Measured 2026-11-07 of4 (mode 0): METAL ok and 9 GPU clients, but the first client IB
-  # never retired (GPUROW26 HANG ib1 100027000+3f4 ib2 10002c000+0, busy 1000,
-  # fence wait 6786 of 6864 timed out,
-  # GPUFRAME gpu offered 1 done 0, and every client read DeviceLost. Mode 3 skips the region copy
-  # and still sends CP_SET_SECURE_MODE(0) (GpuProbe.cpp leaveSecure), which is the step g1 had
-  # when it presented (gpu offered 59 done 59).
-  "pipa-gpu-nozap=3",
+  # The zap PAS sequence stays ON, and three measured rounds say why it has to.
+  # Its segment copy reads pil_gpu_region, which TrustZone owns after authentication. On some
+  # boots that read stalls and the whole GPU probe never runs (2026-11-06 of3: one
+  # "ZAPSCM enter copy", no "done read", zero GPUROW rows, CPU path still composited sw=311).
+  # But the two alternatives measured on 2026-11-07 are worse:
+  #   no zap at all (of4): METAL ok and 9 GPU clients, yet the first client IB never retired
+  #     (GPUROW26 HANG ib1 100027000+3f4 ib2 10002c000+0, busy 1000, 6786 of 6864 fence waits
+  #     timed out, GPUFRAME gpu offered 1 done 0, every client DeviceLost). The CP stays in
+  #     secure mode because nothing sends CP_SET_SECURE_MODE(0).
+  #   skip the copy but send CP_SET_SECURE_MODE(0) (of5): "ZAP secure exit timeout ... secure 1",
+  #     and Metal never registers at all: the secure world rejects the exit when this boot did
+  #     not load the image.
+  # With the sequence on, the copy completed on g1, of1, of1b and w18, and g1 presented
+  # (GPUFRAME gpu offered 59 done 59). So the boot-to-boot stall is the fault to fix in source,
+  # not the sequence to drop. The fix belongs in zapLoad: bound the region read and take the
+  # mainline no-zap branch (RBBM_SECVID_TRUST_CNTL, a6xx_gpu.c:1516) instead of stalling.
+  "pipa-gpu-zap=1",
   "sheng-gpu-norestart=1",
   # The GPU busy-counter poll in GpuProbe.cpp hangs the core it runs on, so it is off. It is off in
   # code, not here: native_gpu_freq_tick now returns unless its caller declares the GPU powered
