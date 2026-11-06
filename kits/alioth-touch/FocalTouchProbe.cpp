@@ -719,6 +719,11 @@ bool touchProbeStart(void) {
             synthHoldMs = hold;
             unsigned at = 0;
             if (PE_parse_boot_argn("sheng-touch-synth-at", &at, sizeof at) && at) synthAtMs = at;
+            if (&qcom_usb_debug_write) {
+                char text[80];
+                int n = snprintf(text, sizeof text, "TOUCHSYNTH cfg hold=%u at=%u\n", synthHoldMs, synthAtMs);
+                if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof text ? (size_t)n : sizeof text - 1);
+            }
         }
     }
     // GCC: AHB halts at 0x17000, SE4 halt+RCG at 0x17400, core halts at 0x23000,
