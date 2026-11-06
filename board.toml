@@ -938,6 +938,16 @@ kernel_args = [
   # sheng-banner=0: the region probe and the nozap round took its slot; both are one-off
   # diagnostics, so the banner switch is back for every normal image.
   "sheng-banner=0",
+  # The queued GPU experiment ran on 2026-11-06 (boot-g1) and both halves answered.
+  # It works: gpu offered 59 done 59 fail 0 against offered 0 with this off, backboardd opens the
+  # plugin, CollectionsPoster and WidgetRenderer each take a slot, and PANEL moves through five
+  # values to 579/1000 luma 135 while NativeGOPresenter.cpp:122 removes the CPU copy -- so the GPU
+  # wrote display memory, which retires the mp1 reading that it could only write a copy.
+  # It is also 3.5 times slower: 60 accepted swaps in 190 s against 210 on the CPU copy path, which
+  # is what "fluidity feels average" measured. So it stays off until the pacing is understood; the
+  # candidate is the 50 zero-timeout polls per submission in the gpu area limits.
+  # The wallpaper did not appear with it on either, so that gap is not the GPU connection.
+  # "sheng-fb-gpu=1",
   # boot-usb99 was the first image that passed this pair, and it faulted in the writer's
   # read-back of the previous run: the header struct was handed straight to a block-addressed
   # read, which copied 4096 bytes into a 152-byte stack object and ran into the guard page
