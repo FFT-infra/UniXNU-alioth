@@ -295,7 +295,7 @@ volatile int32_t sheng_wallpaper_scan_ran = 0;
 volatile int32_t sheng_wallpaper_scan_app = -1;
 volatile int32_t sheng_wallpaper_scan_group = -1;
 // Entry names under one directory, appended to sheng_wallpaper_names with '|' between them.
-static void sheng_wallpaper_list(proc_t p, uint64_t scratch, const char *root) {
+static void sheng_wallpaper_list(proc_t p, uint64_t scratch, const char *root, char tag) {
  (void)p; (void)scratch;
  vfs_context_t ctx = vfs_context_kernel();
  vnode_t dir = NULLVP;
@@ -319,8 +319,11 @@ static void sheng_wallpaper_list(proc_t p, uint64_t scratch, const char *root) {
    if (!d->d_ino || (d->d_namlen == 1 && d->d_name[0] == '.') ||
        (d->d_namlen == 2 && d->d_name[0] == '.' && d->d_name[1] == '.')) continue;
    size_t used = strlen(sheng_wallpaper_names);
-   if (used + (size_t)d->d_namlen + 2 >= sizeof sheng_wallpaper_names) {vnode_put(dir); return;}
+   if (used + 3 >= sizeof sheng_wallpaper_names) {vnode_put(dir); return;}
    if (used) sheng_wallpaper_names[used++] = '|';
+   sheng_wallpaper_names[used++] = tag;
+   sheng_wallpaper_names[used++] = ':';
+   if (used + (size_t)d->d_namlen + 2 >= sizeof sheng_wallpaper_names) {vnode_put(dir); return;}
    memcpy(sheng_wallpaper_names + used, d->d_name, d->d_namlen);
    sheng_wallpaper_names[used + d->d_namlen] = 0;
   }
@@ -421,9 +424,11 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
     char root[256];
     sheng_wallpaper_list_ran=1;
     snprintf(root,sizeof root,"%s/Library/Application Support",sheng_wallpaper_container);
-    sheng_wallpaper_list(p,scratch,root);
-    snprintf(root,sizeof root,"%s/Library/Application Support/PosterBoard",sheng_wallpaper_container);
-    sheng_wallpaper_list(p,scratch,root);
+    sheng_wallpaper_list(p,scratch,root,'A');
+    snprintf(root,sizeof root,"%s/Library/Application Support/PRBPosterExtensionDataStore",sheng_wallpaper_container);
+    sheng_wallpaper_list(p,scratch,root,'P');
+    snprintf(root,sizeof root,"%s/Library/Application Support/ArchivedDataStores",sheng_wallpaper_container);
+    sheng_wallpaper_list(p,scratch,root,'R');
    }
   }
   int wprobe=0;
