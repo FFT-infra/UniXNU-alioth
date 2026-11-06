@@ -1871,27 +1871,15 @@ static void writer(void *arg, wait_result_t result) {
       ok &= w != 0; if (!ok && !bad) bad = 3; }
     // The header lands again after the slot and the message buffer are in, so the round that
     // finished is durable too; the first write above only named the round that started.
-    // The counters move only after block 0 is on the medium. They used to move before the write,
-    // and the busy path below then did `continue` with the round already counted: the console
-    // showed rounds and slots climbing while block 0 still held the previous boot's header.
-    // Measured 2026-11-07 on of6: BLPHASE read round=113 slots=113 err=0, and a direct read of
-    // block 0 returned version 4 / tag usb190 / slots_written 509 -- the earlier boot. The reader
-    // trusts the header, so it then reported diag_bytes 0 and no diagnostic export at all.
-    {
-      const uint32_t roundsNext = boot_log_rounds + 1;
-      const uint32_t slotsNext = ok ? h.slots_written + 1 : h.slots_written;
-      const uint32_t errorsNext = ok ? h.write_errors : h.write_errors + 1;
-      h.rounds = roundsNext; h.slots_written = slotsNext; h.write_errors = errorsNext;
-      memset(boot_log_buffer, 0, LogBlock);
-      memcpy(boot_log_buffer, &h, sizeof h);
-      const int w = native_ufs_log_write(0, 1, boot_log_buffer);
+    h.rounds = ++boot_log_rounds;
+    if (ok) ++h.slots_written;
+    else ++h.write_errors;
+    __atomic_store_n(&boot_log_slots_hint, h.slots_written, __ATOMIC_RELAXED);
+    memset(boot_log_buffer, 0, LogBlock);
+    memcpy(boot_log_buffer, &h, sizeof h);
+    { const int w = native_ufs_log_write(0, 1, boot_log_buffer);
       if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
-      if (!w) {if (!bad) bad = 5; h.rounds = boot_log_rounds;}
-      else {
-        boot_log_rounds = roundsNext;
-        __atomic_store_n(&boot_log_slots_hint, slotsNext, __ATOMIC_RELAXED);
-      }
-    }
+      ok &= w != 0; if (!ok && !bad) bad = 5; }
     /* Take the frozen early-boot snapshot exactly once, while the boot-time IOLog is still inside
      * the kernel ring. copy_msgbuf always returns the newest 131072 bytes, so a copy taken at
      * t=LogFrozenAtS covers t=0..LogFrozenAtS. Writing it to LogFrozenFirst and never touching that
