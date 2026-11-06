@@ -10,6 +10,7 @@
 set -e
 OUT=${1:?usage: make-gpu-addon-alioth.sh OUTPUT}
 HERE=$(cd "$(dirname "$0")" && pwd)
+WALLPAPER=${WALLPAPER:-}
 # WALLPAPER names the overlay directory that scripts/make-wallpaper-overlay.py produces: the
 # wallpaper's index.xml and assetManifest.caml plus the J120 PNG pair that replaces the sealed HEIC
 # images, which ImageIO cannot decode on this board without a hardware HEVC decoder. The kernel
@@ -20,7 +21,16 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # answered every process, and the selftest marker was a local addition to the base repository that
 # the build no longer accepts. Passing them makes the builder print its usage and exit.
 set -- --publish
+if [ -n "${PRIME_LIST:-}" ]; then
+    set -- "$@" --prime-list "$PRIME_LIST"
+fi
+if [ -n "${PIPELINE_PACK:-}" ]; then
+    set -- "$@" --pipeline-pack "$PIPELINE_PACK"
+fi
+if [ -n "${CACHE_EXPORT:-}" ]; then
+    set -- "$@" --cache-export
+fi
 if [ -n "$WALLPAPER" ]; then
     set -- "$@" --wallpaper "$WALLPAPER"
 fi
-python3 "$HERE/../../UniXNU/scripts/make-gpu-addon.py" "$@" "$OUT"
+/opt/homebrew/bin/python3.13 "$HERE/../../UniXNU/scripts/make-gpu-addon.py" "$@" "$OUT"
