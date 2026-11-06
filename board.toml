@@ -849,13 +849,19 @@ kernel_args = [
   # half-the-time result was measured on a path the reference does not use. This round takes the
   # documented one and nothing else changes.
   # Back to 2 the same night: three boots of s110423221/30452/38083 with 0 read ds=1, own=0, sw=0,
-  # PANEL=911 and no SURFACEL row at all -- the client never called the display, so the documented
-  # CPU presentation path puts nothing on this panel as the tree stands. The upstream page calls
-  # direct scanout experimental and off by default; on this board it is the only path that has ever
-  # drawn (2026-10-29 "GPUSWAP copied 92", fix125 522 flips, and ds=4 on every good boot since).
-  # Following the documented default here costs the desktop, so the deviation stands until the CPU
-  # path is made to present.
-  "sheng-dpu-scanout=2",
+  # The documented default, and on 2026-11-06 the only path that keeps the screen following a
+  # finger. Direct scanout (2) drew the desktop but stopped updating it once it was touched: one
+  # boot accepted 401 swaps with 401 prepare calls, another accepted 4 while prepare calls reached
+  # 121717 in thirty seconds, with the touch stack identical in both (46 and 48 TOUCHTAP rows, the
+  # same contacts, irq and hstage). With this set to 0 the same image reads 84 swaps against 168
+  # prepare calls, touch answers, and PANEL reads 515/1000 luma=125 -- the drawn desktop, where the
+  # direct-scanout boots read 911 because the panel scans out a surface the probe cannot see.
+  #
+  # This reverses what this file said before: three boots with 0 measured ds=1, own=0, sw=0 and no
+  # SURFACEL row, which read as "the CPU path cannot present here". Those boots were losing a core
+  # about seven seconds in, and the render server never started on them for that reason. With the
+  # GPU busy-counter poll off (see sheng-gpu-dynfreq) the CPU path presents.
+  "sheng-dpu-scanout=0",
   # pipa-metal-withhold=none was tried on 2026-10-29: SpringBoard stops trapping but the
   # compositor then sends swaps with no surface (reason 1), so nothing draws. The default
   # withholds the Apple GPU families, which is the configuration where the desktop appears.
