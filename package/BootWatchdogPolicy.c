@@ -114,6 +114,33 @@ static char sheng_scan_buf[4096];
 volatile int32_t sheng_wallpaper_unlinked[8];
 volatile unsigned sheng_wallpaper_walked;
 
+/* Read one 4096-byte page of a file at a byte offset, through lseek + read. The wallpaper database
+ * keeps its rows in pages after the first, and the schema-only read this probe started with never
+ * reached them. */
+static int sheng_read_page(proc_t p, uint64_t scratch, const char *path, uint64_t offset, char *buf, unsigned cap) {
+ if (copyout(path, scratch, strlen(path) + 1)) return -1;
+ struct open_args op = {.path = scratch, .flags = O_RDONLY};
+ int32_t result = 0;
+ int error = open(p, &op, &result);
+ if (error) return -error;
+ const int32_t fd = result;
+ struct lseek_args ls = {.fd = fd, .offset = (off_t)offset, .whence = 0};
+ off_t where = 0;
+ error = lseek(p, &ls, &where);
+ if (error) {struct close_args cl = {.fd = fd}; int32_t r = 0; (void)sys_close(p, &cl, &r); return -error;}
+ user_ssize_t got = 0;
+ struct read_args rd = {.fd = fd, .cbuf = scratch, .nbyte = cap};
+ error = read(p, &rd, &got);
+ struct close_args cl = {.fd = fd};
+ int32_t close_result = 0;
+ (void)sys_close(p, &cl, &close_result);
+ if (error) return -error;
+ if (got < 0) return -1;
+ if ((unsigned)got > cap) got = (user_ssize_t)cap;
+ if (copyin(scratch, buf, (size_t)got)) return -1;
+ return (int)got;
+}
+
 static int sheng_read_head(proc_t p, uint64_t scratch, const char *path, char *buf, unsigned cap) {
  if (copyout(path, scratch, strlen(path) + 1)) return -1;
  struct open_args op = {.path = scratch, .flags = O_RDONLY};
@@ -441,6 +468,33 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
        memcpy(sheng_wallpaper_db+used,head,run); used+=run; sheng_wallpaper_db[used]=0;
       }
       run=0;
+     }
+     /* The schema names the tables but not the rows, and the selection this port needs is a row.
+      * Reading pages and pulling out their text runs is enough: a provider name and a wallpaper
+      * identifier are ASCII, and the first pages hold both the schema and the first table leaves.
+      * A full b-tree walk is not needed to answer "did PosterBoard ever store a selection". */
+     {
+      unsigned pageSize = 4096;
+      if (n >= 18) {unsigned ps = ((unsigned char)head[16] << 8) | (unsigned char)head[17]; if (ps >= 512 && ps <= 65536) pageSize = ps;}
+      char page[4096], run[256];
+      for (unsigned pg = 1; pg <= 3; ++pg) {
+       const int m = sheng_read_page(p, scratch, path, (uint64_t)pg * pageSize, page, sizeof page);
+       if (m <= 0) break;
+       unsigned rrun = 0, kept = 0;
+       for (int i = 0; i < m; ++i) {
+        const unsigned char c = (unsigned char)page[i];
+        if (c >= 0x20 && c < 0x7f) {if (rrun + 1 < sizeof run) run[rrun++] = (char)c; continue;}
+        /* Rows carry long binary runs; keep only text long enough to be a name or an identifier.
+         * The run goes to its own buffer: writing it back over page[] would overwrite the bytes
+         * this loop is still reading. */
+        if (rrun >= 6 && kept < 6 && used + rrun + 3 < sizeof sheng_wallpaper_db) {
+         sheng_wallpaper_db[used++] = '|';
+         memcpy(sheng_wallpaper_db + used, run, rrun); used += rrun; sheng_wallpaper_db[used] = 0;
+         ++kept;
+        }
+        rrun = 0;
+       }
+      }
      }
     }
    }
