@@ -317,8 +317,56 @@ void panelStage(void *ctx, const char *name, unsigned value, int result) {
 // linking, and the &-test is what decides whether the row can be written.
 extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
 
+/* Synthetic tap, for unattended rounds. The compositor draws when something asks it to, so a
+ * boot nobody touches publishes a handful of frames and then stops (of6: prep=12 sw=12, one
+ * frame per prepare call). Every round that showed a desktop had a real finger on the panel
+ * (of1 9 taps, of1b 27, of3 21, g1 8); the three unattended rounds stopped near black.
+ * reference.md:3350 already recorded the same shape with native-touch=0 (prep=11 sw=11).
+ *
+ * sheng-touch-synth=<ms> publishes one contact for <ms> and then releases it, once per boot,
+ * after a short settle. It goes through the same publish() path as a real contact, so the HID
+ * report, the seqlock and the sink notification are the ones the system already trusts; nothing
+ * here fabricates a report or bypasses the driver. Off unless the argument is given. */
+static uint32_t synthHoldMs, synthAtMs = 60000, synthState, synthStartMs;
+static unsigned synthLog;
+
+static void synthTap(unsigned nowMs) {
+    if (!synthHoldMs) return;
+    if (synthState == 0) {
+        if (nowMs < synthAtMs) return;
+        synthState = 1;
+        synthStartMs = nowMs;
+        if (!synthLog) {synthLog = 1; if (&qcom_usb_debug_write) qcom_usb_debug_write("TOUCHSYNTH down\n", 16);}
+        return;
+    }
+    if (synthState == 1 && nowMs >= synthStartMs + synthHoldMs) {
+        synthState = 2;
+        if (&qcom_usb_debug_write) qcom_usb_debug_write("TOUCHSYNTH up\n", 14);
+    }
+}
+
 void publish(const struct Fts5652Contact *c, unsigned count) {
     int xs[12], ys[12], ids[12];
+    /* The synthetic contact replaces this frame's contact set while it is held. It enters here,
+     * before the empty-frame hold, because a real panel frame is almost always empty and the hold
+     * would otherwise swallow every frame of the tap. */
+    {
+        uint64_t ns = 0;
+        absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+        const unsigned nowMs = (unsigned)(ns / 1000000);
+        synthTap(nowMs);
+        if (synthState == 1) {
+            struct Fts5652Contact tap = {};
+            tap.id = 0;
+            tap.x = FTS5652_AXIS_X / 2;
+            tap.y = FTS5652_AXIS_Y / 2;
+            tap.event = 2;      /* move: published as a held contact, not as a lift */
+            tap.pressure = 60;
+            tap.area = 9;       /* the vendor driver substitutes 9 for a zero area (focaltech_core.c:508) */
+            c = &tap;
+            count = 1;
+        }
+    }
     /* A frame with no contacts is not the same as a finger leaving. At this poll rate the part
      * answers with an empty frame between its own reports -- usb186 read 17,347 frames and only
      * 91 carried a contact -- and every one of those empty frames made the HID layer synthesise
@@ -663,6 +711,16 @@ static Session gTouchSession;
 
 bool touchProbeStart(void) {
     Session &s = gTouchSession;
+    /* sheng-touch-synth=<ms>: hold one synthetic contact for <ms>, once per boot, at
+     * sheng-touch-synth-at=<ms> (default 60 s, after the desktop is up). See synthTap(). */
+    {
+        unsigned hold = 0;
+        if (PE_parse_boot_argn("sheng-touch-synth", &hold, sizeof hold) && hold) {
+            synthHoldMs = hold;
+            unsigned at = 0;
+            if (PE_parse_boot_argn("sheng-touch-synth-at", &at, sizeof at) && at) synthAtMs = at;
+        }
+    }
     // GCC: AHB halts at 0x17000, SE4 halt+RCG at 0x17400, core halts at 0x23000,
     // clock vote at 0x52000.
     if (!mapRegion(TB_GCC_BASE + 0x17000, 0x100, s.gccAhb) ||

@@ -714,6 +714,14 @@ kernel_args = [
   # the USB PHY rail down? The CDC device leaves the bus at t~5 s, which is when that vote runs.
   # Touch is off for this round only.
   "native-touch=1",
+  # sheng-touch-synth=<ms>: hold one synthetic contact for <ms>, once per boot, from
+  # sheng-touch-synth-at=<ms> (default 60 s). The compositor draws when something asks it to, so
+  # an unattended boot publishes a handful of frames and stops: of6 read prep=12 sw=12, and every
+  # round that showed a desktop had a real finger on the panel (of1 9 taps, of1b 27, of3 21,
+  # g1 8). reference.md:3350 recorded the same shape with native-touch=0 (prep=11 sw=11). The
+  # contact goes through the driver's own publish(), so the HID report and the sink notification
+  # are the ones the system already trusts. Off unless this argument is given.
+  "sheng-touch-synth=4000",
   # The HID half. NativeHidInput only registers the touch sink when this argument is 1
   # (ShengHidInput-*/NativeHidInput.cpp:291,303); without it the frame loop reads contacts and
   # drops them, because publish() finds no sink. Measured 2026-10-28 on boot-usb57: the probe
