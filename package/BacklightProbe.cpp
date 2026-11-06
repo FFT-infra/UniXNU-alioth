@@ -417,7 +417,11 @@ extern "C" void alioth_backlight_static_init(void) __asm__("__GLOBAL__sub_I_Back
 
 namespace {
 unsigned gMode;
-uint32_t gLevel = kMaxLevel;
+// The configured level defaults to a middle value rather than kMaxLevel so that one boot shows
+// three distinct levels -- 0x7ff, 0x40 and this -- which is what porting/display asks to see.
+// Raising it back to kMaxLevel would make the third step identical to the first and the round
+// would show two levels while reporting three.
+uint32_t gLevel = 0x300;
 
 void panelThread(void *, wait_result_t) {
     thread_set_thread_name(current_thread(), "alioth-bl");
