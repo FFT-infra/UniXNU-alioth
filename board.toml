@@ -741,7 +741,13 @@ kernel_args = [
   # all three are the other way. One round with all three back answers "is any of them the cause"
   # before bisecting them one at a time (progress/2026-11-05-why-it-worked.md).
   "sheng-gpu-wc=0",
-  "pipa-gpu-zap=1",
+  # pipa-gpu-zap=1 is NOT here, and that is deliberate. The bootloader has already loaded and
+  # authenticated the a650 zap before XNU runs, so the kernel PAS sequence is redundant
+  # (progress/2026-11-03-gpu-chain.md section 11: nozap reached the desktop, METAL ok). Its segment
+  # copy also reads pil_gpu_region, which TrustZone owns after authentication: when that read stalls
+  # the whole GPU probe never runs. Measured 2026-11-06 of3: one "ZAPSCM enter copy", no "done read",
+  # zero GPUROW rows for the whole boot, while the CPU path still composited (sw=311 own=1).
+  # col2 (no zap) in the same tree reached the desktop with METAL ok and 5 GPU clients.
   "sheng-gpu-norestart=1",
   # The GPU busy-counter poll in GpuProbe.cpp hangs the core it runs on, so it is off. It is off in
   # code, not here: native_gpu_freq_tick now returns unless its caller declares the GPU powered
