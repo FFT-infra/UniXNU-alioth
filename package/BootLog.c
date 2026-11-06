@@ -1871,6 +1871,14 @@ static void writer(void *arg, wait_result_t result) {
       ok &= w != 0; if (!ok && !bad) bad = 3; }
     // The header lands again after the slot and the message buffer are in, so the round that
     // finished is durable too; the first write above only named the round that started.
+    // The counters move before this write so the header carries the finished round, but a busy
+    // host lock takes the `continue` below, which would leave them advanced with no header on the
+    // medium. Roll them back on that path. Measured 2026-11-07 on of6: BLPHASE read round=113
+    // slots=113 err=0 while a direct read of block 0 returned version 4 / tag usb190 / slots 509,
+    // so the reader saw the previous boot's header and reported diag_bytes 0.
+    const uint32_t roundsBefore = boot_log_rounds;
+    const uint32_t slotsBefore = h.slots_written;
+    const uint32_t errorsBefore = h.write_errors;
     h.rounds = ++boot_log_rounds;
     if (ok) ++h.slots_written;
     else ++h.write_errors;
@@ -1878,7 +1886,11 @@ static void writer(void *arg, wait_result_t result) {
     memset(boot_log_buffer, 0, LogBlock);
     memcpy(boot_log_buffer, &h, sizeof h);
     { const int w = native_ufs_log_write(0, 1, boot_log_buffer);
-      if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
+      if (w == 2) {
+        boot_log_rounds = roundsBefore; h.slots_written = slotsBefore; h.write_errors = errorsBefore;
+        __atomic_store_n(&boot_log_slots_hint, slotsBefore, __ATOMIC_RELAXED);
+        ++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;
+      }
       ok &= w != 0; if (!ok && !bad) bad = 5; }
     /* Take the frozen early-boot snapshot exactly once, while the boot-time IOLog is still inside
      * the kernel ring. copy_msgbuf always returns the newest 131072 bytes, so a copy taken at
