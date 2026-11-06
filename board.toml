@@ -947,7 +947,10 @@ kernel_args = [
   # is what "fluidity feels average" measured. So it stays off until the pacing is understood; the
   # candidate is the 50 zero-timeout polls per submission in the gpu area limits.
   # The wallpaper did not appear with it on either, so that gap is not the GPU connection.
-  # "sheng-fb-gpu=1",
+  # 2026-11-06: zero-copy is the chosen direction. PLAN_NEW.md phase A keeps this on until
+  # the official GPU §3/§4/§5 evidence is complete. The lower frame count is a measurement
+  # target, not a reason to fall back to the CPU copy.
+  "sheng-fb-gpu=1",
   # boot-usb99 was the first image that passed this pair, and it faulted in the writer's
   # read-back of the previous run: the header struct was handed straight to a block-addressed
   # read, which copied 4096 bytes into a 152-byte stack object and ran into the guard page
