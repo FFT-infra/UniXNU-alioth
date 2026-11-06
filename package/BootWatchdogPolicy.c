@@ -79,6 +79,11 @@ volatile int32_t sheng_wallpaper_scan[4] = {0};
 // The container the last walk matched. The configuration read builds its path from this instead of
 // a UUID baked into the source, which read ENOENT once the container had been recreated.
 char sheng_wallpaper_container[192];
+// sheng-wallpaper-list=1: the entry names under the directories that can hold the chosen poster.
+// The plist in Library/Preferences turned out to be CoreAnimation settings, so the next thing to
+// look at is the directory listing rather than another guessed file.
+volatile int32_t sheng_wallpaper_list_ran = 0;
+char sheng_wallpaper_names[256];
 extern vfs_context_t vfs_context_kernel(void);
 
 static int sheng_unlink_one(proc_t p, uint64_t scratch, const char *file) {
@@ -289,6 +294,40 @@ volatile int32_t sheng_wallpaper_probe_ran = 0;
 volatile int32_t sheng_wallpaper_scan_ran = 0;
 volatile int32_t sheng_wallpaper_scan_app = -1;
 volatile int32_t sheng_wallpaper_scan_group = -1;
+// Entry names under one directory, appended to sheng_wallpaper_names with '|' between them.
+static void sheng_wallpaper_list(proc_t p, uint64_t scratch, const char *root) {
+ (void)p; (void)scratch;
+ vfs_context_t ctx = vfs_context_kernel();
+ vnode_t dir = NULLVP;
+ if (vnode_lookup(root, 0, &dir, ctx)) return;
+ if (vnode_vtype(dir) != VDIR) {vnode_put(dir); return;}
+ off_t offset = 0;
+ for (int eof = 0; !eof;) {
+  uio_t uio = uio_create(1, offset, UIO_SYSSPACE, UIO_READ);
+  if (!uio) break;
+  uio_addiov(uio, CAST_USER_ADDR_T(sheng_scan_buf), sizeof sheng_scan_buf);
+  int nentries = 0;
+  const int error = VNOP_READDIR(dir, uio, 0, &eof, &nentries, ctx);
+  const size_t got = sizeof sheng_scan_buf - (size_t)uio_resid(uio);
+  offset = uio_offset(uio);
+  uio_free(uio);
+  if (error || !got) break;
+  for (size_t at = 0; at + offsetof(struct dirent, d_name) <= got;) {
+   const struct dirent *d = (const struct dirent *)(sheng_scan_buf + at);
+   if (!d->d_reclen) {eof = 1; break;}
+   at += d->d_reclen;
+   if (!d->d_ino || (d->d_namlen == 1 && d->d_name[0] == '.') ||
+       (d->d_namlen == 2 && d->d_name[0] == '.' && d->d_name[1] == '.')) continue;
+   size_t used = strlen(sheng_wallpaper_names);
+   if (used + (size_t)d->d_namlen + 2 >= sizeof sheng_wallpaper_names) {vnode_put(dir); return;}
+   if (used) sheng_wallpaper_names[used++] = '|';
+   memcpy(sheng_wallpaper_names + used, d->d_name, d->d_namlen);
+   sheng_wallpaper_names[used + d->d_namlen] = 0;
+  }
+ }
+ vnode_put(dir);
+}
+
 static int sheng_wallpaper_read_cfg(proc_t p, uint64_t scratch) {
  sheng_wallpaper_probe_ran=1;
  // The container id is asked for, not assumed: the one written here before read ENOENT on the
@@ -372,6 +411,20 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
    sheng_wallpaper_scan_ran=1;
    sheng_wallpaper_scan_app=(int32_t)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
    sheng_wallpaper_scan_group=(int32_t)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Shared/AppGroup");
+  }
+  int wlist=0;
+  PE_parse_boot_argn("sheng-wallpaper-list",&wlist,sizeof(wlist));
+  if(wlist==1 && !sheng_wallpaper_list_ran) {
+   if(!sheng_wallpaper_container[0])
+    (void)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
+   if(sheng_wallpaper_container[0]) {
+    char root[256];
+    sheng_wallpaper_list_ran=1;
+    snprintf(root,sizeof root,"%s/Library/Application Support",sheng_wallpaper_container);
+    sheng_wallpaper_list(p,scratch,root);
+    snprintf(root,sizeof root,"%s/Library/Application Support/PosterBoard",sheng_wallpaper_container);
+    sheng_wallpaper_list(p,scratch,root);
+   }
   }
   int wprobe=0;
   PE_parse_boot_argn("sheng-wallpaper-probe",&wprobe,sizeof(wprobe));

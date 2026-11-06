@@ -84,6 +84,8 @@ extern volatile int32_t sheng_wallpaper_probe_ran __attribute__((weak_import));
 extern volatile int32_t sheng_wallpaper_scan_ran __attribute__((weak_import));
 extern volatile int32_t sheng_wallpaper_scan_app __attribute__((weak_import));
 extern volatile int32_t sheng_wallpaper_scan_group __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_list_ran __attribute__((weak_import));
+extern char sheng_wallpaper_names[256] __attribute__((weak_import));
 extern volatile int native_gpu_addon2_status __attribute__((weak_import));
 extern volatile int native_gpu_addon3_stage __attribute__((weak_import));
 extern volatile int native_gpu_addon3_status __attribute__((weak_import));
@@ -649,6 +651,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
         if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
       at = put(out, at, cap, crow, sizeof crow);
     }
+  }
+  if (&sheng_wallpaper_list_ran && sheng_wallpaper_list_ran && &sheng_wallpaper_names) {
+    /* The entry names under the two directories that can hold the chosen poster. A plist in
+     * Library/Preferences turned out to be CoreAnimation settings, so this is the next place to
+     * look, and it is a listing rather than another guessed file. */
+    char crow[300];
+    snprintf(crow, sizeof crow, "[wallpaper list] %.270s", sheng_wallpaper_names);
+    if (&qcom_usb_debug_write) {char cl[306]; const int cn = snprintf(cl, sizeof cl, "%s\n", crow);
+      if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
+    at = put(out, at, cap, crow, sizeof crow);
   }
   if (&sheng_wallpaper_scan_ran && sheng_wallpaper_scan_ran) {
     /* How many containers name PosterBoard in their metadata, from the two container roots. A zero
