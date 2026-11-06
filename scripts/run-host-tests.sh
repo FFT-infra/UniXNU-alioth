@@ -22,8 +22,15 @@ for test in "$root"/package/tests/*_host.c; do
   [ -f "$test" ] || continue
   name=$(basename "$test" .c)
   count=$((count + 1))
+  extra=
+  if [ -f "$root/package/tests/$name.src" ]; then
+    # Extra sources, one per line, relative to the repository root. A test that links code from
+    # package/ names it here rather than including the .c file.
+    extra=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$root/package/tests/$name.src" | sed "s|^|$root/|" | tr '\n' ' ')
+  fi
   printf '%-24s ' "$name"
-  if ! "$cc" -std=c11 -Wall -Wextra -Werror -o "$out/$name" "$test" 2>"$out/$name.log"; then
+  # Word splitting is wanted for $extra: it is a list of paths.
+  if ! "$cc" -std=c11 -Wall -Wextra -Werror -o "$out/$name" "$test" $extra 2>"$out/$name.log"; then
     echo "BUILD FAILED ($out/$name.log)"
     fail=1
     continue
