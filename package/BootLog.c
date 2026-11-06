@@ -10,6 +10,8 @@
 // 16 MiB area at the window's tail; the UI's pipeline caches outgrew it in int-148 and int-149.)
 // The header is written last in each round, so a reader never trusts a slot or an export the header does not count yet.
 #include <kern/thread.h>
+#include <kern/processor.h>
+#include <arm/cpu_data_internal.h>
 #include <kern/clock.h>
 #include <string.h>
 #include <pexpert/pexpert.h>
@@ -2526,10 +2528,17 @@ static void core_health_thread(void *arg, wait_result_t result)
           const uint64_t hz = f / 1024u;
           if (hz && entered && (uint32_t)(now >> 10) > entered) age = (unsigned)(((uint32_t)(now >> 10) - entered) / hz);
         }
-        m += snprintf(gr + m, sizeof gr - (unsigned)m, " c%u=%s%x/%x/%x/%x/%x ph%u age%us",
+        /* What that core was running when it stopped taking interrupts. The idle thread answers "it
+         * went to sleep and never came back"; a real thread answers "it is stuck in kernel code", and
+         * its id names the process. Read without a lock: this is a diagnostic snapshot, not a use. */
+        unsigned long long ac = 0, acstate = 0;
+        cpu_data_t *cd = cpu_datap((int)c);
+        thread_t at = cd ? cd->cpu_active_thread : NULL;
+        if (at) { ac = (unsigned long long)at->thread_id; acstate = (unsigned long long)at->state; }
+        m += snprintf(gr + m, sizeof gr - (unsigned)m, " c%u=%s%x/%x/%x/%x/%x ph%u age%us ac=%llx/%llx",
                       c, ok == 0 ? "" : "?",
                       (unsigned)p[0], (unsigned)p[1], (unsigned)p[2], (unsigned)p[3], (unsigned)p[4],
-                      ph, age);
+                      ph, age, ac, acstate);
       }
       if (m > 0 && (unsigned)m < sizeof gr) {gr[m++] = '\n'; qcom_usb_debug_write(gr, (size_t)m < sizeof gr ? (size_t)m : sizeof gr - 1);}
     }
