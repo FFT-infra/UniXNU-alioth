@@ -84,6 +84,10 @@ char sheng_wallpaper_container[192];
 // look at is the directory listing rather than another guessed file.
 volatile int32_t sheng_wallpaper_list_ran = 0;
 char sheng_wallpaper_names[256];
+// sheng-wallpaper-db=1: the printable runs in the first page of the poster store's SQLite file.
+// SQLite keeps its schema in page 1, so the CREATE TABLE names come out without a SQLite reader.
+volatile int32_t sheng_wallpaper_db_ran = 0;
+char sheng_wallpaper_db[400];
 extern vfs_context_t vfs_context_kernel(void);
 
 static int sheng_unlink_one(proc_t p, uint64_t scratch, const char *file) {
@@ -415,6 +419,30 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
    sheng_wallpaper_scan_app=(int32_t)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
    sheng_wallpaper_scan_group=(int32_t)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Shared/AppGroup");
   }
+  int wdb=0;
+  PE_parse_boot_argn("sheng-wallpaper-db",&wdb,sizeof(wdb));
+  if(wdb==1 && !sheng_wallpaper_db_ran) {
+   sheng_wallpaper_db_ran=1;
+   if(!sheng_wallpaper_container[0])
+    (void)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
+   if(sheng_wallpaper_container[0]) {
+    char path[320], head[2048];
+    snprintf(path,sizeof path,"%s/Library/Application Support/PRBPosterExtensionDataStore/61/PBFPosterExtensionDataStoreSQLiteDatabase.sqlite3",sheng_wallpaper_container);
+    const int n=sheng_read_head(p,scratch,path,head,sizeof head);
+    if(n>0) {
+     size_t used=0; unsigned run=0;
+     for(int i=0;i<n;++i) {
+      const unsigned char c=(unsigned char)head[i];
+      if(c>=0x20 && c<0x7f) {if(run+1<sizeof head) head[run++]= (char)c; continue;}
+      if(run>=4 && used+run+2<sizeof sheng_wallpaper_db) {
+       if(used) sheng_wallpaper_db[used++]='|';
+       memcpy(sheng_wallpaper_db+used,head,run); used+=run; sheng_wallpaper_db[used]=0;
+      }
+      run=0;
+     }
+    }
+   }
+  }
   int wlist=0;
   PE_parse_boot_argn("sheng-wallpaper-list",&wlist,sizeof(wlist));
   if(wlist==1 && !sheng_wallpaper_list_ran) {
@@ -429,6 +457,8 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
     sheng_wallpaper_list(p,scratch,root,'P');
     snprintf(root,sizeof root,"%s/Library/Application Support/ArchivedDataStores",sheng_wallpaper_container);
     sheng_wallpaper_list(p,scratch,root,'R');
+    snprintf(root,sizeof root,"%s/Library/Application Support/PRBPosterExtensionDataStore/61",sheng_wallpaper_container);
+    sheng_wallpaper_list(p,scratch,root,'S');
    }
   }
   int wprobe=0;

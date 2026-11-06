@@ -86,6 +86,8 @@ extern volatile int32_t sheng_wallpaper_scan_app __attribute__((weak_import));
 extern volatile int32_t sheng_wallpaper_scan_group __attribute__((weak_import));
 extern volatile int32_t sheng_wallpaper_list_ran __attribute__((weak_import));
 extern char sheng_wallpaper_names[256] __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_db_ran __attribute__((weak_import));
+extern char sheng_wallpaper_db[400] __attribute__((weak_import));
 extern volatile int native_gpu_addon2_status __attribute__((weak_import));
 extern volatile int native_gpu_addon3_stage __attribute__((weak_import));
 extern volatile int native_gpu_addon3_status __attribute__((weak_import));
@@ -651,6 +653,14 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
         if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
       at = put(out, at, cap, crow, sizeof crow);
     }
+  }
+  if (&sheng_wallpaper_db_ran && sheng_wallpaper_db_ran && &sheng_wallpaper_db) {
+    /* Page 1 of the poster store holds the schema, so these runs are the table names. */
+    char crow[420];
+    snprintf(crow, sizeof crow, "[wallpaper db] %.390s", sheng_wallpaper_db);
+    if (&qcom_usb_debug_write) {char cl[426]; const int cn = snprintf(cl, sizeof cl, "%s\n", crow);
+      if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
+    at = put(out, at, cap, crow, sizeof crow);
   }
   if (&sheng_wallpaper_list_ran && sheng_wallpaper_list_ran && &sheng_wallpaper_names) {
     /* The entry names under the two directories that can hold the chosen poster. A plist in
