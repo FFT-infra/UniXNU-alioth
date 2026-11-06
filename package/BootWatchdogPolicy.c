@@ -76,6 +76,9 @@ volatile int32_t sheng_wallpaper_reset[8] = {0};
 // The container scan's own reading: [0] vnode_lookup result, [1] last VNOP_READDIR result, [2] directory entries walked, [3] candidate
 // containers that matched. A scan that unlinks nothing is one of these numbers, and the row below says which.
 volatile int32_t sheng_wallpaper_scan[4] = {0};
+// The container the last walk matched. The configuration read builds its path from this instead of
+// a UUID baked into the source, which read ENOENT once the container had been recreated.
+char sheng_wallpaper_container[192];
 extern vfs_context_t vfs_context_kernel(void);
 
 static int sheng_unlink_one(proc_t p, uint64_t scratch, const char *file) {
@@ -200,6 +203,7 @@ static unsigned sheng_wallpaper_containers(proc_t p, uint64_t scratch, const cha
    const int n = sheng_read_head(p, scratch, sheng_scan_path, head, sizeof head);
    if (n <= 0 || !sheng_has_text(head, n, "com.apple.PosterBoard")) continue;
    ++matched;
+   strlcpy(sheng_wallpaper_container, container, sizeof sheng_wallpaper_container);
    sheng_wallpaper_walk(p, scratch, container, 5, &sheng_wallpaper_walked);
   }
  }
@@ -286,10 +290,16 @@ volatile int32_t sheng_wallpaper_scan_ran = 0;
 volatile int32_t sheng_wallpaper_scan_app = -1;
 volatile int32_t sheng_wallpaper_scan_group = -1;
 static int sheng_wallpaper_read_cfg(proc_t p, uint64_t scratch) {
- static const char path[] =
-  "/private/var/mobile/Containers/Data/Application/21211B1B-49C3-4486-803E-7E7ABCD864ED/Library/Preferences/com.apple.PosterBoard.plist";
  sheng_wallpaper_probe_ran=1;
- int error=copyout(path,scratch,sizeof(path));
+ // The container id is asked for, not assumed: the one written here before read ENOENT on the
+ // 2026-11-06 image while a container naming PosterBoard did exist (wallpaper scan app=1).
+ if(!sheng_wallpaper_container[0])
+  (void)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
+ char path[256]="";
+ if(sheng_wallpaper_container[0])
+  snprintf(path,sizeof path,"%s/Library/Preferences/com.apple.PosterBoard.plist",sheng_wallpaper_container);
+ if(!path[0]) {sheng_wallpaper_cfg[0]=ENOENT;sheng_wallpaper_cfg[1]=0;return 0;}
+ int error=copyout(path,scratch,strlen(path)+1);
  if(error)return error;
  int32_t fd=-1,result=0;
  struct open_args op={.path=scratch,.flags=O_RDONLY};
