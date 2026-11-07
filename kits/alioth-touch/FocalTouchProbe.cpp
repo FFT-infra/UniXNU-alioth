@@ -8,6 +8,7 @@
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <kern/thread.h>
 #include <kern/clock.h>
+#include <kern/cpu_number.h>   // cpu_number(): the core this loop last ran on
 #include <pexpert/pexpert.h>
 #include <libkern/c++/OSSharedPtr.h>
 #include <string.h>
@@ -28,6 +29,13 @@ volatile uint32_t native_touch_hid_reports;
 volatile int native_touch_error;
 volatile uint32_t native_touch_loop_step;
 volatile uint32_t native_touch_valid;
+/* The core the frame loop last ran on. The loop stops with native_touch_frame_rc and native_touch_fail_step
+ * both at zero, i.e. asleep in IOSleep after a successful read and never woken; naming the core is what lets
+ * that be matched against the per-core timer rows instead of guessed at. */
+volatile uint32_t native_touch_core;
+/* publish() calls that carried at least one contact. It moves only when the panel itself reports a
+ * finger, so a run with no touch and a run whose decode is broken stop looking the same. */
+volatile uint32_t native_touch_decoded;
 /* Contacts that arrived with a zero area. Cumulative over the boot; printed on the TOUCHREG line
  * so a run says whether a light tap lands in this case at all. */
 volatile uint32_t native_touch_area0;
@@ -305,8 +313,96 @@ void panelStage(void *ctx, const char *name, unsigned value, int result) {
 }
 
 // Map the touch 12-bit raw coordinates onto the 0.1 mm axes the HID layer expects.
+// Also declared below for the register dump; a weak_import keeps a build without the USB console
+// linking, and the &-test is what decides whether the row can be written.
+extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
+
+/* Synthetic tap, for unattended rounds. The compositor draws when something asks it to, so a
+ * boot nobody touches publishes a handful of frames and then stops (of6: prep=12 sw=12, one
+ * frame per prepare call). Every round that showed a desktop had a real finger on the panel
+ * (of1 9 taps, of1b 27, of3 21, g1 8); the three unattended rounds stopped near black.
+ * reference.md:3350 already recorded the same shape with native-touch=0 (prep=11 sw=11).
+ *
+ * sheng-touch-synth=<ms> publishes one contact for <ms> and then releases it, once per boot,
+ * after a short settle. It goes through the same publish() path as a real contact, so the HID
+ * report, the seqlock and the sink notification are the ones the system already trusts; nothing
+ * here fabricates a report or bypasses the driver. Off unless the argument is given. */
+static uint32_t synthHoldMs, synthAtMs = 60000, synthState, synthStartMs;
+static unsigned synthLog;
+/* The gesture the contact performs. A contact held still at the centre is a long press, and on
+ * of8 that opened Settings: the screenshot the round exported was Settings, not the home screen,
+ * so every reading taken from it (the "wallpaper area is solid (242,242,247)") measured the
+ * grouped table background of a settings page and not the wallpaper. A swipe up from the bottom
+ * edge asks for the home screen and changes nothing else, which is what an unattended round wants:
+ * the display keeps drawing (the compositor draws on input) and the surface stays the home screen.
+ * sheng-touch-synth-swipe=1 selects it; the default stays the centre press. */
+static unsigned synthSwipe;
+static uint32_t synthSwipeMs = 300;
+/* The settle is counted from the first frame this probe publishes, not from the platform counter.
+ * Measured on of8: absolutetime_to_nanoseconds(mach_absolute_time()) already read 550,420,918 us
+ * at the first publish(), so comparing it against sheng-touch-synth-at=60000 fired the contact on
+ * the very first frame instead of 60 s into the boot, and the tap landed while the lock screen
+ * still owned the display. */
+static uint32_t synthFirstMs;
+
+static void synthTap(unsigned nowMs) {
+    if (!synthHoldMs) return;
+    if (!synthFirstMs) synthFirstMs = nowMs ? nowMs : 1;
+    if (synthState == 0) {
+        if (nowMs - synthFirstMs < synthAtMs) return;
+        synthState = 1;
+        synthStartMs = nowMs;
+        if (!synthLog) {synthLog = 1; if (&qcom_usb_debug_write) qcom_usb_debug_write("TOUCHSYNTH down\n", 16);}
+        return;
+    }
+    if (synthState == 1 && nowMs >= synthStartMs + synthHoldMs) {
+        synthState = 2;
+        if (&qcom_usb_debug_write) qcom_usb_debug_write("TOUCHSYNTH up\n", 14);
+    }
+}
+
+/* Module scope, not a block local: the synthetic contact's address escapes the block that makes
+ * it, and the loop below reads c[i] long after that block has ended. Measured on of8, where the
+ * local was a block local: TOUCHTAP printed x=0 y=20319 (the panel's own phantom contact) while
+ * the tap was set to the centre, so the read landed on the dead stack slot. */
+static struct Fts5652Contact synthContact;
+
 void publish(const struct Fts5652Contact *c, unsigned count) {
     int xs[12], ys[12], ids[12];
+    /* The synthetic contact replaces this frame's contact set while it is held. It enters here,
+     * before the empty-frame hold, because a real panel frame is almost always empty and the hold
+     * would otherwise swallow every frame of the tap. */
+    {
+        uint64_t ns = 0;
+        absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+        const unsigned nowMs = (unsigned)(ns / 1000000);
+        synthTap(nowMs);
+        if (synthState == 1) {
+            memset(&synthContact, 0, sizeof synthContact);
+            synthContact.id = 0;
+            if (synthSwipe) {
+                /* A swipe up from the bottom edge: y walks from just inside the panel's bottom
+                 * toward the middle over synthSwipeMs, x stays centred. UIKit reads the edge
+                 * flag from the begin position, which is why the begin is a few units above 0
+                 * rather than exactly 0 (a begin at 0,0 reads as an edge touch on every side). */
+                const uint32_t span = FTS5652_AXIS_Y / 2;
+                uint32_t held = nowMs - synthStartMs;
+                if (held > synthSwipeMs) held = synthSwipeMs;
+                synthContact.x = FTS5652_AXIS_X / 2;
+                synthContact.y = (uint32_t)(FTS5652_AXIS_Y - 40u -
+                                            (int32_t)span * (int32_t)held / (int32_t)synthSwipeMs);
+                if (synthContact.y >= FTS5652_AXIS_Y) synthContact.y = FTS5652_AXIS_Y - 1;
+            } else {
+                synthContact.x = FTS5652_AXIS_X / 2;
+                synthContact.y = FTS5652_AXIS_Y / 2;
+            }
+            synthContact.event = 2;      /* move: published as a held contact, not as a lift */
+            synthContact.pressure = 60;
+            synthContact.area = 9;       /* the vendor driver substitutes 9 for a zero area (focaltech_core.c:508) */
+            c = &synthContact;
+            count = 1;
+        }
+    }
     /* A frame with no contacts is not the same as a finger leaving. At this poll rate the part
      * answers with an empty frame between its own reports -- usb186 read 17,347 frames and only
      * 91 carried a contact -- and every one of those empty frames made the HID layer synthesise
@@ -384,6 +480,7 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
     native_touch_seq = native_touch_seq + 1;
     __asm__ volatile("dmb ish" ::: "memory");
     native_touch_count = count;
+    if (count) native_touch_decoded = native_touch_decoded + 1;
     for (unsigned i = 0; i < count && i < 12; ++i) {
         native_touch_xs[i] = xs[i];
         native_touch_ys[i] = ys[i];
@@ -392,7 +489,36 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
     __asm__ volatile("dmb ish" ::: "memory");
     native_touch_seq = native_touch_seq + 1;
     if (count) {native_touch_last_x = xs[0]; native_touch_last_y = ys[0];}
-    if (void (*sink)(void *) = __atomic_load_n(&gTouchSink, __ATOMIC_ACQUIRE)) sink(gTouchSinkContext);
+    /* The display side logs the gap between swaps (LegacyDisplayProbe.cpp), and that gap is only
+     * meaningful next to when a finger was down. Print the two transitions only: a landing and a
+     * lift are rare, the 60 Hz stream between them is not. */
+    {
+        static unsigned downCount;
+        static uint64_t downUs;
+        uint64_t ns = 0;
+        absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+        const uint64_t us = ns / 1000;
+        if (count && !downCount) {
+            downUs = us;
+            if (&qcom_usb_debug_write) {
+                char line[96];
+                int n = snprintf(line, sizeof line, "TOUCHTAP down n=%u x=%d y=%d t_us=%llu\n",
+                                 count, xs[0], ys[0], (unsigned long long)us);
+                if (n > 0) qcom_usb_debug_write(line, (size_t)n);
+            }
+        } else if (!count && downCount && &qcom_usb_debug_write) {
+            char line[96];
+            int n = snprintf(line, sizeof line, "TOUCHTAP up held_us=%llu t_us=%llu\n",
+                             (unsigned long long)(downUs ? us - downUs : 0), (unsigned long long)us);
+            if (n > 0) qcom_usb_debug_write(line, (size_t)n);
+        }
+        downCount = count;
+    }
+    static unsigned lastReportedCount = 0;
+    if (count || lastReportedCount) {
+        lastReportedCount = count;
+        if (void (*sink)(void *) = __atomic_load_n(&gTouchSink, __ATOMIC_ACQUIRE)) sink(gTouchSinkContext);
+    }
 }
 
 // Program DFS level 0 (TCXO 19.2 MHz) of the SE4 RCG and confirm the divider.
@@ -507,6 +633,9 @@ static void touchHealthCheck(Session &s) {
 
 void touchThread(void *arg, wait_result_t) {
     Session &s = *static_cast<Session *>(arg);
+    /* A name, so a stalled boot can be asked where this thread is: BootUiTraceProbe.c's
+     * boot_kthread_report() looks a kernel thread up by name and prints its saved frames. */
+    thread_set_thread_name(current_thread(), "alioth-touch");
     struct Fts5652Contact contacts[10];
     unsigned frames = 0;
     /* native-touch-diag=1: one round that answers "is the part scanning at all" before any
@@ -552,9 +681,11 @@ void touchThread(void *arg, wait_result_t) {
          * seven times the designed SPI traffic and never reached SpringBoard in 534 s, while
          * the same board reached the lock screen in about 104 s with the probe inactive.
          * IOSleep yields the CPU between frames, which a polled input thread must do. */
+        native_touch_loop_step = 0;
+        native_touch_core = (uint32_t)cpu_number();
         IOSleep(TB_FRAME_PERIOD_US / 1000);
         frames = frames + 1;
-        if (frames % TB_REG_POLL_FRAMES == 0) touchHealthCheck(s);
+        if (frames % TB_REG_POLL_FRAMES == 0) {native_touch_loop_step = 5; touchHealthCheck(s);}
         /* The line is still read, but it no longer gates the fetch. It is low only a few dozen
          * times in two minutes while a finger is on the panel -- usb185 counted 35 in 120 s -- so
          * gating on it left the fallback path, one frame in fifty, as the real sample rate: 398
@@ -583,6 +714,11 @@ void touchThread(void *arg, wait_result_t) {
         native_touch_loop_step = 2;
         native_touch_valid = native_touch_valid + 1;
         native_touch_frames = native_touch_frames + 1;
+        /* Steps 3 and 4 say where a loop that stops stops: 2 is the last good frame either way, so
+         * a frozen frame counter next to step 2 could be the publish path or the sleep, and those
+         * are different failures (a blocked publish is a shared consumer, a sleep that never
+         * returns is the timer). */
+        native_touch_loop_step = 3;
         /* Keep the head of the payload that produced this frame. A frame that reports zero
          * contacts and a frame whose contacts land off-screen look identical in the counters,
          * and these bytes separate them. */
@@ -599,6 +735,7 @@ void touchThread(void *arg, wait_result_t) {
             if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof(text) ? (size_t)n : sizeof(text) - 1);
         }
         publish(contacts, count);
+        native_touch_loop_step = 4;
     }
 }
 
@@ -610,6 +747,25 @@ static Session gTouchSession;
 
 bool touchProbeStart(void) {
     Session &s = gTouchSession;
+    /* sheng-touch-synth=<ms>: hold one synthetic contact for <ms>, once per boot, at
+     * sheng-touch-synth-at=<ms> counted from the first published frame (default 60 s, after the
+     * desktop is up). sheng-touch-synth-swipe=1 makes the contact a swipe up from the bottom edge
+     * instead of a press held at the centre. See synthTap(). */
+    {
+        unsigned hold = 0;
+        if (PE_parse_boot_argn("sheng-touch-synth", &hold, sizeof hold) && hold) {
+            synthHoldMs = hold;
+            unsigned at = 0;
+            if (PE_parse_boot_argn("sheng-touch-synth-at", &at, sizeof at) && at) synthAtMs = at;
+            unsigned swipe = 0;
+            if (PE_parse_boot_argn("sheng-touch-synth-swipe", &swipe, sizeof swipe) && swipe) synthSwipe = 1;
+            if (&qcom_usb_debug_write) {
+                char text[96];
+                int n = snprintf(text, sizeof text, "TOUCHSYNTH cfg hold=%u at=%u swipe=%u\n", synthHoldMs, synthAtMs, synthSwipe);
+                if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof text ? (size_t)n : sizeof text - 1);
+            }
+        }
+    }
     // GCC: AHB halts at 0x17000, SE4 halt+RCG at 0x17400, core halts at 0x23000,
     // clock vote at 0x52000.
     if (!mapRegion(TB_GCC_BASE + 0x17000, 0x100, s.gccAhb) ||

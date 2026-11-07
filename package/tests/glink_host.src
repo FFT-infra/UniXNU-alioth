@@ -1,0 +1,2 @@
+# Extra sources for glink_host, relative to the repository root, one per line.
+package/QcomGlink.c

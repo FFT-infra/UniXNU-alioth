@@ -10,12 +10,20 @@
 // 16 MiB area at the window's tail; the UI's pipeline caches outgrew it in int-148 and int-149.)
 // The header is written last in each round, so a reader never trusts a slot or an export the header does not count yet.
 #include <kern/thread.h>
+#include <kern/task.h>
+#include <kern/processor.h>
+#include <arm/cpu_data_internal.h>
 #include <kern/clock.h>
 #include <string.h>
 #include <pexpert/pexpert.h>
 #include <kern/misc_protos.h>
 #include <IOKit/IOLib.h>
 
+// proc_name(int, char *, int), from bsd/sys/proc.h. Declared by hand: that header pulls a second set of
+// the exported bsd headers and -Werror rejects the resulting macro redefinitions. thread_get_thread_name
+// (osfmk/kern/thread.h) is declared for the same reason: keeping thread.h out avoids its macro set.
+extern void proc_name(int, char *, int) __attribute__((weak_import));
+extern void thread_get_thread_name(thread_t, char *) __attribute__((weak_import));
 extern int native_ufs_log_open(uint64_t *, uint64_t *, const char **) __attribute__((weak_import));
 extern int native_ufs_log_write(uint64_t, uint32_t, const void *) __attribute__((weak_import));
 extern int native_ufs_log_read(uint64_t, uint32_t, void *) __attribute__((weak_import));
@@ -57,8 +65,30 @@ extern volatile int native_gpu_addon_stage __attribute__((weak_import));
 extern volatile int native_gpu_addon_status __attribute__((weak_import));
 extern volatile int native_gpu_addon2_stage __attribute__((weak_import));
 extern volatile int32_t sheng_wallpaper_reset[8] __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_scan[4] __attribute__((weak_import));
+extern unsigned sheng_wallpaper_walked __attribute__((weak_import));
+extern volatile uint64_t boot_progress_monitor_ticks __attribute__((weak_import));
+extern volatile unsigned boot_progress_monitor_step __attribute__((weak_import));
+extern volatile unsigned boot_progress_display_owned __attribute__((weak_import));
+// The display's own swap counters, read by the supervisor's console line so a boot whose monitor and writer have both
+// stopped still says whether any client ever submitted a frame.
+extern volatile uint32_t native_legacy_swap_validation_calls __attribute__((weak_import));
+extern volatile uint32_t native_legacy_swap_accepted_count __attribute__((weak_import));
+extern volatile uint32_t native_legacy_swap_rejected_count __attribute__((weak_import));
+extern volatile uint32_t native_legacy_swap_validation_reason __attribute__((weak_import));
+extern volatile uint32_t native_legacy_swap_req[12] __attribute__((weak_import));
+extern volatile uint32_t native_legacy_prepare_calls __attribute__((weak_import));
 /* [0] status, [1] bytes, [2..] the bytes of the PosterBoard wallpaper choice. */
 extern volatile int32_t sheng_wallpaper_cfg[130] __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_probe_ran __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_scan_ran __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_scan_app __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_scan_group __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_list_ran __attribute__((weak_import));
+extern char sheng_wallpaper_names[256] __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_db_ran __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_db_status[4] __attribute__((weak_import));
+extern char sheng_wallpaper_db[400] __attribute__((weak_import));
 extern volatile int native_gpu_addon2_status __attribute__((weak_import));
 extern volatile int native_gpu_addon3_stage __attribute__((weak_import));
 extern volatile int native_gpu_addon3_status __attribute__((weak_import));
@@ -68,7 +98,7 @@ extern volatile int native_gestalt_cache_status __attribute__((weak_import));
 extern volatile int native_ls_store_status __attribute__((weak_import));
 extern volatile uint64_t native_data_persist_present __attribute__((weak_import));
 extern volatile int native_staged_apps_stage __attribute__((weak_import));
-extern volatile int32_t native_buttons_stats[10] __attribute__((weak_import));
+extern volatile int32_t native_buttons_stats[16] __attribute__((weak_import));
 extern volatile int32_t native_backlight_stats[16] __attribute__((weak_import));
 extern volatile int native_staged_apps_dirs __attribute__((weak_import));
 extern volatile int native_staged_apps_files __attribute__((weak_import));
@@ -105,6 +135,15 @@ extern volatile uint32_t native_legacy_direct_vig[4] __attribute__((weak_import)
  * direct flip completed, [11] a retire completed, [15] the deepest validated queue. When flips stops growing, one of these is the
  * gate that stopped it: fix118b read flips=99 for the last 104 s, and only [4] can explain a queue that simply went empty. */
 extern volatile uint32_t native_legacy_swapstat[16] __attribute__((weak_import));
+/* This board's diagnostic package predates the upstream GopFramebuffer revision and still asks for the
+ * direct-scanout probes that revision does not publish. Weak zero definitions keep the package linkable after
+ * the 2026-11-07 upstream alignment; a board fork that defines them overrides these. */
+__attribute__((weak)) volatile uint32_t native_legacy_direct_stage;
+__attribute__((weak)) volatile uint32_t native_legacy_direct_flip_branch;
+__attribute__((weak)) volatile uint32_t native_legacy_direct_flip_stage;
+__attribute__((weak)) volatile uint32_t native_legacy_direct_ctl[2];
+__attribute__((weak)) volatile uint32_t native_legacy_direct_vig[4];
+__attribute__((weak)) volatile uint32_t native_legacy_fence_probe[4];
 extern volatile uint32_t native_adreno_fence_wait[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall[24] __attribute__((weak_import));
 /* CP_RB_WPTR writes and their GMU AHB fence: [0] writes, [1] writes that needed a repeat, [2] repeats, [3] writes still
@@ -117,6 +156,13 @@ extern volatile uint32_t native_adreno_table_switches[8] __attribute__((weak_imp
 extern volatile uint32_t native_adreno_ttbr0_tlb[3] __attribute__((weak_import));
 /* [0] hangs, [1] restarts, [2] failed restarts, [3] the last hung fence, [4] the last restart s IOReturn, [5] replayed, [6] hangs with a guilty job, [7] hangs of the kernel s own VM. */
 extern volatile uint32_t native_adreno_recovery[8] __attribute__((weak_import));
+// Per-hang counters and the address-space residency: hangs/restarts/failed/replayed/guilty/kernel-VM, then
+// live/max VMs with the last table error and step, then the SMMU faults ended before a restart and their FSR.
+extern volatile uint32_t native_adreno_recovery_fault[5] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_hang_first[16] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_ring_pos[4] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_ring_stall[26] __attribute__((weak_import));
+extern volatile uint32_t native_adreno_table_switches[8] __attribute__((weak_import));
 /* Where the last recover() stopped: [0] the step (1 fence read, 2 restart hook, 3 table write, 4 nop encode, 5 replay vm, 6 replay submit), [1] the IOReturn or value there, [2] fence, [3] last submitted. */
 extern volatile uint32_t native_adreno_recover_trace[4] __attribute__((weak_import));
 extern uint32_t native_gpu_restart_step;
@@ -158,7 +204,7 @@ extern volatile uint32_t native_dpu_stats[20] __attribute__((weak_import));
  * alioth_dpu_probe_tick is defined at C linkage there. Weak so the archive still links when the probe is not built. */
 extern void alioth_dpu_probe_tick(unsigned now) __attribute__((weak_import));
 /* The GPU frequency governor, once a second: [0] level in force, [1] changes, [2] submissions last second, [3] ticks. */
-extern void native_gpu_freq_tick(unsigned now) __attribute__((weak_import));
+// native_gpu_freq_tick is deliberately not declared here any more: see the step-4 comment in boot_log_tick.
 extern volatile uint32_t native_gpu_freq[9] __attribute__((weak_import));
 /* The display bank's stage-1 window (NativeUfs's DpuWindow.h). native_ufs_dpu_state's bit 31 means the table was installed and
  * survived the 50 ms fault watch; any other value is the step that refused, and 0 means the window was never attempted.
@@ -194,17 +240,103 @@ extern volatile uint32_t native_adreno_wc_audit[6] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_submit_ibs[4] __attribute__((weak_import));
 extern volatile uint32_t native_touch_edge_stats[4] __attribute__((weak_import));
 extern volatile uint32_t native_touch_hid_multi[3] __attribute__((weak_import));
+extern volatile uint32_t native_touch_frames __attribute__((weak_import));
+extern volatile uint32_t native_touch_valid __attribute__((weak_import));
+extern volatile uint32_t native_touch_decoded __attribute__((weak_import));
+extern volatile uint32_t native_touch_seq __attribute__((weak_import));
+extern volatile uint32_t native_touch_count __attribute__((weak_import));
+extern volatile unsigned native_touch_frame_raw[8] __attribute__((weak_import));
+extern volatile uint32_t native_touch_loop_step __attribute__((weak_import));
+extern volatile unsigned native_touch_frame_rc __attribute__((weak_import));
+extern volatile unsigned native_touch_irq_low __attribute__((weak_import));
+extern volatile uint32_t native_touch_core __attribute__((weak_import));
+// One declarator per line: the attribute belongs to the declarator it follows, so a list leaves
+// every name but the last strongly referenced and `&sym ? ...` then reads as always true (-Werror).
+extern volatile uint32_t armcpu_core_timer[8] __attribute__((weak_import));
+// Timer interrupts whose deadline was already past when the core got to them (fewer than 1000 ticks
+// ahead), and the last one's margin. A blocked IOSleep that never returns needs a missed deadline on
+// some core; these two say whether that is happening and on which.
+extern volatile uint32_t armcpu_timer_short[8] __attribute__((weak_import));
+extern volatile int32_t armcpu_timer_ahead[8] __attribute__((weak_import));
+extern volatile uint32_t armcpu_core_sgi[8] __attribute__((weak_import));
+extern volatile uint32_t armcpu_smp_running __attribute__((weak_import));
+// Per-secondary bring-up step (1 nub started .. 7 running) and the check that failed, so the CPUT
+// row can say whether a core that stops taking interrupts ever claimed to be running at all.
+extern volatile uint32_t armcpu_smp_step[8] __attribute__((weak_import));
+extern volatile uint32_t armcpu_smp_fail[8] __attribute__((weak_import));
+// The liveness watchdog lives in ArmCpu: this file declares a core, ArmCpu records it, and with
+// armcpu-deaf-skip=1 its signalCPU stops poking that core. Both counters are here so a console row
+// can show the watchdog ran instead of leaving it to be inferred from an absent effect.
+extern volatile uint32_t armcpu_core_deaf_mask __attribute__((weak_import));
+extern volatile uint32_t armcpu_core_deaf_events __attribute__((weak_import));
+extern volatile uint64_t armcpu_ipi_skipped_deaf __attribute__((weak_import));
+extern void armcpu_core_note_deaf(uint32_t core) __attribute__((weak_import));
+// Reads the suspect core's own redistributor frame from a healthy core: pending, enabled, active and WAKER.
+// Pending-but-not-taken says the core is masked or halted; cleared enables say its GIC was turned off;
+// nothing pending says no sender targets it.
+extern int armcpu_core_gicr_probe(uint32_t core, uint32_t out[5]) __attribute__((weak_import));
+// The phase that core last wrote, and the count (units of 1024) at which it entered the handler. A deaf
+// core with phase 2 was inside the timer handler, 4 or 5 inside the IPI handler, 7 inside a device
+// handler, and 0 or 6 was not in a handler at all.
+extern volatile uint32_t armcpu_core_phase[8] __attribute__((weak_import));
+extern volatile uint32_t armcpu_core_irq_enter[8] __attribute__((weak_import));
+extern volatile uint64_t armcpu_timer_interrupts __attribute__((weak_import));
+extern volatile uint64_t armcpu_ipi_interrupts __attribute__((weak_import));
+extern volatile uint64_t armcpu_ipi_sent __attribute__((weak_import));
+// quiesceCPU() turns the core's virtual timer off (CNTV_CTL=0) and its Group 1 interrupts off
+// (ICC_IGRPEN1_EL1=0); haltCPU() calls it. Only initCPU turns them back on, so a core that halts and
+// is woken by a path that does not re-init it stops taking timer interrupts, and any thread blocked
+// on a deadline there never wakes. These two counters say whether that path runs at all.
+extern volatile uint32_t armcpu_quiesce_calls __attribute__((weak_import));
+extern volatile uint32_t armcpu_halt_calls __attribute__((weak_import));
+extern volatile uint32_t armcpu_irq_phase __attribute__((weak_import));
+// boot-ui-trace's worker: how many times it was entered, how many captures it started, and whether one
+// is still in flight. Six "STK none" rows on 2026-11-06 could mean the worker never reached its 44th
+// call, or that a capture started and never finished; these four numbers separate them.
+extern volatile unsigned boot_process_attempts __attribute__((weak_import));
+extern volatile unsigned boot_process_passes __attribute__((weak_import));
+extern volatile unsigned boot_process_seen __attribute__((weak_import));
+extern volatile unsigned boot_process_busy __attribute__((weak_import));
+extern int boot_kthread_report(const char *, char *, unsigned) __attribute__((weak_import));
+extern volatile uint32_t native_touch_fail_step __attribute__((weak_import));
 extern volatile int32_t native_backlight_request[6] __attribute__((weak_import));
 extern volatile uint64_t native_adreno_reassert_ticks __attribute__((weak_import));
 extern volatile uint64_t native_adreno_cache_stats[5] __attribute__((weak_import));
 // NativeAdrenoPublish.cpp: per process name that opened the GPU, and the processes that asked the Metal discovery for its plugin.
 struct native_adreno_client_record {char name[20]; uint32_t opens, refused, closes, slot, peak_mib, last_refusal;};
 extern struct native_adreno_client_record native_adreno_client_log[16] __attribute__((weak_import));
-struct native_adreno_client_text {char name[20]; char text[2][64]; unsigned lines;};
+/* The driver's own layout: NativeAdrenoPublish.cpp declares `struct NativeAdrenoClientText
+ * {char name[20]; char text[64];}`. The reader used to add a second 64-byte line and a counter,
+ * so every entry after the first was read at the wrong stride. */
+struct native_adreno_client_text {char name[20]; char text[64];};
 extern struct native_adreno_client_text native_adreno_client_text[8] __attribute__((weak_import));
 /* [0] the marker count, [1..16] the plugin's newest progress markers, from NativeAdrenoPublish.cpp. */
 extern volatile uint32_t native_adreno_metal_marks[17] __attribute__((weak_import));
-extern volatile uint32_t native_adreno_mount_fail[4] __attribute__((weak_import));
+/* The processes that sent plugin marker 1, i.e. that reached the plugin's initWithAcceleratorPort:.
+ * NativeAdrenoPublish.cpp records them in native_adreno_metal_diag.starter[3][17] and never printed
+ * them, which left "did this process ever enter the plugin" unanswerable: on of14 CollectionsPoster
+ * sat in [metal askers] but not in [gpu clients] or [gpu client text], and the marks ring that could
+ * have said so is overwritten by mediaserverd's 6730/6731 pair every frame.
+ * The driver exports this as its own symbol; weak_import does not survive the kernel's static link,
+ * so the array is declared with an empty definition here and the driver's is linked over it when the
+ * archive is present. */
+__attribute__((weak)) char native_adreno_metal_starter[3][17];
+extern volatile uint32_t native_adreno_mount_fail[12] __attribute__((weak_import));
+// The queue-range index the next user connection will be given (NativeAdrenoPublish.cpp): how many 4 GiB ranges
+// this boot has handed out. A client whose range never drains keeps this from advancing.
+extern volatile uint32_t native_adreno_next_client __attribute__((weak_import));
+// {site,count} pairs: which poison() call in NativeAdrenoSubmit.cpp refused, and how often.
+extern volatile uint32_t native_adreno_submit_poison[6] __attribute__((weak_import));
+// The hang-recovery step that refused (step, status) and the counters around it: hangs, restarts, failed.
+extern volatile uint32_t native_adreno_recovery[8] __attribute__((weak_import));
+/* The display service's own user-client record: whether any process opened it at all, which pid,
+ * and the status of the last open. A boot that never takes the display splits in two here — nobody
+ * opened it, or somebody opened it and never swapped. */
+/* Plain externs: these live in LegacyDisplayProbe.cpp, which is linked into the same kernel
+ * archive, and weak_import on a data symbol makes clang fold `&sym` to true (-Werror). */
+extern volatile uint32_t native_legacy_client_calls, native_legacy_client_type;
+extern volatile int native_legacy_client_pid, native_legacy_client_status;
+
 extern volatile uint32_t native_adreno_window_overflow[4][3] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_client_stats[5][8] __attribute__((weak_import));
 struct native_adreno_asker_record {char name[20]; uint32_t reads;};
@@ -227,6 +359,9 @@ extern volatile uint32_t native_adreno_ring_log[4][4 + 112] __attribute__((weak_
 extern volatile uint32_t native_adreno_ring_log_count __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ib_log[4][6 + 96 + 96 + 2 + 16 + 80] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_ib_log_count __attribute__((weak_import));
+extern volatile uint64_t *native_adreno_boundary_log __attribute__((weak_import));
+extern volatile uint32_t native_adreno_boundary_count __attribute__((weak_import));
+extern volatile uint32_t native_adreno_boundary_lost __attribute__((weak_import));
 /* The submission's coherence sample and the write-combined distrust count (NativeAdrenoSubmit.cpp:289-301): [0] samples taken,
  * [1..3] the cached and uncached reads of the first IB word, [4] submissions that found a dirty line and dropped write-combined,
  * [5..7] the first such sample. A third submission whose IB head reads as zeros is only "Metal wrote nothing" if [4] stays 0. */
@@ -235,6 +370,13 @@ extern unsigned native_legacy_properties_now(char *, unsigned) __attribute__((we
 extern unsigned native_legacy_clients_dump(char *, unsigned) __attribute__((weak_import));
 extern unsigned native_legacy_swap_timeline(char *, unsigned) __attribute__((weak_import));
 extern unsigned native_legacy_prepare_report(char *, unsigned) __attribute__((weak_import));
+extern unsigned native_legacy_vsync_counts(uint64_t *, unsigned *) __attribute__((weak_import));
+/* native_legacy_direct_stage is defined above as a weak fallback; a second weak_import declaration would conflict. */
+extern void boot_progress_panel_sample(unsigned *) __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_offers __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_completions __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_failures __attribute__((weak_import));
+extern volatile uint64_t native_gop_gpu_abandoned __attribute__((weak_import));
 extern char native_adreno_metal_rows[48][96] __attribute__((weak_import));
 extern unsigned native_legacy_state_words(char *, unsigned) __attribute__((weak_import));
 extern volatile uint32_t native_adreno_view_diag[6] __attribute__((weak_import));
@@ -242,6 +384,11 @@ extern int boot_reset_probe(char *, unsigned) __attribute__((weak_import));
 extern int boot_reset_bootloader(char *, unsigned) __attribute__((weak_import));
 extern int boot_reset_mark_bootloader(char *, unsigned) __attribute__((weak_import));
 extern int boot_reset_watchdog(uint32_t, char *, unsigned) __attribute__((weak_import));
+extern void boot_reset_pet(void) __attribute__((weak_import));
+// A plain extern, not weak_import: it lives in this package (BootReset.c) and &symbol on a weak
+// data symbol is a -Wpointer-bool-conversion error under -Werror. [0] armed, [1] pets so far.
+extern volatile int32_t boot_reset_wdt_stats[4];
+void boot_log_tick(unsigned now);
 extern volatile uint64_t native_adreno_import_diag[10] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_import_stage __attribute__((weak_import));
 extern volatile uint64_t native_adreno_import_live[3 + 8 * 4] __attribute__((weak_import));
@@ -251,7 +398,7 @@ extern volatile uint64_t native_adreno_import_fail_pa __attribute__((weak_import
 // The mark line is "mark: %08x -> %08x rc=%d | <pon line> pon_rc=%d", about 100 bytes with the
 // PON text at 50, so 64 truncated it before pon_rc and left the PON verdict unreadable even when
 // the write happened. 160 leaves room for a wider status word and a longer PON line.
-static char boot_log_reset_probe_text[240], boot_log_reset_result[200], boot_log_reset_mark[160], boot_log_reset_watchdog[120];
+static char boot_log_reset_probe_text[240], boot_log_reset_result[200], boot_log_reset_mark[160], boot_log_reset_watchdog[192];
 // The kernel message buffer (bsd/sys/msgbuf.h); only these leading fields are read.
 struct boot_log_msgbuf {int msg_magic, msg_size, msg_bufx, msg_bufr; char *msg_bufc;};
 extern struct boot_log_msgbuf *msgbufp;
@@ -319,10 +466,23 @@ static int boot_log_started;
 // deadline lived in its loop nothing restarted that board, so an unattended round never came
 // back. This runs from the board monitor's once-a-second tick instead, which does not share a
 // thread with the writer.
-static unsigned tick_first, tick_seen_seq, tick_seen_at;
+static uint64_t tick_start_cntpct;
+static unsigned tick_seen_seq, tick_seen_at;
 static int tick_reset_tried;
+/* Once the deadline's reset has been attempted, stop petting the hardware watchdog: on this
+ * board the software path returns 99 every time, so the bark is the only reset that leaves the
+ * SoC, and it must be allowed to fire. */
+static int reset_pet_stopped;
 static uint32_t tick_autoreset;
 static volatile unsigned log_sync_seq;
+// Instrumentation for the [tick] log row: the autoreset clock's own counters, so a boot that never returns names which part of it stood still.
+static volatile unsigned boot_log_tick_calls, boot_log_super_runs, boot_log_tick_elapsed, boot_log_super_returns, boot_log_super_elapsed;
+// Which call inside boot_log_tick it last entered. The monitor was measured stopping with its own step at 4 (inside this
+// function), so this counter names the call inside it: 1 in, 2 after the one-time start, 3 before DpuProbe, 4 after it,
+// 5 after the GPU frequency tick, 6 after the phase heartbeat, 7 before the deadline.
+static volatile unsigned boot_log_tick_step;
+static volatile uint64_t boot_log_tick_ctr, boot_log_tick_freq;
+static volatile int boot_log_super_start = -1;
 /* Which step of a round the writer is in, for a round that never finishes. Every wait on that path
  * is supposed to be bounded (the SCSI commands carry deadlines and poison the controller on
  * timeout, which shows up as write_errors), so a writer that stops with write_errors still 0 is
@@ -484,10 +644,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // (0 removed, 2 absent, else errno). A red test image in the mounted .ca changed nothing on screen (fix142), so the next question
   // is whether the desktop reuses a stored configuration instead of reading the collection.
   if (&sheng_wallpaper_reset && sheng_wallpaper_reset[0]) {
-    char wrow[120];
+    char wrow[160];
     size_t n = (size_t)snprintf(wrow, sizeof wrow, "[wallpaper reset] n=%d", sheng_wallpaper_reset[0]);
     for (unsigned i = 1; i <= (unsigned)sheng_wallpaper_reset[0] && i < 8 && n < sizeof wrow; ++i)
       n += (size_t)snprintf(wrow + n, sizeof wrow - n, " %d", sheng_wallpaper_reset[i]);
+    // The container scan behind those unlinks: lookup result, last READDIR result, entries walked, containers matched. A row of
+    // "n=3 2 2 2" says only that the three fixed paths were absent; these four say why the dynamic ones were never tried.
+    if (&sheng_wallpaper_scan && n < sizeof wrow)
+      n += (size_t)snprintf(wrow + n, sizeof wrow - n, " | ent=%d dir=%d ctr=%d grp=%d rm=%u",
+                            sheng_wallpaper_scan[2], sheng_wallpaper_scan[3], sheng_wallpaper_scan[0],
+                            sheng_wallpaper_scan[1] & 0xff, &sheng_wallpaper_walked ? sheng_wallpaper_walked : 0u);
     at = put(out, at, cap, wrow, sizeof wrow);
   }
   // What PosterBoard stored as the desktop's wallpaper: the plist names the collection and the variant, so no experiment has to
@@ -503,8 +669,84 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
         crow[n++] = (c >= 0x20 && c < 0x7f) ? (char)c : '.';
       }
       crow[n] = 0;
+      /* This is the only row that says which collection PosterBoard stored, and it was persistent
+       * log only until 2026-11-06, which is why a round could see bytes=148 and no content. */
+      if (&qcom_usb_debug_write) {char cl[112]; const int cn = snprintf(cl, sizeof cl, "%s\n", crow);
+        if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
       at = put(out, at, cap, crow, sizeof crow);
     }
+  }
+  {
+    /* The three addon mounts the kernel performs, with their verdicts. The wallpaper overlay is
+     * the third; a status other than 0 there means the mount the wallpaper depends on failed, and
+     * a status of 0 with no picture means the mount landed somewhere nothing renders. */
+    extern volatile int native_gpu_addon_stage __attribute__((weak_import));
+    extern volatile int native_gpu_addon_status __attribute__((weak_import));
+    extern volatile int native_gpu_addon2_stage __attribute__((weak_import));
+    extern volatile int native_gpu_addon2_status __attribute__((weak_import));
+    extern volatile int native_gpu_addon3_stage __attribute__((weak_import));
+    extern volatile int native_gpu_addon3_status __attribute__((weak_import));
+    if (&native_gpu_addon_status && &native_gpu_addon2_status && &native_gpu_addon3_status) {
+      char crow[120];
+      snprintf(crow, sizeof crow, "[addon] 1=%d/%d 2=%d/%d 3=%d/%d",
+        native_gpu_addon_stage, native_gpu_addon_status,
+        native_gpu_addon2_stage, native_gpu_addon2_status,
+        native_gpu_addon3_stage, native_gpu_addon3_status);
+      if (&qcom_usb_debug_write) {char cl[126]; const int cn = snprintf(cl, sizeof cl, "%s\n", crow);
+        if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
+      at = put(out, at, cap, crow, sizeof crow);
+    }
+  }
+  if (&sheng_wallpaper_db_ran && sheng_wallpaper_db_ran && &sheng_wallpaper_db) {
+    /* Page 1 of the poster store holds the schema, so these runs are the table names.
+     * The status prefix says why the text is short: of12 printed this row two hundred times with
+     * nothing after the tag, and "the container was never found" and "the file opened empty" are
+     * the same bytes. [0] containers matched, [1] the open/read result, [2] bytes read. */
+    char crow[420];
+    snprintf(crow, sizeof crow, "[wallpaper db] c=%d r=%d n=%d %.370s",
+             &sheng_wallpaper_db_status ? (int)sheng_wallpaper_db_status[0] : -9,
+             &sheng_wallpaper_db_status ? (int)sheng_wallpaper_db_status[1] : -9,
+             &sheng_wallpaper_db_status ? (int)sheng_wallpaper_db_status[2] : -9,
+             sheng_wallpaper_db);
+    if (&qcom_usb_debug_write) {char cl[426]; const int cn = snprintf(cl, sizeof cl, "%s\n", crow);
+      if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
+    at = put(out, at, cap, crow, sizeof crow);
+  }
+  if (&sheng_wallpaper_list_ran && sheng_wallpaper_list_ran && &sheng_wallpaper_names) {
+    /* The entry names under the two directories that can hold the chosen poster. A plist in
+     * Library/Preferences turned out to be CoreAnimation settings, so this is the next place to
+     * look, and it is a listing rather than another guessed file. */
+    char crow[300];
+    snprintf(crow, sizeof crow, "[wallpaper list] %.270s", sheng_wallpaper_names);
+    if (&qcom_usb_debug_write) {char cl[306]; const int cn = snprintf(cl, sizeof cl, "%s\n", crow);
+      if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
+    at = put(out, at, cap, crow, sizeof crow);
+  }
+  if (&sheng_wallpaper_scan_ran && sheng_wallpaper_scan_ran) {
+    /* How many containers name PosterBoard in their metadata, from the two container roots. A zero
+     * here means the app never made one, which is a different fault from a stale container id. */
+    char crow[80];
+    snprintf(crow, sizeof crow, "[wallpaper scan] app=%d group=%d",
+             (int)sheng_wallpaper_scan_app, (int)sheng_wallpaper_scan_group);
+    if (&qcom_usb_debug_write) {char cl[80]; const int cn = snprintf(cl, sizeof cl, "%s\n", crow);
+      if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
+    at = put(out, at, cap, crow, sizeof crow);
+  }
+  if (0) {
+  } else if (&sheng_wallpaper_probe_ran && sheng_wallpaper_probe_ran) {
+    /* The probe ran and said nothing: status 0 with no bytes is a file that opened empty, a
+     * positive status is the errno of the open. Either way the row must print, or a stale
+     * container UUID in the probe path looks exactly like a probe that never ran. */
+    char crow[80];
+    snprintf(crow, sizeof crow, "[wallpaper cfg] ran status=%d bytes=%d",
+             &sheng_wallpaper_cfg ? (int)sheng_wallpaper_cfg[0] : -1,
+             &sheng_wallpaper_cfg ? (int)sheng_wallpaper_cfg[1] : -1);
+    /* put() writes the persistent log, not the console. This row is the only thing that says
+     * whether the probe path still resolves, and the console is the only channel a round can be
+     * read without booting the reader, so it goes to both. */
+    if (&qcom_usb_debug_write) {char cl[80]; const int cn = snprintf(cl, sizeof cl, "%s\n", crow);
+      if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
+    at = put(out, at, cap, crow, sizeof crow);
   } else if (&sheng_wallpaper_cfg && sheng_wallpaper_cfg[0]) {
     char crow[60];
     snprintf(crow, sizeof crow, "[wallpaper cfg] unreadable status=%d", sheng_wallpaper_cfg[0]);
@@ -546,6 +788,12 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     snprintf(row, sizeof row, "B st=%d irq=%d rep=%d mask=%x apid=%d/%d off=%d pdc=%x err=%d spur=%d", native_buttons_stats[0], native_buttons_stats[1],
              native_buttons_stats[2], native_buttons_stats[3], native_buttons_stats[4], native_buttons_stats[5], native_buttons_stats[6],
              native_buttons_stats[7], native_buttons_stats[8], native_buttons_stats[9]);
+    {
+      char brow[110];
+      snprintf(brow, sizeof brow, "Braw pon=%02x gpio=%02x pr=%d gr=%d", native_buttons_stats[10], native_buttons_stats[11],
+               native_buttons_stats[12], native_buttons_stats[13]);
+      at = put(out, at, cap, brow, sizeof brow);
+    }
     at = put(out, at, cap, row, sizeof row);
   }
   // Panel brightness (AppleARMBacklight.cpp): stage (3 published, negative the failed step), requests, last level, the levels read back from
@@ -579,6 +827,20 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     for (unsigned role = 0; role < 4; ++role) {
       unsigned n = boot_ui_trace_role_rows(role, rows, 64, 2);   // 2: with each thread group's deeper frames
       for (unsigned i = 0; i < n; ++i) at = put(out, at, cap, rows[i], 120);
+    }
+  }
+  /* Where this kernel's own long-running threads sit. boot_kthread_report() (BootUiTraceProbe.c) looks a
+   * kernel thread up by name and prints its saved frames, so a boot whose touch loop stopped names the call
+   * it stopped in, and a boot whose process-capture worker stopped shows that as well. Addresses are kernel
+   * virtual, already unslid against the kernel: symbolicate them on the built kernel binary. */
+  if (&boot_kthread_report) {
+    static const char *const kthreads[] = {"alioth-touch", "boot_process_probe", "alioth-bt"};
+    for (unsigned i = 0; i < sizeof kthreads / sizeof kthreads[0]; ++i) {
+      char krow[200];
+      if (boot_kthread_report(kthreads[i], krow, sizeof krow) != 0) continue;
+      char row[224];
+      snprintf(row, sizeof row, "KTH %s %s", kthreads[i], krow);
+      at = put(out, at, cap, row, sizeof row);
     }
   }
   if (&native_legacy_state_words) {
@@ -810,20 +1072,34 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // slot, 2 core open, 3 window scope; status; slot; count), then one line per process other than the render server: why its Metal device failed.
   if (&native_adreno_window_overflow && &native_adreno_mount_fail) {
     char row[300];
-    snprintf(row, sizeof row, "[gpu windows] ovf %u/%uK/%uM %u/%uK/%uM %u/%uK/%uM %u/%uK/%uM | mount fail stage %u st %x slot %u n %u",
+    snprintf(row, sizeof row, "[gpu windows] ovf %u/%uK/%uM %u/%uK/%uM %u/%uK/%uM %u/%uK/%uM | mount fail stage %u st %x slot %u n %u | vm %u/%u last %x at %u nc %u",
              native_adreno_window_overflow[0][0], native_adreno_window_overflow[0][1], native_adreno_window_overflow[0][2],
              native_adreno_window_overflow[1][0], native_adreno_window_overflow[1][1], native_adreno_window_overflow[1][2],
              native_adreno_window_overflow[2][0], native_adreno_window_overflow[2][1], native_adreno_window_overflow[2][2],
              native_adreno_window_overflow[3][0], native_adreno_window_overflow[3][1], native_adreno_window_overflow[3][2],
-             native_adreno_mount_fail[0], native_adreno_mount_fail[1], native_adreno_mount_fail[2], native_adreno_mount_fail[3]);
+             native_adreno_mount_fail[0], native_adreno_mount_fail[1], native_adreno_mount_fail[2], native_adreno_mount_fail[3],
+             /* Address spaces alive now and at most, then why the last createVm that failed did: its status and the step
+              * (2 tables prepared, 3 attached, 4+i mapped kernel buffer i, 0x30|op<<8 the attach refused at op). nc is the
+              * next queue-range index: against vm it says whether ranges or VMs are the thing that ran out. */
+             &native_adreno_table_switches ? native_adreno_table_switches[4] : 0u,
+             &native_adreno_table_switches ? native_adreno_table_switches[5] : 0u,
+             &native_adreno_table_switches ? native_adreno_table_switches[6] : 0u,
+             &native_adreno_table_switches ? native_adreno_table_switches[7] : 0u,
+             &native_adreno_next_client ? native_adreno_next_client : 0u);
     at = put(out, at, cap, row, sizeof row);
+    /* Who reached the plugin's initWithAcceleratorPort:. Three names, newest first, so a client that
+     * opens the device without entering the plugin is visible here next to [gpu clients]. */
+    if (&native_adreno_metal_starter && native_adreno_metal_starter[0][0]) {
+      char row2[120];
+      snprintf(row2, sizeof row2, "[gpu plugin] started %.16s | %.16s | %.16s",
+               native_adreno_metal_starter[0], native_adreno_metal_starter[1], native_adreno_metal_starter[2]);
+      at = put(out, at, cap, row2, sizeof row2);
+    }
     if (&native_adreno_client_text)
       for (unsigned i = 0; i < 8 && native_adreno_client_text[i].name[0]; ++i) {
-        for (unsigned k = 0; k < 2; ++k) {
-          if (!native_adreno_client_text[i].text[k][0]) continue;
-          snprintf(row, sizeof row, "[gpu client text] %.19s: %.63s", native_adreno_client_text[i].name, native_adreno_client_text[i].text[k]);
-          at = put(out, at, cap, row, sizeof row);
-        }
+        if (!native_adreno_client_text[i].text[0]) continue;
+        snprintf(row, sizeof row, "[gpu client text] %.19s: %.63s", native_adreno_client_text[i].name, native_adreno_client_text[i].text);
+        at = put(out, at, cap, row, sizeof row);
       }
   }
   if (&native_adreno_metal_askers) {
@@ -856,6 +1132,19 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     char row[80];
     snprintf(row, sizeof row, "[touch multi] reports=%u max=%u lifts=%u", native_touch_hid_multi[0], native_touch_hid_multi[1],
              native_touch_hid_multi[2]);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  /* What the panel itself returned. frames/valid are the probe's own reads, decoded counts publishes
+   * that carried a contact: a run where someone touched and decoded stays 0 says the panel response
+   * never reached the decoder, which is a different fault from a HID report that was not delivered.
+   * raw is the last frame's first eight bytes as read, so 0xff everywhere means "no response". */
+  if (&native_touch_decoded) {
+    char row[170];
+    snprintf(row, sizeof row, "[touch raw] frames=%u valid=%u decoded=%u seq=%u count=%u loop=%u fail=%u raw=%02x%02x%02x%02x%02x%02x%02x%02x",
+             native_touch_frames, native_touch_valid, native_touch_decoded, native_touch_seq, native_touch_count,
+             native_touch_loop_step, native_touch_fail_step,
+             native_touch_frame_raw[0], native_touch_frame_raw[1], native_touch_frame_raw[2], native_touch_frame_raw[3],
+             native_touch_frame_raw[4], native_touch_frame_raw[5], native_touch_frame_raw[6], native_touch_frame_raw[7]);
     at = put(out, at, cap, row, sizeof row);
   }
   // IBs per GPU submission: submissions, IBs, the most in one, and those with more than 16 (a frame used to be split at 16).
@@ -1219,8 +1508,9 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // round. The mode (0), the publication and user-client counters (23), the live counters (25)
   // The mode (0), the publication and user-client counters (23), the Metal registration (24),
   // the live counters (25) and the CP hardware-error row (31) are what a stall needs. Row 24
-  // answers "did selfTest() pass and register the accelerator", which is the gate that decides
-  // whether any user client can open the driver at all (uc 0/0 vs uc 16/19).
+  // names the Metal registration or, when the opt-in self-test is on, its diagnostic verdict.
+  // Following the reference board, the self-test does not gate registration: the published
+  // IOAcceleratorES service is what lets user clients open the driver.
   if (&native_gpu_rows && native_gpu_rows[0][0]) {
     static const int gpuRows[] = {0, 3, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 31};
     char row[300];   // a GPU row is now up to 256 bytes, plus "GPUROWnn " and the NUL
@@ -1323,7 +1613,10 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   /* Direct scanout, the zero-copy path. Absent when the display never entered it (startDirect needs sheng-dpu-scanout>=2 and a display
    * bank window), so this row's presence is itself the answer to "did the direct path run". The upstream display guide asks for a
    * "[direct scanout]" row carrying flips, mapped surfaces, latch time and the wait for the GPU; this is that row. */
-  if (&native_legacy_direct && (native_legacy_direct[0] || (&native_legacy_direct_stage && native_legacy_direct_stage))) {
+  // Print when either path moved at all: with no flip the counters are the evidence, and a
+  // gate on flips alone hides exactly the boot that needs reading.
+  if (&native_legacy_direct && (native_legacy_direct[0] || (&native_legacy_direct_stage && native_legacy_direct_stage) ||
+                                (&native_legacy_swapstat && native_legacy_swapstat[0]))) {
     char row[200];
     const volatile uint32_t *d = native_legacy_direct;
     snprintf(row, sizeof row,
@@ -1410,6 +1703,19 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     char row[72];
     snprintf(row, sizeof row, "[log] skips=%u phase=%u state=%u rounds=%u",
              &native_ufs_log_skips ? native_ufs_log_skips : 0, (unsigned)log_phase, boot_log_state, boot_log_rounds);
+    at = put(out, at, cap, row, sizeof row);
+  }
+  // The autoreset clock itself: how many times boot_log_tick ran, the seconds it computes from cntpct, the raw counter it read, whether the
+  // supervisor thread started and how many times its loop ran. A boot that never resets is one of these five numbers standing still, and
+  // without them every reading of "the deadline did not fire" is a guess.
+  {
+    char row[128];
+    snprintf(row, sizeof row, "[tick] calls=%u mon=%llu step=%u tstep=%u super=%u/%u t=%u/%u start=%d f=%llu",
+             boot_log_tick_calls, &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL,
+             &boot_progress_monitor_step ? boot_progress_monitor_step : 0, boot_log_tick_step,
+             boot_log_super_runs, boot_log_super_returns,
+             boot_log_tick_elapsed, boot_log_super_elapsed, boot_log_super_start,
+             (unsigned long long)boot_log_tick_freq);
     at = put(out, at, cap, row, sizeof row);
   }
   // Which processes were started and ended (BootProgress.c census) and the throw site of the last uncaught exception (kits BootFaultProbe.c).
@@ -1610,6 +1916,14 @@ static void writer(void *arg, wait_result_t result) {
       ok &= w != 0; if (!ok && !bad) bad = 3; }
     // The header lands again after the slot and the message buffer are in, so the round that
     // finished is durable too; the first write above only named the round that started.
+    // The counters move before this write so the header carries the finished round, but a busy
+    // host lock takes the `continue` below, which would leave them advanced with no header on the
+    // medium. Roll them back on that path. Measured 2026-11-07 on of6: BLPHASE read round=113
+    // slots=113 err=0 while a direct read of block 0 returned version 4 / tag usb190 / slots 509,
+    // so the reader saw the previous boot's header and reported diag_bytes 0.
+    const uint32_t roundsBefore = boot_log_rounds;
+    const uint32_t slotsBefore = h.slots_written;
+    const uint32_t errorsBefore = h.write_errors;
     h.rounds = ++boot_log_rounds;
     if (ok) ++h.slots_written;
     else ++h.write_errors;
@@ -1617,7 +1931,11 @@ static void writer(void *arg, wait_result_t result) {
     memset(boot_log_buffer, 0, LogBlock);
     memcpy(boot_log_buffer, &h, sizeof h);
     { const int w = native_ufs_log_write(0, 1, boot_log_buffer);
-      if (w == 2) {++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;}
+      if (w == 2) {
+        boot_log_rounds = roundsBefore; h.slots_written = slotsBefore; h.write_errors = errorsBefore;
+        __atomic_store_n(&boot_log_slots_hint, slotsBefore, __ATOMIC_RELAXED);
+        ++boot_log_skips; log_phase = 12; if (boot_log_skips <= 5 || !(boot_log_skips % 20)) log_say(0, boot_log_skips, (unsigned)log_phase); IOSleep(LogPeriodMs); continue;
+      }
       ok &= w != 0; if (!ok && !bad) bad = 5; }
     /* Take the frozen early-boot snapshot exactly once, while the boot-time IOLog is still inside
      * the kernel ring. copy_msgbuf always returns the newest 131072 bytes, so a copy taken at
@@ -1692,15 +2010,746 @@ static void writer(void *arg, wait_result_t result) {
   }
 }
 
+// An independent kernel thread driving the autoreset supervisor so the board returns to
+// fastboot even if monitor() yields or stalls after display handoff.
+// The reset, once the deadline is reached. Called from the deadline owners below, which are the board monitor and the supervisor.
+static void boot_log_fire_reset(unsigned elapsed) {
+  tick_reset_tried = 1;
+  reset_pet_stopped = 1;   // let the hardware bark: every software path below returns 99 here
+  // The deadline is reached, and that fact has to leave the kernel even when the reset then works or is
+  // refused silently: the console is the only channel that survives both.
+  if (&qcom_usb_debug_write) {
+    char line[72];
+    const int n = snprintf(line, sizeof line, "AUTORESET deadline %us reached at %us\n", tick_autoreset, elapsed);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
+  if (!&boot_reset_bootloader) {
+    strlcpy(boot_log_reset_result, "autoreset skipped: no reset entry point", sizeof boot_log_reset_result);
+    return;
+  }
+  const int rc = boot_reset_bootloader(boot_log_reset_result, sizeof boot_log_reset_result);
+  char tail[24]; snprintf(tail, sizeof tail, " (returned %d)", rc);
+  strlcat(boot_log_reset_result, tail, sizeof boot_log_reset_result);
+  if (&qcom_usb_debug_write) {
+    char line[160];
+    const int n = snprintf(line, sizeof line, "AUTORESET refused: %s\n", boot_log_reset_result);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
+  if (rc != 0) {
+    IOSleep(2000);
+    tick_reset_tried = 0;
+  }
+}
+
+// The deadline's own thread. It does NOT call boot_log_tick: that function runs the per-second probes
+// (DpuProbe, the GPU frequency reader) which were written for one caller, and two threads inside them at
+// once is what a boot with the monitor and this thread both ticking can do. The whole point of this
+// thread is to survive a monitor that stops, so it must not share the monitor's work; it measures its own
+// time from the hardware counter and fires the reset itself.
+static void autoreset_supervisor(void *arg, wait_result_t result) {
+  (void)arg; (void)result;
+  thread_set_thread_name(current_thread(), "autoreset");
+  uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
+  const uint64_t start = log_ticks();
+  unsigned reported = 0;
+  while (!tick_reset_tried) {
+    // Before the first sleep: this line alone says the thread was entered. Without it "never
+    // started" and "started and stuck in its first IOSleep" produce the same console.
+    if (boot_log_super_runs == 0 && &qcom_usb_debug_write) {
+      const char *entered = "SUP entered\n";
+      qcom_usb_debug_write(entered, 12);
+    }
+    IOSleep(1000);
+    boot_log_super_runs = boot_log_super_runs + 1;
+    boot_log_super_returns = boot_log_super_returns + 1;
+    const unsigned elapsed = (unsigned)((log_ticks() - start) / f);
+    boot_log_super_elapsed = elapsed;
+    // Beacons around the first two pets. A boot that loses its supervisor loses the round to the
+    // watchdog, so the difference between "the thread never started", "it started and the pet's
+    // register write hung" and "it is running and petting" has to be readable from the console.
+    if (boot_log_super_runs <= 2 && &qcom_usb_debug_write) {
+      char b[64];
+      const int bn = snprintf(b, sizeof b, "SUPRUN n=%u t=%us pre-pet\n", boot_log_super_runs, elapsed);
+      if (bn > 0) qcom_usb_debug_write(b, (size_t)bn < sizeof b ? (size_t)bn : sizeof b - 1);
+    }
+    /* The image's own name on the console, once. Until now sheng-build-tag reached only the
+       persistent-log header (BootProgress.c:947) and the boot page, so 0 of 298 saved console
+       captures could say which image they came from, and the 2026-10-30 u268/u269 rounds ran an
+       older slot image while the operators believed they were testing a new build. The Darwin
+       version string is no substitute: it is byte-identical across images that print different
+       row sets. porting.toml's packaging area asks for exactly this reading. */
+    if (boot_log_super_runs == 1 && &qcom_usb_debug_write) {
+      char tag[32] = {0};
+      PE_parse_boot_argn("sheng-build-tag", tag, sizeof tag);
+      tag[sizeof tag - 1] = 0;
+      char b[64];
+      const int bn = snprintf(b, sizeof b, "BUILD tag=%s\n", tag[0] ? tag : "none");
+      if (bn > 0) qcom_usb_debug_write(b, (size_t)bn < sizeof b ? (size_t)bn : sizeof b - 1);
+    }
+    // One register write a second. Its absence is the signal: a supervisor that stops, and a
+    // deadline whose software reset failed, both end in the same hardware bark.
+    if (!reset_pet_stopped && &boot_reset_pet) boot_reset_pet();
+    if (boot_log_super_runs <= 2 && &qcom_usb_debug_write) {
+      char b[64];
+      const int bn = snprintf(b, sizeof b, "SUPRUN n=%u t=%us pet=%d\n", boot_log_super_runs, elapsed, boot_reset_wdt_stats[1]);
+      if (bn > 0) qcom_usb_debug_write(b, (size_t)bn < sizeof b ? (size_t)bn : sizeof b - 1);
+    }
+    if (boot_log_super_runs - reported >= 10) {
+      reported = boot_log_super_runs;
+      char line[224];
+      // Everything the answer to "did the desktop come up" needs, from a thread that does not share the monitor's or the
+      // writer's work: the display's swap counters (a client submitted / acceptance), the boot page's ownership flag, the
+      // pre-write hook, and the Data store's state (3 fresh, 2 resumed, 7 kept). A boot that draws no frame has swap=0
+      // here; a boot that draws has it climbing.
+      /* tf/lp are the touch loop's frame count and the step it is in. A boot that stops
+       * compositing also stops that loop, and the two readings on one line are what say whether
+       * they are the same event without needing the persistent log, which stalls on its own.
+       * tf alone cannot say why it stopped: step 0 covers the 6 ms sleep, and native_touch_frames
+       * is incremented only after a successful read, so "frozen at lp=0" is equally "every read
+       * failed" (FocalTouchProbe.cpp:614-626). tfrc is the last read's negative status, tfs the
+       * first failure's step, and tlow the IRQ line's low count, which climbs on every iteration
+       * whether the read succeeds or not. A frozen tf with tlow climbing is a dead controller; a
+       * frozen tf with tlow frozen is a thread that is no longer scheduled. */
+      // wdt is the arm flag and the pet count: a boot whose supervisor runs has pets climbing once
+      // a second, so a pet count that stops while this row keeps printing is a watchdog write that
+      // no longer lands, and a row that stops printing is a supervisor that stopped.
+      const int n = snprintf(line, sizeof line, "SUPER t=%us runs=%u calls=%u mon=%llu sw=%u/%u/%u own=%u prep=%u data=%u tf=%u lp=%u tc=%u tfrc=%u tfs=%u tlow=%u vr=%u wdt=%d/%d u=%08x d=%08x bg=%08x ns=%u\n", elapsed,
+                             boot_log_super_runs, boot_log_tick_calls,
+                             &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL,
+                             &native_legacy_swap_validation_calls ? native_legacy_swap_validation_calls : 0u,
+                             &native_legacy_swap_accepted_count ? native_legacy_swap_accepted_count : 0u,
+                             &native_legacy_swap_rejected_count ? native_legacy_swap_rejected_count : 0u,
+                             &boot_progress_display_owned ? boot_progress_display_owned : 0u,
+                             &native_legacy_prepare_calls ? native_legacy_prepare_calls : 0u,
+                             &native_data_persist_state ? (unsigned)__atomic_load_n(&native_data_persist_state, __ATOMIC_RELAXED) : 0u,
+                             &native_touch_frames ? __atomic_load_n(&native_touch_frames, __ATOMIC_RELAXED) : 0u,
+                             &native_touch_loop_step ? __atomic_load_n(&native_touch_loop_step, __ATOMIC_RELAXED) : 0u,
+                             &native_touch_core ? __atomic_load_n(&native_touch_core, __ATOMIC_RELAXED) : 0u,
+                             &native_touch_frame_rc ? __atomic_load_n(&native_touch_frame_rc, __ATOMIC_RELAXED) : 0u,
+                             &native_touch_fail_step ? __atomic_load_n(&native_touch_fail_step, __ATOMIC_RELAXED) : 0u,
+                             &native_touch_irq_low ? __atomic_load_n(&native_touch_irq_low, __ATOMIC_RELAXED) : 0u,
+                             &native_legacy_swap_validation_reason ? native_legacy_swap_validation_reason : 0u,
+                             boot_reset_wdt_stats[0], boot_reset_wdt_stats[1],
+                             &native_legacy_swap_req ? native_legacy_swap_req[0] : 0u,
+                             &native_legacy_swap_req ? native_legacy_swap_req[1] : 0u,
+                             &native_legacy_swap_req ? native_legacy_swap_req[2] : 0u,
+                             &native_legacy_swap_req ? native_legacy_swap_req[3] : 0u);
+      if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+      /* Per-core interrupt health, next to the row it explains. On this board two different timed
+       * waits stop about six seconds into the boot while the supervisor's own one keeps ticking:
+       * the boot-progress monitor stops after seven iterations in every boot, and the touch loop
+       * freezes at about 840 frames with native_touch_frame_rc, native_touch_fail_step and
+       * native_touch_irq_low all at zero, i.e. asleep in clock_delay_until after a successful read
+       * and never woken (2026-11-06, console-s903542: tf=839 lp=0 tfrc=0 tfs=0 tlow=0 while the
+       * desktop was up and sw=8). ArmCpu counts each core's architectural timer interrupts and
+       * SGI 0 in armcpu_core_timer[] and armcpu_core_sgi[], and both were printed nowhere. A core
+       * whose timer count freezes while another's climbs is a core that stopped taking its timer,
+       * which is the one failure that would leave a thread blocked in a deadline wait for ever
+       * without failing a single read. irq/ipi/sent are the totals and what the kernel asked for. */
+      if (&armcpu_core_timer) {
+        char core[320];
+        int cn = snprintf(core, sizeof core, "CPUT t=%us irq=%llu ipi=%llu sent=%llu |", elapsed,
+                          (unsigned long long)(&armcpu_timer_interrupts ? __atomic_load_n(&armcpu_timer_interrupts, __ATOMIC_RELAXED) : 0ull),
+                          (unsigned long long)(&armcpu_ipi_interrupts ? __atomic_load_n(&armcpu_ipi_interrupts, __ATOMIC_RELAXED) : 0ull),
+                          (unsigned long long)(&armcpu_ipi_sent ? __atomic_load_n(&armcpu_ipi_sent, __ATOMIC_RELAXED) : 0ull));
+        /* The boot core is not one of the running secondaries, so the old bound (armcpu_smp_running) printed
+         * c0..c6 on an eight-core board and never c7. The row is the boot core plus every secondary that
+         * reported running, capped at the eight logical CPUs the device tree declares. */
+        unsigned cores = (&armcpu_smp_running ? (unsigned)__atomic_load_n(&armcpu_smp_running, __ATOMIC_RELAXED) : 0u) + 1u;
+        if (cores > 8) cores = 8;
+        for (unsigned c = 0; c < cores && cn > 0 && (unsigned)cn < sizeof core - 24; ++c)
+          cn += snprintf(core + cn, sizeof core - (unsigned)cn, " c%u=%u/%u",
+                         c, __atomic_load_n(&armcpu_core_timer[c], __ATOMIC_RELAXED),
+                         __atomic_load_n(&armcpu_core_sgi[c], __ATOMIC_RELAXED));
+        /* A core whose timer count has not moved for two consecutive samples is deaf: it is taking no
+         * interrupt at all, not missing a deadline. XNU keeps it registered and can place a thread there,
+         * and that thread's wakeup never arrives. The mask says which cores a wakeup must avoid, and it
+         * costs nothing when every core is healthy (deaf=00 forever). */
+        static uint32_t lastTimer[8];
+        static uint8_t unmoved[8];
+        unsigned deaf = 0;
+        for (unsigned c = 0; c < cores; ++c) {
+          const uint32_t now = __atomic_load_n(&armcpu_core_timer[c], __ATOMIC_RELAXED);
+          if (now == lastTimer[c]) {if (unmoved[c] < 255) ++unmoved[c];}
+          else {unmoved[c] = 0; lastTimer[c] = now;}
+          if (unmoved[c] >= 2) deaf |= 1u << c;
+        }
+        /* What each core says about itself, from ArmCpu's own arrays: a step below 7 is a core that never
+         * reached running, and a nonzero fail says which check stopped it. Printed as masks so the row
+         * stays one line; both are zero on a healthy boot. */
+        unsigned badStep = 0, failed = 0;
+        if (&armcpu_smp_step)
+          for (unsigned c = 0; c < 8; ++c) {
+            const uint32_t st = __atomic_load_n(&armcpu_smp_step[c], __ATOMIC_RELAXED);
+            if (st && st != 7) badStep |= 1u << c;
+          }
+        if (&armcpu_smp_fail)
+          for (unsigned c = 0; c < 8; ++c)
+            if (__atomic_load_n(&armcpu_smp_fail[c], __ATOMIC_RELAXED)) failed |= 1u << c;
+        if (cn > 0 && (unsigned)cn < sizeof core - 32)
+          cn += snprintf(core + cn, sizeof core - (unsigned)cn, " run=%u deaf=%02x st=%02x fl=%02x",
+                         &armcpu_smp_running ? (unsigned)__atomic_load_n(&armcpu_smp_running, __ATOMIC_RELAXED) : 0u,
+                         deaf, badStep, failed);
+        if (cn > 0) {core[cn++] = '\n'; if (&qcom_usb_debug_write) qcom_usb_debug_write(core, (size_t)cn);}
+        // Same cores again, from the deadline side: how often the architectural timer was already past due and
+        // how far ahead the last one was. A thread blocked in a timed wait whose deadline is skipped here never
+        // wakes, so this is the row that turns "the touch loop stopped" into a timer question.
+        if (&armcpu_timer_short) {
+          char miss[192];
+          int mn = snprintf(miss, sizeof miss, "CPUTM t=%us q=%u h=%u irqph=%u |", elapsed,
+                            &armcpu_quiesce_calls ? __atomic_load_n(&armcpu_quiesce_calls, __ATOMIC_RELAXED) : 0u,
+                            &armcpu_halt_calls ? __atomic_load_n(&armcpu_halt_calls, __ATOMIC_RELAXED) : 0u,
+                            &armcpu_irq_phase ? __atomic_load_n(&armcpu_irq_phase, __ATOMIC_RELAXED) : 0u);
+          for (unsigned c = 0; c < cores && mn > 0 && (unsigned)mn < sizeof miss - 22; ++c)
+            mn += snprintf(miss + mn, sizeof miss - (unsigned)mn, " c%u=%u/%d",
+                           c, __atomic_load_n(&armcpu_timer_short[c], __ATOMIC_RELAXED),
+                           __atomic_load_n(&armcpu_timer_ahead[c], __ATOMIC_RELAXED));
+          if (mn > 0) {miss[mn++] = '\n'; if (&qcom_usb_debug_write) qcom_usb_debug_write(miss, (size_t)mn);}
+        }
+        /* The boot-ui-trace worker, on the console. The stack capture needs boot-ui-trace=1 and runs on
+           the worker's 44th..48th call, about 90 s; on 2026-11-06 the console showed six "STK none" rows
+           and there was no way to tell whether the worker never got that far or a capture started and
+           never returned. a= entered, p= captures started, s= processes seen, b= one still in flight. */
+        if (&boot_process_attempts) {
+          char row[96];
+          const int rn = snprintf(row, sizeof row, "PROC t=%us a=%u p=%u s=%u b=%u\n", elapsed,
+                                  __atomic_load_n(&boot_process_attempts, __ATOMIC_RELAXED),
+                                  &boot_process_passes ? __atomic_load_n(&boot_process_passes, __ATOMIC_RELAXED) : 0u,
+                                  &boot_process_seen ? __atomic_load_n(&boot_process_seen, __ATOMIC_RELAXED) : 0u,
+                                  &boot_process_busy ? __atomic_load_n(&boot_process_busy, __ATOMIC_RELAXED) : 0u);
+          if (rn > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(row, (size_t)rn);
+        }
+      }
+      // The refresh tick and the direct-scanout window, on the console. The six vsync counters
+      // existed but nothing printed them (they were "kept for a future reader"), and the DPU
+      // window's state only reached the UFS slot -- which is exactly the half a boot that stops
+      // before the desktop never writes. Together they answer the one question left on a boot
+      // that draws nothing: was the render server's refresh tick armed and firing, and was the
+      // window that lets the display read the compositor's surface installed.
+      //   arm/tick/idle/late/start/pub are native_legacy_vsync_observed's six events.
+      //   ds is NativeLegacyDisplay's direct-stage: 1 no window, 2 not primary, 3 armed and
+      //   waiting for NativeUfs, 5 armed but the MDP map failed, 0 taken.
+      if (&native_legacy_vsync_counts) {
+        uint64_t v[6] = {0, 0, 0, 0, 0, 0};
+        unsigned vhz = 0;
+        native_legacy_vsync_counts(v, &vhz);
+        char r[208];
+        const int rn = snprintf(r, sizeof r,
+                                "VSYNC arm=%llu tick=%llu idle=%llu late=%llu start=%llu pub=%llu hz=%u dpu=%08x ds=%u\n",
+                                (unsigned long long)v[0], (unsigned long long)v[1],
+                                (unsigned long long)v[2], (unsigned long long)v[3],
+                                (unsigned long long)v[4], (unsigned long long)v[5], vhz,
+                                &native_ufs_dpu_state ? native_ufs_dpu_state : 0u,
+                                &native_legacy_direct_stage ? native_legacy_direct_stage : 0u);
+        if (rn > 0 && &qcom_usb_debug_write)
+          qcom_usb_debug_write(r, (size_t)rn < sizeof r ? (size_t)rn : sizeof r - 1);
+      }
+      // What the panel's buffer holds right now, sampled here rather than in the monitor loop that stops early.
+      // nonblack/1000 and luma are the same measure the GPUFB row uses, so a black screen and a drawn desktop differ
+      // by orders of magnitude instead of by opinion. off/comp/fail/aban are the GPU hand-off counters: an offer that
+      // never completes is a frame the render server sent and the display never showed.
+      if (&boot_progress_panel_sample) {
+        unsigned p[6] = {0, 0, 0, 0, 0, 0};
+        boot_progress_panel_sample(p);
+        {extern void surfaceLateObserved(void); surfaceLateObserved();}
+        // The two mappings both claim to be the firmware's frame buffer and both were checked against PE_Video's
+        // v_baseAddr: the presenter's (what the GPU copy writes into) and the display driver's (what this row
+        // samples). If they differ, the copy is landing in memory the panel never scans out.
+        extern volatile uint64_t native_gop_physical;
+        extern volatile uint64_t native_legacy_gop_physical;
+        extern volatile uint32_t native_legacy_fence_probe[4];
+        extern volatile uint64_t native_adreno_readonly_imports;
+        extern volatile uint64_t native_adreno_readonly_address;
+        extern volatile uint64_t native_adreno_readonly_bytes;
+        // The read-only import's first physical page: compared with gop= above, this says whether the
+        // range that could not be wired for writing is the framebuffer itself or something else.
+        extern volatile uint64_t native_adreno_readonly_phys;
+        // The three most recent frame-sized imports' first physical pages, newest first. The framebuffer
+        // is one of them; if none of these is 9c000000, the GPU's copy never had the panel's pages.
+        extern volatile uint64_t native_adreno_large_imports[11];
+        // The process whose range had to be imported read-only: a render server's own surfaces and a
+        // sampler's read-only texture look identical in the counters, and only one of them is a fault.
+        extern char native_adreno_readonly_proc[17];
+        // FSR/FAR/FSYNR0 of the SMMU context the GPU runs on. stall_on_fault=0 and no fault interrupt mean a
+        // refused store is dropped silently, so this is the only place the refusal shows.
+        extern bool native_adreno_fault_read(uint32_t *);
+        // The page-table class the last imported range was programmed with: permissions, cache index, shareability.
+        extern volatile uint32_t native_adreno_map_attrs[4];
+        uint32_t fault[4] = {0, 0, 0, 0};
+        if (&native_adreno_fault_read) native_adreno_fault_read(fault);
+        extern volatile uint32_t native_adreno_import_plain_writable;
+        extern volatile uint64_t native_adreno_readonly_large[3];
+        extern volatile uint64_t native_adreno_import_diag[10];
+        char q[640];
+        const int qn = snprintf(q, sizeof q,
+                                "PANEL nonblack=%u/1000 luma=%u rgb=%u/%u/%u sum=%08x gpu off=%llu comp=%llu fail=%llu aban=%llu gop=%llx/%llx fen=%u/%u/%u/%u ro=%llu roa=%llx/%llu pw=%u imp=%llu/%llu rlg=%llu/%llx/%llu rop=%llx lip=%llx,%llx,%llx lsp=%llu/%llx ropn=%s fs=%x/%x/%x/%x ma=%u/%u/%u cp=%u/%x tlb=%u/%u/%x\n",
+                                p[0], p[1], p[2], p[3], p[4], p[5],
+                                &native_gop_gpu_offers ? (unsigned long long)native_gop_gpu_offers : 0ULL,
+                                &native_gop_gpu_completions ? (unsigned long long)native_gop_gpu_completions : 0ULL,
+                                &native_gop_gpu_failures ? (unsigned long long)native_gop_gpu_failures : 0ULL,
+                                &native_gop_gpu_abandoned ? (unsigned long long)native_gop_gpu_abandoned : 0ULL,
+                                (unsigned long long)native_gop_physical, (unsigned long long)native_legacy_gop_physical,
+                                native_legacy_fence_probe[0], native_legacy_fence_probe[1], native_legacy_fence_probe[2],
+                                native_legacy_fence_probe[3],
+                                (unsigned long long)native_adreno_readonly_imports,
+                                (unsigned long long)native_adreno_readonly_address,
+                                (unsigned long long)native_adreno_readonly_bytes,
+                                (unsigned)native_adreno_import_plain_writable,
+                                (unsigned long long)native_adreno_import_diag[0],
+                                (unsigned long long)native_adreno_import_diag[1],
+                                (unsigned long long)native_adreno_readonly_large[0],
+                                (unsigned long long)native_adreno_readonly_large[1],
+                                (unsigned long long)native_adreno_readonly_large[2],
+                                (unsigned long long)native_adreno_readonly_phys,
+                                (unsigned long long)native_adreno_large_imports[1],
+                                (unsigned long long)native_adreno_large_imports[3],
+                                (unsigned long long)native_adreno_large_imports[5],
+                                (unsigned long long)native_adreno_large_imports[7],
+                                (unsigned long long)native_adreno_large_imports[9],
+                                native_adreno_readonly_proc[0] ? native_adreno_readonly_proc : "-",
+                                fault[0], fault[1], fault[2], fault[3],
+                                native_adreno_map_attrs[0], native_adreno_map_attrs[1], native_adreno_map_attrs[2],
+                                &native_adreno_cp_aperture ? native_adreno_cp_aperture[3] : 0u,
+                                &native_adreno_cp_aperture ? native_adreno_cp_aperture[2] : 0u,
+                                &native_adreno_ttbr0_tlb ? native_adreno_ttbr0_tlb[0] : 0u,
+                                &native_adreno_ttbr0_tlb ? native_adreno_ttbr0_tlb[1] : 0u,
+                                &native_adreno_ttbr0_tlb ? native_adreno_ttbr0_tlb[2] : 0u);
+        if (qn > 0 && &qcom_usb_debug_write)
+          qcom_usb_debug_write(q, (size_t)qn < sizeof q ? (size_t)qn : sizeof q - 1);
+      }
+      // What the last verdict was made on: layer masks, surface count, the request geometry and the
+      // display it was compared with. One line, only when a swap has been seen.
+      if (&native_legacy_swap_req && native_legacy_swap_req[4]) {
+        char q[200];
+        const int m = snprintf(q, sizeof q,
+                 "SWAPREQ n=%u u=%08x d=%08x bg=%08x ns=%u dims=%ux%u rect=%u,%u,%u,%u disp=%ux%u\n",
+                 native_legacy_swap_req[4], native_legacy_swap_req[0], native_legacy_swap_req[1],
+                 native_legacy_swap_req[2], native_legacy_swap_req[3], native_legacy_swap_req[9],
+                 native_legacy_swap_req[10], native_legacy_swap_req[5], native_legacy_swap_req[6],
+                 native_legacy_swap_req[7], native_legacy_swap_req[8], native_legacy_swap_req[11] >> 16,
+                 native_legacy_swap_req[11] & 0xffff);
+        if (m > 0) qcom_usb_debug_write(q, (size_t)m < sizeof q ? (size_t)m : sizeof q - 1);
+      }
+      // The GPU's client side, on the console. [gpu clients] and [gpu client text] live in the UFS
+      // slot, which is exactly what is unreachable on the boots that stop before the desktop: the
+      // question there is whether any process opened the accelerator, what the last mount refusal
+      // was, and what the first process that reached the bridge said. Answering it needs a reader.
+      {
+        unsigned named = 0;
+        const char *who = "-", *txt = "-";
+        if (&native_adreno_client_text)
+          for (unsigned i = 0; i < 8; ++i)
+            if (native_adreno_client_text[i].name[0]) {
+              if (!named) {
+                who = native_adreno_client_text[i].name;
+                txt = native_adreno_client_text[i].text[0] ? native_adreno_client_text[i].text : "-";
+              }
+              ++named;
+            }
+        unsigned askers = 0;
+        // ...and which processes they are. A count alone cannot say whether the difference
+        // between a boot that composites and one that does not is "fewer processes reached Metal"
+        // or "the same processes reached it in a different order", and the names are the row the
+        // UFS slot holds but a boot that stops early never writes.
+        char names[176];
+        size_t nn = 0;
+        names[0] = 0;
+        if (&native_adreno_metal_askers)
+          for (unsigned i = 0; i < 12; ++i)
+            if (native_adreno_metal_askers[i].name[0]) {
+              ++askers;
+              if (nn + 22 < sizeof names)
+                nn += (size_t)snprintf(names + nn, sizeof names - nn, "%s%.19s",
+                                       nn ? "," : "", native_adreno_metal_askers[i].name);
+            }
+        // The plugin's own progress markers (0x68xx: entered, Turnip found, device made, no Turnip, no
+        // device). Nonzero means the bundle loaded and createDevice ran; zero with askers > 0 means the
+        // system found the plugin and never got an entry point out of it.
+        // The whole marker ring, not the last two slots: the ring's tail is empty until it wraps,
+        // so "last two" printed 0/0 on every boot that stopped early — exactly the case worth
+        // reading. Ring order is slot order; marks_total says which slot is newest.
+        char ring[96];
+        size_t rn = 0;
+        ring[0] = 0;
+        if (&native_adreno_metal_marks)
+          for (unsigned i = 1; i < 17 && rn + 8 < sizeof ring; ++i)
+            rn += (size_t)snprintf(ring + rn, sizeof ring - rn, " %x", native_adreno_metal_marks[i]);
+        // The other processes' lines. One text row per process was printed and the rest were unreachable:
+        // a boot has more than one Metal client and the one that matters (the compositor) is not always the
+        // first to arrive, so the row carries up to three.
+        char rest[260];
+        size_t xn = 0;
+        rest[0] = 0;
+        if (&native_adreno_client_text)
+          for (unsigned i = 0; i < 8 && xn + 78 < sizeof rest; ++i)
+            if (native_adreno_client_text[i].name[0] && strcmp(native_adreno_client_text[i].name, who) != 0)
+              xn += (size_t)snprintf(rest + xn, sizeof rest - xn, " %s:%.52s |", native_adreno_client_text[i].name,
+                                     native_adreno_client_text[i].text[0] ? native_adreno_client_text[i].text : "-");
+        char g[960];
+        int gn = snprintf(g, sizeof g, "GPUCLI clients=%u mountfail=%u/%x/%u d=%u%u%u/%u/%u/%u ps=%u/%u,%u/%u rc=%u/%x/%u/%u askers=%u[%s] disp=%u/%d/%x marks=%u%s txt=%s:%.60s%s\n",
+                          named,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[0] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[1] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[3] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[4] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[5] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[6] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[7] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[8] : 0u,
+                          &native_adreno_mount_fail ? native_adreno_mount_fail[9] : 0u,
+                          &native_adreno_submit_poison ? native_adreno_submit_poison[0] : 0u,
+                          &native_adreno_submit_poison ? native_adreno_submit_poison[1] : 0u,
+                          &native_adreno_submit_poison ? native_adreno_submit_poison[2] : 0u,
+                          &native_adreno_submit_poison ? native_adreno_submit_poison[3] : 0u,
+                          &native_adreno_recover_trace ? native_adreno_recover_trace[0] : 0u,
+                          &native_adreno_recover_trace ? native_adreno_recover_trace[1] : 0u,
+                          &native_adreno_recovery ? native_adreno_recovery[0] : 0u,
+                          &native_adreno_recovery ? native_adreno_recovery[2] : 0u,
+                          askers, names,
+                          native_legacy_client_calls,
+                          native_legacy_client_pid,
+                          (unsigned)native_legacy_client_status,
+                          &native_adreno_metal_marks ? native_adreno_metal_marks[0] : 0u,
+                          ring,
+                          who, txt, rest);
+        if (gn > 0 && &qcom_usb_debug_write)
+          qcom_usb_debug_write(g, (size_t)gn < sizeof g ? (size_t)gn : sizeof g - 1);
+        if (&native_adreno_metal_starter && native_adreno_metal_starter[0][0] && &qcom_usb_debug_write) {
+          char p[120];
+          const int pn = snprintf(p, sizeof p, "GPUPLUG started %.16s | %.16s | %.16s\n",
+                                  native_adreno_metal_starter[0], native_adreno_metal_starter[1],
+                                  native_adreno_metal_starter[2]);
+          if (pn > 0) qcom_usb_debug_write(p, (size_t)pn < sizeof p ? (size_t)pn : sizeof p - 1);
+        }
+      }
+      // The first GPU hang of the boot, once: what the CP was executing and where its pointers were. A steady state of one hang
+      // per submission says less than the hang that started it.
+      static int hang1_printed = 0;
+      if (!hang1_printed && &native_adreno_hang_first && native_adreno_hang_first[0] && &qcom_usb_debug_write) {
+        char h1[240];
+        const int hn = snprintf(h1, sizeof h1,
+            "HANG1 n=%u fence=%u ring=%u pid=%d wc=%u xvm=%u rp=%x wp=%x cps=%x rbbm=%x ib1=%x rem=%x act=%u w0=%08x d=%u st=%x\n",
+            native_adreno_hang_first[0], native_adreno_hang_first[1], native_adreno_hang_first[2],
+            (int)native_adreno_hang_first[3], native_adreno_hang_first[4], native_adreno_hang_first[5],
+            native_adreno_hang_first[6], native_adreno_hang_first[7], native_adreno_hang_first[8],
+            native_adreno_hang_first[9], native_adreno_hang_first[10], native_adreno_hang_first[11],
+            native_adreno_hang_first[12], native_adreno_hang_first[13], native_adreno_hang_first[14],
+            native_adreno_hang_first[15]);
+        if (hn > 0) qcom_usb_debug_write(h1, (size_t)hn < sizeof h1 ? (size_t)hn : sizeof h1 - 1);
+        hang1_printed = 1;
+      }
+      // The words the command processor stopped on, once: three rows of eight, read at the read pointer it never left.
+      static int stall_printed = 0;
+      if (!stall_printed && &native_adreno_ring_stall && native_adreno_ring_stall[24] && &qcom_usb_debug_write) {
+        for (unsigned b = 0; b < 3; ++b) {
+          char rs[200];
+          const int rn = snprintf(rs, sizeof rs, "RINGSTALL at=%x wp=%x %u %08x %08x %08x %08x %08x %08x %08x %08x\n",
+              native_adreno_ring_stall[24], native_adreno_ring_stall[25], b,
+              native_adreno_ring_stall[b * 8 + 0], native_adreno_ring_stall[b * 8 + 1],
+              native_adreno_ring_stall[b * 8 + 2], native_adreno_ring_stall[b * 8 + 3],
+              native_adreno_ring_stall[b * 8 + 4], native_adreno_ring_stall[b * 8 + 5],
+              native_adreno_ring_stall[b * 8 + 6], native_adreno_ring_stall[b * 8 + 7]);
+          if (rn > 0) qcom_usb_debug_write(rs, (size_t)rn < sizeof rs ? (size_t)rn : sizeof rs - 1);
+        }
+        stall_printed = 1;
+      }
+      // One row for the GPU's own health, every tenth second: what hung, whether the restart took, what was replayed,
+      // how many address spaces are resident, and whether an SMMU fault was left latched before a restart.
+      if (elapsed % 10 == 0 && &qcom_usb_debug_write) {
+        char h[220];
+        const int hn = snprintf(h, sizeof h,
+                                "GPUHANG h=%u r=%u f=%u fence=%u st=%x rp=%u g=%u kv=%u vm=%u/%u/%u tst=%x/%x flt=%u/%x rb=%x/%x sc=%u/%u\n",
+                                &native_adreno_recovery ? native_adreno_recovery[0] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[1] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[2] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[3] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[4] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[5] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[6] : 0u,
+                                &native_adreno_recovery ? native_adreno_recovery[7] : 0u,
+                                &native_adreno_table_switches ? native_adreno_table_switches[4] : 0u,
+                                &native_adreno_table_switches ? native_adreno_table_switches[5] : 0u,
+                                &native_adreno_table_switches ? native_adreno_table_switches[2] : 0u,
+                                &native_adreno_table_switches ? native_adreno_table_switches[7] : 0u,
+                                &native_adreno_table_switches ? native_adreno_table_switches[6] : 0u,
+                                &native_adreno_recovery_fault ? native_adreno_recovery_fault[0] : 0u,
+                                &native_adreno_recovery_fault ? native_adreno_recovery_fault[1] : 0u,
+                                &native_adreno_ring_pos ? native_adreno_ring_pos[0] : 0u,
+                                &native_adreno_ring_pos ? native_adreno_ring_pos[1] : 0u,
+                                &native_adreno_ring_pos ? native_adreno_ring_pos[2] : 0u,
+                                &native_adreno_ring_pos ? native_adreno_ring_pos[3] : 0u);
+        if (hn > 0) qcom_usb_debug_write(h, (size_t)hn < sizeof h ? (size_t)hn : sizeof h - 1);
+      }
+      // The probe's LIVE counters (row 25) and its HANG record (row 26), on the console. They carry the readings no
+      // other row has: the read pointer the CP actually wrote into the memptrs shadow (not the CP_RB_RPTR register,
+      // which this A650 does not keep authoritative), the SQE microcode's program counter, the three ROQ occupancies,
+      // the ring's base and control words and the AHB/AON registers. Until now these rows went only to the persistent
+      // UFS log, which on this board stops after about four seconds, so every GPU stall since 2026-11-03 was invisible.
+      if (elapsed % 10 == 0 && &native_gpu_rows && &qcom_usb_debug_write) {
+        char gr[300];
+        for (unsigned r = 25; r <= 26; ++r) {
+          if (!native_gpu_rows[r][0]) continue;
+          const int gn = snprintf(gr, sizeof gr, "GPUROW%d %s\n", r, native_gpu_rows[r]);
+          if (gn > 0) qcom_usb_debug_write(gr, (size_t)gn < sizeof gr ? (size_t)gn : sizeof gr - 1);
+        }
+      }
+      // The Metal bridge's own telemetry table, on the console. It lives in the UFS slot ([metal table]),
+      // and the slot is what a boot that stops early never writes — but this table is filled by the render
+      // server's scanout loop, which is running on exactly those boots. Print the rows that have text,
+      // every tenth second, so the pipeline, pass, draw and dispatch counts and the refusal texts are
+      // readable without a reader.
+      if (&native_adreno_metal_rows && elapsed % 10 == 0 && &qcom_usb_debug_write) {
+        unsigned printed = 0;
+        for (unsigned r = 0; r < 48 && printed < 6; ++r)
+          if (native_adreno_metal_rows[r][0]) {
+            char s[112];
+            const int sn = snprintf(s, sizeof s, "MT%d %.94s\n", r, (const char *)native_adreno_metal_rows[r]);
+            if (sn > 0) qcom_usb_debug_write(s, (size_t)sn < sizeof s ? (size_t)sn : sizeof s - 1);
+            ++printed;
+          }
+      }
+      // Owned qualification reserves rows 18..47; emit raw bytes as well as its verdict.
+      if (&native_adreno_metal_rows && elapsed % 10 == 0 && &qcom_usb_debug_write) {
+        for (unsigned r = 18; r < 48; ++r) if (native_adreno_metal_rows[r][0] &&
+            (r >= 46 || !strncmp((const char *)native_adreno_metal_rows[r], "PP ", 3) ||
+             !strncmp((const char *)native_adreno_metal_rows[r], "BC ", 3))) {
+          char line[112];
+          const int n = snprintf(line, sizeof line, "PIX%u %.94s\n", r, native_adreno_metal_rows[r]);
+          if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+        }
+      }
+      if (&native_gpu_rows && elapsed % 10 == 0 && &qcom_usb_debug_write) {
+        unsigned pixelCheck = 0;
+        PE_parse_boot_argn("alioth-pixel-check", &pixelCheck, sizeof pixelCheck);
+        if (pixelCheck) for (unsigned r = 29; r <= 31; ++r) if (native_gpu_rows[r][0]) {
+          char line[288];
+          const int n = snprintf(line, sizeof line, "PREG%u %.255s\n", r, native_gpu_rows[r]);
+          if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+        }
+      }
+      if (&native_adreno_boundary_log && native_adreno_boundary_log && &qcom_usb_debug_write) {
+        static uint32_t boundaryPrinted;
+        const uint32_t total=__atomic_load_n(&native_adreno_boundary_count,__ATOMIC_ACQUIRE);
+        if (elapsed % 10 == 0) {
+          char line[80];const int n=snprintf(line,sizeof line,"BNS rows=%u lost=%u\n",total,native_adreno_boundary_lost);
+          if(n>0)qcom_usb_debug_write(line,(size_t)n<sizeof line?(size_t)n:sizeof line-1);
+        }
+        for (;boundaryPrinted<total && boundaryPrinted<128;++boundaryPrinted) {
+          const volatile uint64_t *r=native_adreno_boundary_log+boundaryPrinted*64;
+          char line[256];
+          int n=snprintf(line,sizeof line,"BND%u s=%llu a=%llu pid=%llu f=%llu h=%llx io=%llx bytes=%llu pa=%llx v=%llx ps=%llx\n",
+            boundaryPrinted,r[1],r[0],r[2],r[3],r[4],r[5],r[6],r[7],r[8],r[9]);
+          if(n>0)qcom_usb_debug_write(line,(size_t)n<sizeof line?(size_t)n:sizeof line-1);
+          n=snprintf(line,sizeof line,"BNT%u vm=%llx table_at_note=%llx cpu=%llx cw=%llu dm=%llx lost=%u\n",
+            boundaryPrinted,r[12],r[13],r[14],r[11],r[10],native_adreno_boundary_lost);
+          if(n>0)qcom_usb_debug_write(line,(size_t)n<sizeof line?(size_t)n:sizeof line-1);
+          for(unsigned first=0;first<16;first+=8)for(unsigned view=0;view<2;++view) {
+            n=snprintf(line,sizeof line,"BN%c%u w%u",view?'P':'C',boundaryPrinted,first);
+            for(unsigned k=0;k<8;++k)n+=snprintf(line+n,sizeof line-(size_t)n," %08x",(uint32_t)r[(view?32:16)+first+k]);
+            if(n>0 && (size_t)n+1<sizeof line){line[n++]='\n';qcom_usb_debug_write(line,(size_t)n);}
+          }
+        }
+      }
+      // Where the four traced processes sit, on the console: [stacks] lives in the slot, and the slot
+      // is what freezes on the boots that stop before the desktop. Two rows per role is the main
+      // thread's own frames.
+      // A round with no STK row at all reads two ways: the tracer never started, or it started and
+      // found nothing. Say which, instead of leaving the absence silent.
+      if (elapsed % 30 == 0 && &qcom_usb_debug_write && !&boot_ui_trace_role_rows) {
+        const char *nohook = "STK nohook\n";
+        qcom_usb_debug_write(nohook, 11);
+      }
+      if (elapsed % 30 == 0 && &boot_ui_trace_role_rows && &qcom_usb_debug_write) {
+        static char srows[64][120];
+        unsigned total = 0;
+        for (unsigned role = 0; role < 4; ++role) {
+          // Detail 0 is the only mode that prints the process's own name; detail 2 prints the
+          // registers, the peer and one row per thread group. Two calls, three rows: without the
+          // name the pids read like the xpcproxy that last held them.
+          unsigned printed = 0;
+          const unsigned named = boot_ui_trace_role_rows(role, srows, 64, 0);
+          if (named) {
+            char s[140];
+            const int sn = snprintf(s, sizeof s, "STK %.120s\n", srows[0]);
+            if (sn > 0) qcom_usb_debug_write(s, (size_t)sn < sizeof s ? (size_t)sn : sizeof s - 1);
+            printed = 1;
+          }
+          const unsigned n = boot_ui_trace_role_rows(role, srows, 64, 2);
+          for (unsigned i = 0; i < n && printed < 4; ++i) {
+            // "STKx NN ..." is a frame row: 8 addresses, no name and no peer.
+            if (srows[i][4] == ' ' && srows[i][5] >= '0' && srows[i][5] <= '9') continue;
+            char s[140];
+            const int sn = snprintf(s, sizeof s, "STK %.120s\n", srows[i]);
+            if (sn > 0) qcom_usb_debug_write(s, (size_t)sn < sizeof s ? (size_t)sn : sizeof s - 1);
+            ++printed;
+          }
+          total += printed;
+        }
+        if (!total) {
+          const char *none = "STK none\n";
+          qcom_usb_debug_write(none, 9);
+        }
+      }
+    }
+    if (!tick_autoreset || elapsed < tick_autoreset + ResetSyncGrace) continue;
+    boot_log_fire_reset(elapsed);
+  }
+}
+
+/* Core health from a thread of its own. Every other row on this console comes from the supervisor,
+ * so a boot whose supervisor is the victim of a wedged core prints nothing at all -- and that is
+ * exactly the shape of the 2026-11-06 rounds w11114382 and g21019511, where SUPRUN stops at one
+ * second and the rest of the capture is userspace exits. This thread does nothing but sleep and
+ * read ArmCpu's counters, so it can outlive the supervisor and still name the core.
+ *
+ * The mask names cores whose architectural-timer count has not moved for two consecutive samples.
+ * A merely idle core also stops arming its timer, so the mask alone is not proof: the series is.
+ * A core that counted thousands of timer interrupts in the first seconds and then stops for the
+ * rest of the boot is wedged; one that was never busy was only idle. Print the row, not a verdict. */
+static void core_health_thread(void *arg, wait_result_t result)
+{
+  (void)arg; (void)result;
+  if (!&armcpu_core_timer) return;
+  thread_set_thread_name(current_thread(), "corehealth");
+  uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
+  const uint64_t start = log_ticks();
+  static uint32_t last[8];
+  static uint8_t unmoved[8];
+  unsigned runs = 0;
+  for (;;) {
+    IOSleep(10000);
+    ++runs;
+    if (!&qcom_usb_debug_write) continue;
+    const unsigned elapsed = (unsigned)((log_ticks() - start) / f);
+    unsigned cores = (&armcpu_smp_running ? (unsigned)__atomic_load_n(&armcpu_smp_running, __ATOMIC_RELAXED) : 0u) + 1u;
+    if (cores > 8) cores = 8;
+    char row[384];
+    int n = snprintf(row, sizeof row, "CORES t=%us runs=%u |", elapsed, runs);
+    for (unsigned c = 0; c < cores && n > 0 && (unsigned)n < sizeof row - 32; ++c)
+      n += snprintf(row + n, sizeof row - (unsigned)n, " c%u=%u/%u",
+                    c, __atomic_load_n(&armcpu_core_timer[c], __ATOMIC_RELAXED),
+                    __atomic_load_n(&armcpu_core_sgi[c], __ATOMIC_RELAXED));
+    unsigned deaf = 0, badStep = 0, failed = 0;
+    for (unsigned c = 0; c < cores; ++c) {
+      const uint32_t now = __atomic_load_n(&armcpu_core_timer[c], __ATOMIC_RELAXED);
+      if (now == last[c]) {if (unmoved[c] < 255) ++unmoved[c];}
+      else {unmoved[c] = 0; last[c] = now;}
+      if (unmoved[c] >= 2) deaf |= 1u << c;
+      /* Declaring a core takes one more still sample than showing it: a core that merely lost one
+       * timer tick to a long mask-off section recovers on the next sample, and boot would stop
+       * poking it for good. Three still samples in a row is a core that stopped taking interrupts. */
+      if (unmoved[c] >= 3 && &armcpu_core_note_deaf) armcpu_core_note_deaf(c);
+    }
+    if (&armcpu_smp_step)
+      for (unsigned c = 0; c < 8; ++c) {
+        const uint32_t st = __atomic_load_n(&armcpu_smp_step[c], __ATOMIC_RELAXED);
+        if (st && st != 7) badStep |= 1u << c;
+      }
+    if (&armcpu_smp_fail)
+      for (unsigned c = 0; c < 8; ++c)
+        if (__atomic_load_n(&armcpu_smp_fail[c], __ATOMIC_RELAXED)) failed |= 1u << c;
+    if (n > 0 && (unsigned)n < sizeof row - 96)
+      n += snprintf(row + n, sizeof row - (unsigned)n, " run=%u deaf=%02x st=%02x fl=%02x wd=%u/%02x skip=%llu",
+                    &armcpu_smp_running ? (unsigned)__atomic_load_n(&armcpu_smp_running, __ATOMIC_RELAXED) : 0u,
+                    deaf, badStep, failed,
+                    &armcpu_core_deaf_events ? (unsigned)__atomic_load_n(&armcpu_core_deaf_events, __ATOMIC_RELAXED) : 0u,
+                    &armcpu_core_deaf_mask ? (unsigned)__atomic_load_n(&armcpu_core_deaf_mask, __ATOMIC_RELAXED) : 0u,
+                    &armcpu_ipi_skipped_deaf ? (unsigned long long)__atomic_load_n(&armcpu_ipi_skipped_deaf, __ATOMIC_RELAXED) : 0ull);
+    if (n > 0) {row[n++] = '\n'; qcom_usb_debug_write(row, (size_t)n < sizeof row ? (size_t)n : sizeof row - 1);}
+    /* One line for the suspect cores only, so the CORES row stays readable: the frame's own affinity, then
+     * pending, enabled, active and WAKER. A core that is pending but never takes the interrupt is masked or
+     * halted; one whose enables are clear had its GIC turned off; one with nothing pending is not targeted. */
+    if (deaf != 0 && &armcpu_core_gicr_probe) {
+      char gr[512];
+      /* The two step counters belong to the threads that most often go deaf, so they sit in the
+       * header (they are global, not per core) where this row can still print them from a healthy
+       * core. ms is the page monitor's step when it last moved, ts the log tick's: a monitor that
+       * ran seven times and then stopped leaves ms at the call it never returned from, which is
+       * the only reading that separates "it is spinning inside X" from "it is parked". */
+      int m = snprintf(gr, sizeof gr, "GICR t=%us deaf=%02x ms=%u ts=%u mon=%llu", elapsed, deaf,
+                       &boot_progress_monitor_step ? (unsigned)__atomic_load_n(&boot_progress_monitor_step, __ATOMIC_RELAXED) : 0u,
+                       (unsigned)boot_log_tick_step,
+                       &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL);
+      for (unsigned c = 0; c < cores && m > 0 && (unsigned)m < sizeof gr - 96; ++c) {
+        if (!((deaf >> c) & 1u)) continue;
+        uint32_t p[5] = {0, 0, 0, 0, 0};
+        const int ok = armcpu_core_gicr_probe(c, p);
+        /* How long it has been inside the handler it last entered, in seconds. A phase that never
+         * changes and an age that keeps climbing is a core stuck in that one handler. */
+        unsigned ph = 0, age = 0;
+        if (&armcpu_core_phase && &armcpu_core_irq_enter) {
+          uint64_t now; __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(now));
+          const uint32_t entered = __atomic_load_n(&armcpu_core_irq_enter[c], __ATOMIC_RELAXED);
+          ph = __atomic_load_n(&armcpu_core_phase[c], __ATOMIC_RELAXED);
+          const uint64_t hz = f / 1024u;
+          if (hz && entered && (uint32_t)(now >> 10) > entered) age = (unsigned)(((uint32_t)(now >> 10) - entered) / hz);
+        }
+        /* What that core was running when it stopped taking interrupts. The idle thread answers "it
+         * went to sleep and never came back"; a real thread answers "it is stuck in kernel code", and
+         * its id names the process. Read without a lock: this is a diagnostic snapshot, not a use. */
+        unsigned long long ac = 0, acstate = 0, cont = 0;
+        char nm[24] = "-";
+        unsigned pri = 0;
+        cpu_data_t *cd = cpu_datap((int)c);
+        thread_t at = cd ? cd->cpu_active_thread : NULL;
+        if (at) {
+          ac = (unsigned long long)at->thread_id; acstate = (unsigned long long)at->state;
+          /* XNU names its own kernel threads, and thread_get_thread_name reads that name without
+           * taking a lock: it is a memcpy off a field set at creation. "kernel-high" is the
+           * thread-call group that IOTimerEventSource callbacks run on, so this one field separates
+           * a wedged timer callback from every other kernel thread. */
+          if (&thread_get_thread_name) thread_get_thread_name(at, nm);
+          /* The kernel routine a continuation thread is parked on, and the process it belongs to.
+           * A thread whose state is TH_RUN with a continuation is inside kernel code, not asleep;
+           * the address resolves against the kernel image's own symbols, the name needs no resolver.
+           * proc_name is declared here because bsd/sys/proc.h drags in a second set of the exported
+           * bsd headers and -Werror rejects the macro redefinitions. bsd_info is deliberately not
+           * dereferenced: struct proc is not a kernel-internal layout this file may name. */
+          cont = (unsigned long long)(uintptr_t)at->continuation;
+          pri = (unsigned)at->sched_pri;
+          /* arm64 keeps the task behind thread_ro (there is no thread->t_task), and the read-only
+           * zone is exactly what makes this dereference safe while the thread is running. */
+          const int pid = at->t_tro ? task_pid(at->t_tro->tro_task) : 0;
+          if (pid > 0 && &proc_name) {
+            char pn[24] = "-";
+            proc_name(pid, pn, (int)sizeof pn);
+            /* The kernel thread's name wins only if it exists; otherwise the process owns the row. */
+            if (nm[0] == '-' || nm[0] == 0) snprintf(nm, sizeof nm, "%s", pn);
+          }
+        }
+        m += snprintf(gr + m, sizeof gr - (unsigned)m, " c%u=%s%x/%x/%x/%x/%x ph%u age%us ac=%llx/%llx nm=%s k=%llx pr=%u",
+                      c, ok == 0 ? "" : "?",
+                      (unsigned)p[0], (unsigned)p[1], (unsigned)p[2], (unsigned)p[3], (unsigned)p[4],
+                      ph, age, ac, acstate, nm, cont, pri);
+      }
+      if (m > 0 && (unsigned)m < sizeof gr) {gr[m++] = '\n'; qcom_usb_debug_write(gr, (size_t)m < sizeof gr ? (size_t)m : sizeof gr - 1);}
+    }
+  }
+}
+
 // Called by the board page's monitor once a second; starts the writer the first time when sheng-log=1.
 void boot_log_tick(unsigned now) {
+  uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
+  const uint64_t cur_ticks = log_ticks();
+  boot_log_tick_freq = f;
+  boot_log_tick_ctr = cur_ticks;
+  boot_log_tick_calls = boot_log_tick_calls + 1;
+  boot_log_tick_step = 1;
   if (!boot_log_started) {
     boot_log_started = 1;
-    tick_first = now; tick_seen_at = now;
+    tick_start_cntpct = cur_ticks;
+    tick_seen_at = 0;
     // An unattended run must come back however it ends: on the desktop past its deadline (int-229 first suspected) or in a panic seconds
     // after the start, before UFS and this log exist (int-229: a duplicate class at PE_lockdown_iokit). So the first tick, independent of
-    // sheng-log, marks the cell (any restart is fastboot) and arms the hypervisor's watchdog, which bites a minute after the pings stop:
+    // sheng-log, marks the cell (any restart is fastboot) and arms the hypervisor's watchdog, which bites half a minute after the pings stop:
     // after the autoreset deadline, or when a panic parks the cores.
+    /* The core-health thread is independent of every switch: it is the only reading left on a boot
+     * whose supervisor stalls, and it costs one sleeping thread that reads seven counters. */
+    if (&armcpu_core_timer) {
+      thread_t cth;
+      if (kernel_thread_start_priority(core_health_thread, 0, BASEPRI_KERNEL, &cth) == KERN_SUCCESS)
+        thread_deallocate(cth);
+    }
     uint32_t autoreset = 0;
     // The probe is called for its text, not for a verdict: what the cell held at boot is worth
     // recording, but it must not decide whether the cell may be rewritten. It used to be the gate
@@ -1712,7 +2761,21 @@ void boot_log_tick(unsigned now) {
       tick_autoreset = autoreset;
       if (&boot_reset_probe) (void)boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text);
       if (&boot_reset_mark_bootloader) boot_reset_mark_bootloader(boot_log_reset_mark, sizeof boot_log_reset_mark);
-      if (&boot_reset_watchdog) boot_reset_watchdog(autoreset + 60, boot_log_reset_watchdog, sizeof boot_log_reset_watchdog);
+      if (&boot_reset_watchdog)
+        boot_reset_watchdog(autoreset + 60, boot_log_reset_watchdog, sizeof boot_log_reset_watchdog);
+      thread_t rth;
+      const kern_return_t sr = kernel_thread_start_priority(autoreset_supervisor, 0, BASEPRI_KERNEL, &rth);
+      boot_log_super_start = (int)sr;
+      if (sr == KERN_SUCCESS)
+        thread_deallocate(rth);
+      // The arm's readback and the supervisor's start result on one line: without superstart a boot
+      // with no SUPER row cannot be told apart from a boot whose pet's register write hung, and
+      // both now cost the whole round to a 30 s bite.
+      if (&qcom_usb_debug_write && boot_log_reset_watchdog[0]) {
+        char w[300];
+        const int wn = snprintf(w, sizeof w, "WDT %s superstart=%d\n", boot_log_reset_watchdog, (int)sr);
+        if (wn > 0) qcom_usb_debug_write(w, (size_t)wn < sizeof w ? (size_t)wn : sizeof w - 1);
+      }
     }
     uint32_t mode = 0;
     if (PE_parse_boot_argn("sheng-log", &mode, sizeof mode) && mode == 1 &&
@@ -1725,66 +2788,50 @@ void boot_log_tick(unsigned now) {
       }
     }
   }
+  boot_log_tick_step = 2;
+  const unsigned elapsed = cur_ticks >= tick_start_cntpct ? (unsigned)((cur_ticks - tick_start_cntpct) / f) : 0;
+  boot_log_tick_elapsed = elapsed;
+  const unsigned cur_now = now ? now : elapsed;
   /* The display controller as the boot loader left it (DpuProbe.cpp). It runs from this tick rather than from the display's start
    * because the MDP block is unclocked at display start and reads return zero there; by the time the log has run for a few seconds
    * the panel is powered and the registers answer. */
-  if (&alioth_dpu_probe_tick) alioth_dpu_probe_tick(now);
+  boot_log_tick_step = 3;
+  if (&alioth_dpu_probe_tick) alioth_dpu_probe_tick(cur_now);
+  boot_log_tick_step = 4;
   /* The GPU frequency sample used to be called here, once a second. It is not any more: it reads
-   * GMU registers, and this tick cannot promise their clock is on. On 2026-11-06 that read stopped
-   * the core running this loop about seven seconds into every boot, and every thread asleep on that
-   * core was lost with it. The sample now needs its caller to declare the GPU powered
-   * (native_gpu_freq_powered), which no diagnostic path may do. */
+   * GMU registers, and this tick is not a context that can promise their clock is on. On 2026-11-06
+   * that read stopped the core running this loop about seven seconds into every boot (GICR ms=4
+   * ts=4 mon=7), and every thread asleep on that core was lost with it. The sample now requires its
+   * caller to declare the GPU powered (native_gpu_freq_powered), which no diagnostic path may do. */
+  boot_log_tick_step = 5;
   /* Phase heartbeat: once a second is too much, once on every change plus every tenth second
    * otherwise. A writer that stops leaves its last phase on the console and nothing else. */
   static unsigned last_phase = ~0U, last_at;
   {
     const unsigned phase = __atomic_load_n(&log_phase, __ATOMIC_RELAXED);
-    if (phase != last_phase || now - last_at >= 10) {
-      last_phase = phase; last_at = now;
+    if (phase != last_phase || elapsed - last_at >= 10) {
+      last_phase = phase; last_at = elapsed;
       char row[128];
       // Round and slots as well as the phase: a writer that stops leaves its phase behind, and a
       // writer that keeps running but cannot write leaves the round count still while the phase
       // cycles. Without both numbers those two read the same on the console.
-      const int n = snprintf(row, sizeof row, "BLPHASE t=%us phase=%u round=%u slots=%u err=%u state=%u\n", now, phase,
+      const int n = snprintf(row, sizeof row, "BLPHASE t=%us phase=%u round=%u slots=%u err=%u state=%u\n", elapsed, phase,
                              boot_log_rounds, __atomic_load_n(&boot_log_slots_hint, __ATOMIC_RELAXED), boot_log_errors, boot_log_state);
       if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(row, (size_t)n < sizeof row ? (size_t)n : sizeof row - 1);
     }
   }
+  boot_log_tick_step = 6;
   if (!tick_autoreset || tick_reset_tried) return;
   // A round that landed recently means the medium is keeping up; one that did not means the writer
   // stopped, and it will not start again (boot_log_started is never cleared, and the loop has
   // returned on every exit path). Either way the board still has to come back.
   const unsigned seq = __atomic_load_n(&log_sync_seq, __ATOMIC_RELAXED);
-  if (seq != tick_seen_seq) {tick_seen_seq = seq; tick_seen_at = now;}
-  const unsigned elapsed = now - tick_first;
+  if (seq != tick_seen_seq) {tick_seen_seq = seq; tick_seen_at = elapsed;}
   if (elapsed < tick_autoreset) return;
   // log-capture section 6: the timeout covers the measured checkpoint and the log sync. Restart at
   // the deadline when a round has landed within the grace, and at the deadline plus the grace when
   // none has, so an in-flight round gets its moment and a stopped writer costs only the grace. The
   // header still names the last complete round either way.
-  if (now - tick_seen_at > ResetSyncGrace && elapsed < tick_autoreset + ResetSyncGrace) return;
-  tick_reset_tried = 1;
-  // The deadline is reached, and that fact has to leave the kernel even when the reset then
-  // works or is refused silently: the console is the only channel that survives both, and the
-  // disk cannot report an attempt that never completed a round.
-  if (&qcom_usb_debug_write) {
-    char line[72];
-    const int n = snprintf(line, sizeof line, "AUTORESET deadline %us reached at %us\n", tick_autoreset, now);
-    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
-  }
-  if (!&boot_reset_bootloader) {
-    strlcpy(boot_log_reset_result, "autoreset skipped: no reset entry point", sizeof boot_log_reset_result);
-    return;
-  }
-  // The text is only readable if the reset is refused; on success the tablet restarts into fastboot.
-  const int rc = boot_reset_bootloader(boot_log_reset_result, sizeof boot_log_reset_result);
-  char tail[24]; snprintf(tail, sizeof tail, " (returned %d)", rc);
-  strlcat(boot_log_reset_result, tail, sizeof boot_log_reset_result);
-  // Reaching this line at all means the reset did not take the part down. Say why on the console,
-  // where it is readable while the board is still running.
-  if (&qcom_usb_debug_write) {
-    char line[160];
-    const int n = snprintf(line, sizeof line, "AUTORESET refused: %s\n", boot_log_reset_result);
-    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
-  }
+  if (elapsed - tick_seen_at > ResetSyncGrace && elapsed < tick_autoreset + ResetSyncGrace) return;
+  boot_log_fire_reset(elapsed);
 }

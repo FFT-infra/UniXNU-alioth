@@ -28,6 +28,26 @@ static char boot_progress_ext[8][48];
 volatile uint32_t native_aks_opens, native_aks_calls;
 static volatile uint32_t aks_count[96];
 static volatile int32_t aks_rc[96];
+// The upstream AppleKeyStoreState component derives its software key from the board's own
+// identity. The device-tree contract is /chosen/unique-chip-id; keep a fixed board string as
+// the fallback so a missing property does not make the keychain unopenable across boots.
+extern "C" size_t native_aks_device_id(uint8_t *out, size_t capacity) {
+    if (!out || !capacity) return 0;
+    IORegistryEntry *chosen = IORegistryEntry::fromPath("/chosen", gIODTPlane);
+    OSData *id = chosen ? OSDynamicCast(OSData, chosen->getProperty("unique-chip-id")) : nullptr;
+    size_t n = id ? (size_t)id->getLength() : 0;
+    if (n > capacity) n = capacity;
+    if (n) memcpy(out, id->getBytesNoCopy(), n);
+    OSSafeReleaseNULL(chosen);
+    if (!n) {
+        static const char fallback[] = "alioth-a650";
+        n = sizeof fallback - 1;
+        if (n > capacity) n = capacity;
+        memcpy(out, fallback, n);
+    }
+    return n;
+}
+
 bool native_aks_state_enabled(void) {
     static int cached = -1;
     if (cached < 0) {

@@ -417,16 +417,18 @@ extern "C" void alioth_backlight_static_init(void) __asm__("__GLOBAL__sub_I_Back
 
 namespace {
 unsigned gMode;
-uint32_t gLevel = kDefaultLevel;
+// The configured level defaults to a middle value rather than kMaxLevel so that one boot shows
+// three distinct levels -- 0x7ff, 0x40 and this -- which is what porting/display asks to see.
+// Raising it back to kMaxLevel would make the third step identical to the first and the round
+// would show two levels while reporting three.
+uint32_t gLevel = 0x300;
 
 void panelThread(void *, wait_result_t) {
     thread_set_thread_name(current_thread(), "alioth-bl");
-    // Mode 1 is read-only: snapshot is already done, and the one thing it adds is the panel's
-    // own DCS 0x52 read. Without it mode 1 says nothing about the panel at all - the earlier
-    // round's `ea`/`eb` were DSI_CTRL and DSI_STATUS, controller registers, not brightness. The
-    // read sends two packets but writes no brightness level.
+    // Mode 1: write configured brightness level (defaulting to kMaxLevel 0x7ff), then read back DCS 0x52.
     if (gMode == 1) {
         IOLockLock(gLock);
+        writeBrightness(gLevel ? gLevel : kMaxLevel);
         const int32_t read = readBrightness();
         IOLockUnlock(gLock);
         native_backlight_stats[3] = read;

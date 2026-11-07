@@ -13,10 +13,10 @@ commit = "18bcc385bc0c97ff38343a83040f19711392867b"
 commit = "5f3a37cec0c3fc4234b10726b25489a55f0d77ef"
 
 [source."ShengNovatekTouch"]
-commit = "a1a6f2b1912b3cde2dcbe96439e5833b9ab250f4"
+commit = "3b44b1b7603eaadae942ea44ddc51bdcc48ad060"
 
 [source."ShengUfs"]
-commit = "f7612e0a3a32caed8a20f4378cfc900e5bccad3b"
+commit = "d6bd207347cb9c870452ff7d2e6ae488b9b13feb"
 
 [source."corecrypto-2023"]
 commit = "11fba65b12d8830630e248dfa8344caf8b065f26"

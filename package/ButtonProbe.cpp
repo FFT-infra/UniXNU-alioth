@@ -55,6 +55,7 @@
 #include "ButtonsCore.h"
 
 extern "C" int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint32_t *, uint64_t *) __attribute__((weak_import));
+extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
 
 // BootLog.c already composes this row, in sheng's wording:
 //   [0] stage (1 mapped, 2 configured, 3 armed, negative: the step that failed)
@@ -64,7 +65,7 @@ extern "C" int armcpu_spi_attach(uint32_t, bool, void (*)(void *), void *, uint3
 //   [8] last error                    [9] spurious interrupts
 // Report 2 bits, matching NativeHidInput's buttonsAction (mask & 0xe): 1 power, 2 volume up,
 // 3 volume down.
-extern "C" {volatile int32_t native_buttons_stats[10];}
+extern "C" {volatile int32_t native_buttons_stats[16];}
 
 namespace {
 // The window bases, the PPIDs, the report bits and the channel arithmetic live in ButtonsCore.h,
@@ -236,6 +237,13 @@ uint32_t pressed() {
     // must not read as "pressed" for the GPIO (which is active low). bt_pressed_mask takes the
     // GPIO only when it was read, so pass the read result as have_gpio.
     if (ponRead) pon = 0;
+    // The bytes as read, before the mask decides anything, plus both read results. A press that
+    // leaves mask at 0 is then either a failed read (pr/gr non-zero) or a byte that really says
+    // released, and the two need different next steps.
+    native_buttons_stats[10] = (int32_t)pon;
+    native_buttons_stats[11] = (int32_t)gpio;
+    native_buttons_stats[12] = (int32_t)ponRead;
+    native_buttons_stats[13] = (int32_t)(gpioRead == 0 ? 0 : (gpioRead < 0 ? -1 : gpioRead));
     return bt_pressed_mask(pon, gpio, gpioRead == 0);
 }
 
@@ -313,7 +321,7 @@ bool setup() {
 void buttonsThread(void *, wait_result_t) {
     thread_set_thread_name(current_thread(), "alioth-bt");
     if (!setup()) return;
-    uint32_t seen = gEvents, last = 0;
+    uint32_t last = 0;
     for (;;) {
         const uint32_t mask = pressed();
         if (mask != last) {
@@ -321,16 +329,16 @@ void buttonsThread(void *, wait_result_t) {
             native_buttons_stats[3] = (int32_t)mask;
             void (*sink)(void *, uint32_t) = __atomic_load_n(&gSink, __ATOMIC_ACQUIRE);
             if (sink) {sink(gSinkContext, mask); native_buttons_stats[2] = native_buttons_stats[2] + 1;}
+            if (&qcom_usb_debug_write) {
+                char row[64];
+                int n = snprintf(row, sizeof row, "BUTTON mask=%u (pwr=%u vup=%u vdown=%u) rep=%d\n",
+                                 (unsigned)mask, (unsigned)((mask >> 1) & 1), (unsigned)((mask >> 2) & 1),
+                                 (unsigned)((mask >> 3) & 1), (int)native_buttons_stats[2]);
+                if (n > 0) qcom_usb_debug_write(row, (size_t)n < sizeof row ? (size_t)n : sizeof row - 1);
+            }
         }
-        // Wait for an interrupt, but not forever. btn2/btn4/btn6 all read irq=0, so no
-        // interrupt has ever arrived: with a plain assert_wait the thread blocks on the first
-        // pass and never reads the levels again, and rep=1 is that single sample rather than
-        // a button being reported. A timeout makes the same thread a poller when the interrupt
-        // path is dead, which is what the three identical rounds were actually showing.
-        assert_wait_timeout((event_t)&gEvents, THREAD_UNINT, kPollMs, 1000 * NSEC_PER_USEC);
-        if (gEvents != seen) clear_wait(current_thread(), THREAD_AWAKENED);
-        else thread_block(THREAD_CONTINUE_NULL);
-        seen = gEvents;
+        // Poll every kPollMs (50 ms). Reliable sleep keeps polling alive without waitq stalls.
+        IOSleep(kPollMs);
         // rep alone cannot tell "the thread is blocked" from "the thread polls but the level
         // never changes": both leave rep at 1. This counts every pass through the loop, so a
         // round can separate them - [7] climbing means the thread is alive, and rep staying

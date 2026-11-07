@@ -245,6 +245,8 @@ static void recordRejectedSwap(unsigned reason, const void *request, const void 
 	memcpy(native_legacy_rej_class, name, sizeof(name));
 }
 
+// File scope: a linkage specification cannot sit inside a function body in C++.
+extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
 void native_legacy_surface_rejected(uint64_t width, uint64_t height, uint32_t format, uint32_t planes,
     uint64_t stride, uint64_t allocation, uint64_t bytes) {
 	native_legacy_rej_surface[0] = width;
@@ -254,6 +256,20 @@ void native_legacy_surface_rejected(uint64_t width, uint64_t height, uint32_t fo
 	native_legacy_rej_surface[4] = stride;
 	native_legacy_rej_surface[5] = allocation;
 	native_legacy_rej_surface[6] = bytes;
+	// Say it once, on the console, at the moment it happens: the persistent log that also carries
+	// these was a one-round snapshot on every boot this ran, and the progress thread dies with it.
+	{
+		static unsigned said;
+		if (!said && &qcom_usb_debug_write) {
+			char line[200];
+			int n = snprintf(line, sizeof line,
+			    "GPUREJ surface %llux%llu fmt %x planes %llu stride %llu alloc %llu bytes %llu\n",
+			    (unsigned long long)width, (unsigned long long)height, format, (unsigned long long)planes,
+			    (unsigned long long)stride, (unsigned long long)allocation, (unsigned long long)bytes);
+			if (n > 0) qcom_usb_debug_write(line, (size_t)n);
+			said = 1;
+		}
+	}
 }
 
 // Content statistics of presented frames (copy = kind 0, blank fill = kind 1): the first 32 are
@@ -329,7 +345,233 @@ extern "C" void native_legacy_swap_stage(unsigned stage) {
 }
 
 volatile uint32_t native_legacy_swap_reason_counts[8];
+// The last request's layer masks, background word and surface count. A rejection is a verdict
+// about these three, so they belong beside the reason code, not only in the request memory.
+volatile uint32_t native_legacy_swap_req[12];
+extern "C" void native_legacy_swap_request_state(uint32_t updated, uint32_t disabled,
+                                                 uint32_t background, uint32_t surfaces) {
+	native_legacy_swap_req[0] = updated;
+	native_legacy_swap_req[1] = disabled;
+	native_legacy_swap_req[2] = background;
+	native_legacy_swap_req[3] = surfaces;
+	native_legacy_swap_req[4] = native_legacy_swap_req[4] + 1;
+}
+// The geometry the verdict compared: the request's own dimensions and first rectangle, and the
+// display it was compared with. A reason 3 says these disagree, and only the numbers say which.
+extern "C" void native_legacy_swap_request_geometry(uint32_t rw, uint32_t rh, const uint32_t *rect,
+                                                    uint32_t dw, uint32_t dh) {
+	for (unsigned i = 0; i < 4; ++i) native_legacy_swap_req[5 + i] = rect ? rect[i] : 0;
+	native_legacy_swap_req[9] = rw;
+	native_legacy_swap_req[10] = rh;
+	native_legacy_swap_req[11] = (dw << 16) | (dh & 0xffff);
+}
+// Frame pacing against touch. The compositor draws when something asks it to, so the number that
+// matters is not the frame rate but the two gaps: to the previous swap, and to the last touch
+// frame the touch driver published. One console row per swap, rate-limited to 50 a second, with
+// the number of rows the limit skipped, so a burst is visible as a count instead of a hole.
+extern volatile uint32_t native_touch_seq __attribute__((weak_import));
+static void framePacingObserved(bool accepted, unsigned reason) {
+	static uint64_t lastFrameUs, lastTouchUs;
+	static uint32_t lastTouchSeq, rows, skipped;
+	const uint64_t now = probeNowUs();
+	const uint32_t seq = &native_touch_seq ? native_touch_seq : 0;
+	if (seq != lastTouchSeq) {
+		lastTouchSeq = seq;
+		lastTouchUs = now;
+	}
+	const uint64_t gap = lastFrameUs ? now - lastFrameUs : 0;
+	if (lastFrameUs && gap < 20000) {   // 20 ms: the limit is a burst guard, not a sample rate
+		// lastFrameUs stays at the last printed row, so the next row's gap covers the burst.
+		skipped = skipped + 1;
+		return;
+	}
+	lastFrameUs = now;
+	if (!&qcom_usb_debug_write) return;
+	char line[144];
+	int n = snprintf(line, sizeof line, "FRAME %u gap_us=%llu touch_us=%llu seq=%u a=%u r=%u skip=%u\n",
+	                 ++rows, (unsigned long long)gap,
+	                 (unsigned long long)(lastTouchUs ? now - lastTouchUs : 0), seq,
+	                 accepted ? 1u : 0u, reason, skipped);
+	if (n > 0) qcom_usb_debug_write(line, (size_t)n);
+	skipped = 0;
+}
+
+// What the client's own surface holds, read before any copy runs. The IOSurface accessors are the
+// driver's extern "C" ones; a surface that does not answer them is skipped rather than guessed at.
+extern IOMemoryDescriptor *native_legacy_surface_descriptor(OSObject *) __attribute__((weak_import));
+extern uint64_t native_legacy_surface_width(OSObject *) __attribute__((weak_import));
+extern uint64_t native_legacy_surface_height(OSObject *) __attribute__((weak_import));
+extern uint64_t native_legacy_surface_stride(OSObject *) __attribute__((weak_import));
+// The kernel's data-cache invalidate, the same symbol NativeLegacyDisplay.cpp declares for its copy path.
+extern "C" void flush_dcache64(uint64_t addr, unsigned count, int phys);
+
+// One reading of a surface's memory: every 4096th dword, bounded to 16384 samples. A 1080x2400 frame is
+// 6.5 MiB, so this walks the whole picture without costing a frame. The caller owns the descriptor.
+// The most saturated sample it found on the way, which SURFACEL prints.
+static unsigned bestPixelR, bestPixelG, bestPixelB, bestPixelSpread;
+static bool surfaceMeasure(IOMemoryDescriptor *memory, uint64_t stride, uint64_t height, unsigned *rows,
+                           unsigned *litOut, unsigned *lumaOut, unsigned *hashOut) {
+	IOMemoryMap *map = memory->map(kIOMapAnywhere | kIOMapReadOnly | kIOMapCopybackCache);
+	if (!map || !map->getVirtualAddress()) { OSSafeReleaseNULL(map); return false; }
+	const uint64_t length = map->getLength();
+	if (!stride || !height || stride > length) { OSSafeReleaseNULL(map); return false; }
+	// The surfaces are write-combined (iPadOS 27 display surfaces are), so the CPU's view is only valid after the
+	// cache lines are invalidated: without this every read returns the previous frame's, which is zero. The CPU
+	// copy path in NativeLegacyDisplay.cpp flushes the same way before it reads a surface (line 829 there).
+	flush_dcache64((uint64_t)(uintptr_t)map->getVirtualAddress(), (unsigned)length, false);
+	const volatile uint32_t *base = (const volatile uint32_t *)(uintptr_t)map->getVirtualAddress();
+	const uint64_t dwords = length / 4;
+	uint64_t lit = 0, luma = 0, samples = 0;
+	uint32_t hash = 2166136261u;
+	// The most saturated sample, so one row answers "is the picture coloured at all, and which
+	// channel leads". A neutral grey frame leaves spread 0; red and blue exchanged swaps R and B here.
+	unsigned bestSpread = 0, bestR = 0, bestG = 0, bestB = 0;
+	for (uint64_t i = 0; i < dwords && samples < 16384; i += 4096) {
+		const uint32_t pixel = base[i];
+		const uint32_t b = pixel & 0xff, g = (pixel >> 8) & 0xff, r = (pixel >> 16) & 0xff;
+		if (r | g | b) lit = lit + 1;
+		luma += (r * 299 + g * 587 + b * 114) / 1000;
+		const unsigned maxc = r > g ? (r > b ? r : b) : (g > b ? g : b);
+		const unsigned minc = r < g ? (r < b ? r : b) : (g < b ? g : b);
+		if (maxc - minc > bestSpread) { bestSpread = maxc - minc; bestR = r; bestG = g; bestB = b; }
+		hash ^= pixel; hash *= 16777619u;
+		samples = samples + 1;
+	}
+	bestPixelR = bestR; bestPixelG = bestG; bestPixelB = bestB; bestPixelSpread = bestSpread;
+	OSSafeReleaseNULL(map);
+	if (!samples) return false;
+	*rows = (*rows) + 1;
+	*litOut = (unsigned)(lit * 1000 / samples);
+	*lumaOut = (unsigned)(luma / samples);
+	*hashOut = hash;
+	return true;
+}
+
+static unsigned surfaceRows, surfaceLit, surfaceLuma, surfaceSum;
+void surfaceSampleObserved(bool accepted, const void *surfaceObject) {
+	// Once per second at most: the swap path can run ten times in half a second, and one sample of the
+	// frame that got there is enough to say whether the client drew anything.
+	static uint64_t lastAt;
+	const uint64_t now = probeNowUs();
+	if (lastAt && now - lastAt < 1000000) return;
+	lastAt = now;
+	OSObject *object = (OSObject *)surfaceObject;
+	if (!object || !&native_legacy_surface_descriptor) return;
+	IOMemoryDescriptor *memory = native_legacy_surface_descriptor(object);
+	if (!memory) return;
+	const uint64_t stride = &native_legacy_surface_stride ? native_legacy_surface_stride(object) : 0;
+	const uint64_t height = &native_legacy_surface_height ? native_legacy_surface_height(object) : 0;
+	if (!surfaceMeasure(memory, stride, height, &surfaceRows, &surfaceLit, &surfaceLuma, &surfaceSum)) return;
+	if (!&qcom_usb_debug_write) return;
+	char line[160];
+	const int n = snprintf(line, sizeof line,
+	                      "SURFACE n=%u a=%u nonblack=%u/1000 luma=%u sum=%08x stride=%llu h=%llu\n",
+	                      surfaceRows, accepted ? 1u : 0u, surfaceLit, surfaceLuma, surfaceSum,
+	                      (unsigned long long)stride, (unsigned long long)height);
+	if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+}
+
+// The same reading, taken after the GPU copy finished. SURFACE reads the frame before anything writes it and
+// says the compositor's surface is empty; this row says whether the copy put anything into it. A lit row here
+// with a dark panel puts the break in the display path; an empty one means the GPU never wrote the frame the
+// compositor swapped, and the draws went somewhere else.
+static IOMemoryDescriptor *gpuCopyMemory;
+static uint64_t gpuCopyStride, gpuCopyHeight;
+static unsigned afterRows, afterLit, afterLuma, afterSum;
+void surfaceAfterCopyObserved(void) {
+	IOMemoryDescriptor *memory = gpuCopyMemory;
+	if (!memory) return;
+	gpuCopyMemory = nullptr;
+	const uint64_t stride = gpuCopyStride, height = gpuCopyHeight;
+	gpuCopyStride = gpuCopyHeight = 0;
+	if (surfaceMeasure(memory, stride, height, &afterRows, &afterLit, &afterLuma, &afterSum) && &qcom_usb_debug_write) {
+		char line[160];
+		const int n = snprintf(line, sizeof line,
+		                      "SURFACEB n=%u nonblack=%u/1000 luma=%u sum=%08x stride=%llu h=%llu\n",
+		                      afterRows, afterLit, afterLuma, afterSum,
+		                      (unsigned long long)stride, (unsigned long long)height);
+		if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+	}
+	OSSafeReleaseNULL(memory);
+}
+
+// The same reading as SURFACE, taken after the CPU copy has finished. SURFACE runs at swap-validation time, which
+// is when the compositor submits — before its command buffer has drawn (docs/zh/porting/display.md). If this row is
+// lit while SURFACE is not, the copy simply reads too early and the fix is a wait; if both are dark, nothing ever
+// writes the surface the display is handed.
+static unsigned afterTransferRows, afterTransferLit, afterTransferLuma, afterTransferSum;
+void surfaceAfterTransferObserved(void) {
+	OSObject *object = (OSObject *)(uintptr_t)native_legacy_swap_surface;
+	if (!object || !&native_legacy_surface_descriptor) return;
+	IOMemoryDescriptor *memory = native_legacy_surface_descriptor(object);
+	if (!memory) return;
+	const uint64_t stride = &native_legacy_surface_stride ? native_legacy_surface_stride(object) : 0;
+	const uint64_t height = &native_legacy_surface_height ? native_legacy_surface_height(object) : 0;
+	if (!surfaceMeasure(memory, stride, height, &afterTransferRows, &afterTransferLit, &afterTransferLuma, &afterTransferSum)) return;
+	if (!&qcom_usb_debug_write) return;
+	char line[160];
+	const int n = snprintf(line, sizeof line, "SURFACEC n=%u nonblack=%u/1000 luma=%u sum=%08x\n",
+	                      afterTransferRows, afterTransferLit, afterTransferLuma, afterTransferSum);
+	if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+}
+
+// A reading of the last swapped surface, taken from the periodic tick rather than from the swap itself: it says
+// whether that memory ever holds anything at all, independent of when the copy happens to run.
+static unsigned lateRows, lateLit, lateLuma, lateSum;
+extern "C" void surfaceLateObserved(void) {
+	OSObject *object = (OSObject *)(uintptr_t)native_legacy_swap_surface;
+	if (!object || !&native_legacy_surface_descriptor) return;
+	IOMemoryDescriptor *memory = native_legacy_surface_descriptor(object);
+	if (!memory) return;
+	const uint64_t stride = &native_legacy_surface_stride ? native_legacy_surface_stride(object) : 0;
+	const uint64_t height = &native_legacy_surface_height ? native_legacy_surface_height(object) : 0;
+	if (!surfaceMeasure(memory, stride, height, &lateRows, &lateLit, &lateLuma, &lateSum)) return;
+	if (!&qcom_usb_debug_write) return;
+	// The surface's own first physical page and length, next to the import counters on the PANEL row:
+	// the only reading that ties "this frame's surface" to "the range the GPU imported". A read-only
+	// import of 2532 pages is a 1080x2400 unpadded buffer, while this surface's 4352 stride needs 2550,
+	// so equal sizes do not prove equal memory and the two numbers have to be printed together.
+	IOByteCount segment = 0;
+	const addr64_t firstPhysical = memory->getPhysicalSegment(0, &segment, kIOMemoryMapperNone);
+	// Does anything at all write this surface? On the first observation of a page it plants two words
+	// through a writable mapping, and every later observation reports whether they are still there.
+	// This opt-in intrusive probe observes only two words; survival does not prove the rest of the
+	// surface was untouched. Normal pixel qualification leaves the compositor's memory alone.
+	static addr64_t magicPage = 0;
+	static bool magicPlanted = false;
+	unsigned magic = 0;
+	unsigned magicEnabled = 0;
+	PE_parse_boot_argn("alioth-surface-magic", &magicEnabled, sizeof magicEnabled);
+	if (magicEnabled) {
+		// Uncached, so the plant reaches DRAM directly and the read sees what is really there: a
+		// cacheable mapping would need a clean whose direction depends on the kernel's helper.
+		IOMemoryMap *w = memory->map(kIOMapAnywhere | kIOMapInhibitCache);
+		if (w && w->getVirtualAddress() && w->getLength() >= 8192) {
+			volatile uint32_t *words = (volatile uint32_t *)w->getVirtualAddress();
+			if (firstPhysical != magicPage) {
+				words[0] = 0xdeadbeefu;
+				words[1024] = 0xfeedfaceu;
+				__asm__ volatile("dsb sy" ::: "memory");
+				magicPage = firstPhysical;
+				magicPlanted = true;
+				magic = 2;   // planted now
+			} else if (magicPlanted) {
+				magic = (words[0] == 0xdeadbeefu && words[1024] == 0xfeedfaceu) ? 1u : 0u;
+			}
+		}
+		OSSafeReleaseNULL(w);
+	}
+	char line[260];
+	const int n = snprintf(line, sizeof line, "SURFACEL n=%u nonblack=%u/1000 luma=%u sum=%08x pa=%llx seg=%llx bytes=%llu stride=%llu magic=%u mx=%u/%u/%u sp=%u\n",
+	                      lateRows, lateLit, lateLuma, lateSum,
+	                      (unsigned long long)firstPhysical, (unsigned long long)segment,
+	                      (unsigned long long)memory->getLength(), (unsigned long long)stride, magic,
+	                      bestPixelR, bestPixelG, bestPixelB, bestPixelSpread);
+	if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+}
+
 void native_legacy_swap_validation_observed(bool accepted, unsigned reason, const void *request, const void *surface) {
+	framePacingObserved(accepted, reason);
 	if (reason < 8) native_legacy_swap_reason_counts[reason] = native_legacy_swap_reason_counts[reason] + 1;
 	// Band 8: a client reached the backend and submitted a swap. Painted before the verdict, so
 	// the band reports the submission, not whether it was accepted.
@@ -346,6 +588,12 @@ void native_legacy_swap_validation_observed(bool accepted, unsigned reason, cons
 	native_legacy_swap_validation_reason = reason;
 	native_legacy_swap_request = (uintptr_t)request;
 	native_legacy_swap_surface = (uintptr_t)surface;
+	// The frame the client submitted, measured where it is still only the client's surface: before any copy, so the
+	// number cannot be confused with what reached the panel. The panel's own reading (BootProgress's PANEL row) says
+	// the buffer ends up all black on every round so far, and this row separates the two causes: a black surface is a
+	// render that produced nothing, a lit surface that still lands black is the copy. Samples every 64th dword: the
+	// surface can be 10 MiB and this runs in the swap path.
+	surfaceSampleObserved(accepted, surface);
 	native_legacy_swap_validation_checkpoint(accepted, reason, request, surface);
 }
 
@@ -390,7 +638,15 @@ static volatile int native_legacy_gpu_last_status;
 bool native_legacy_gpu_offer(void *display, IOMemoryDescriptor *memory, uint64_t stride, uint32_t width, uint32_t height,
                              uint32_t format) {
 	if (!gpuHandoffPresenter || !&native_gop_gpu_offer) return false;
-	return native_gop_gpu_offer(gpuHandoffPresenter, display, memory, stride, width, height, format);
+	if (!native_gop_gpu_offer(gpuHandoffPresenter, display, memory, stride, width, height, format)) return false;
+	// Keep this frame's memory for the after-copy reading (surfaceAfterCopyObserved); the completion gives it back.
+	IOMemoryDescriptor *previous = gpuCopyMemory;
+	if (memory) memory->retain();
+	gpuCopyMemory = memory;
+	gpuCopyStride = stride;
+	gpuCopyHeight = height;
+	OSSafeReleaseNULL(previous);
+	return true;
 }
 
 void native_legacy_gpu_fallback_observed(int status) {
@@ -425,6 +681,18 @@ void native_legacy_vsync_observed(unsigned event, unsigned hz) {
 		vsyncEvents[event] = vsyncEvents[event] + 1;
 	}
 	vsyncHzValue = hz;
+}
+
+// The counters above, for the console. Until now nothing read them: the comment below said they
+// were "kept for a future reader", and the question they answer -- did the refresh tick arm, fire
+// and publish on the boot that drew nothing -- stayed open with the data sitting in memory.
+// Order is the argument to native_legacy_vsync_observed: 0 timer armed, 1 tick, 2 idle stop, 3
+// late deadline, 4 start with a rate, 5 published at the requested rate.
+unsigned native_legacy_vsync_counts(uint64_t *out, unsigned *hz) {
+	if (out)
+		for (unsigned i = 0; i < 6; ++i) out[i] = vsyncEvents[i];
+	if (hz) *hz = vsyncHzValue;
+	return 1;
 }
 
 void native_legacy_registration_observed(IOService *display) {

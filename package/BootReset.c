@@ -290,18 +290,86 @@ int boot_reset_bootloader(char *text, unsigned cap) {
   snprintf(text, cap, "reset: %08x -> %08x rc=%d | %s pon_rc=%d | scm arb=%llx psr=%llx",
            before, after, rc, pon, pon_rc,
            (unsigned long long)arb, (unsigned long long)psr);
-  IOSleep(2000);
+  for (int i = 0; i < 30; ++i) {
+    IOSleep(100);
+  }
   return 99;   // neither the SCM deassert nor the PS_HOLD write restarted the part
 }
 
-// The APSS watchdog (qcom,wdt@17c10000, bark-time 0x4e20 = 20 s, pet-time 0x3a98 = 15 s,
-// qcom,ipi-ping). kona has no Gunyah, so the SMCCC vendor calls the sheng board uses are
-// not available here. This board's watchdog is the SoC's own and it is armed by the
-// bootloader, not by us: pinging it from the kernel would need the register protocol the
-// mainline driver implements, which is not written yet. Report that plainly rather than
-// pretend a watchdog is armed.
-volatile int32_t boot_reset_wdt_stats[4];   // [0] reserved, [1] reserved, [2] reserved, [3] pings sent
-int boot_reset_watchdog(uint32_t deadline, char *text, unsigned cap) {
-  snprintf(text, cap, "watchdog: not armed; kona has no Gunyah and the APSS watchdog protocol is not implemented (deadline %us)", deadline);
-  return 1;
+// The APSS watchdog. This board has no working software reset: boot_reset_bootloader() ends in
+// PSCI SYSTEM_RESET (measured NOT_SUPPORTED on this firmware) and a direct PS_HOLD write, and
+// returns 99. The watchdog is the only reset that leaves the SoC, and arming it is the one thing
+// that keeps an unattended loop from needing a hand at every bad boot.
+//
+// Registers and layout from the mainline driver, drivers/watchdog/qcom-wdt.c: the kpss layout is
+// RST 0x4, EN 0x8, STS 0xC, BARK 0x10, BITE 0x14, enable bit 0, and every time value is in ticks
+// of the sleep clock. arch/arm64/boot/dts/qcom/sm8250.dtsi:88 gives sleep_clk as 32764 Hz, and the
+// vendor device tree (reference/k40-kernel kona.dtsi:695) puts the block at 0x17c10000 size 0x1000.
+//
+// The bark and bite registers are 20 bits wide on the kpss layout: mainline's match_data_kpss
+// carries max_tick_count 0xFFFFF and derives wdd->max_timeout from it, which is 0xFFFFF/32764 =
+// 32 s. A value above that is TRUNCATED, not clamped. The first version of this code asked for
+// bark 60 s / bite 65 s, so the block received bite = 2129660 & 0xFFFFF = 32508 ticks = 0.99 s and
+// restarted the part about a second after every arm: five boots in a row (wdt, x2441..x2444) went
+// silent at the same byte count, right after the arm, while the same kernel without the arm ran on.
+// Twenty and thirty seconds both fit, and a seconds-per-tick readback in the arm's text makes a
+// truncation impossible to hide again.
+//
+// The bark is 20 s and the bite 30 s, petted once a second by BootLog's supervisor. That thread
+// also prints SUPER, so a boot whose supervisor stops is exactly a boot that should reset: within
+// half a minute it does, at the hardware level, even though every software path here fails.
+enum {WdtBase = 0x17c10000, WdtSize = 0x1000};
+enum {WdtRst = 0x4, WdtEn = 0x8, WdtSts = 0xc, WdtBark = 0x10, WdtBite = 0x14};
+enum {WdtRate = 32764, WdtMaxTicks = 0xfffff};
+enum {WdtBarkSeconds = 20, WdtBiteSeconds = 30};
+volatile int32_t boot_reset_wdt_stats[4];   // [0] armed, [1] pets, [2] en before, [3] sts before
+static volatile uint32_t *wdt_io;
+static int wdt_armed;
+// One seconds value as the register holds it, clamped to the field width so the block never sees a
+// truncated number. Returns what was written, and *clamped says the request did not fit.
+static uint32_t wdt_ticks(unsigned seconds, int *clamped) {
+  const uint32_t ticks = (uint32_t)seconds * (uint32_t)WdtRate;
+  if (ticks <= (uint32_t)WdtMaxTicks) {*clamped = 0; return ticks;}
+  *clamped = 1;
+  return (uint32_t)WdtMaxTicks;
 }
+int boot_reset_watchdog(uint32_t deadline, char *text, unsigned cap) {
+  if (wdt_armed) {snprintf(text, cap, "watchdog: already armed (deadline %us)", deadline); return 0;}
+  volatile uint32_t *w = (volatile uint32_t *)ml_io_map_unmappable((vm_offset_t)WdtBase, (vm_size_t)WdtSize, 7);
+  if (!w) {snprintf(text, cap, "watchdog: map refused at %x", (unsigned)WdtBase); return 1;}
+  const uint32_t en_before = w[WdtEn / 4], sts_before = w[WdtSts / 4];
+  int bark_clamped = 0, bite_clamped = 0;
+  const uint32_t bark_ticks = wdt_ticks(WdtBarkSeconds, &bark_clamped);
+  const uint32_t bite_ticks = wdt_ticks(WdtBiteSeconds, &bite_clamped);
+  // Order from qcom_wdt_start: disable, pet once to clear the count, load bark and bite, enable,
+  // then pet so the first window starts now rather than at whatever the bootloader left.
+  w[WdtEn / 4] = 0;
+  w[WdtRst / 4] = 1;
+  w[WdtBark / 4] = bark_ticks;
+  w[WdtBite / 4] = bite_ticks;
+  w[WdtEn / 4] = 1;
+  w[WdtRst / 4] = 1;
+  const uint32_t en_after = w[WdtEn / 4], sts_after = w[WdtSts / 4];
+  // Read back what the block holds, not what was written: the field is 20 bits and a write above
+  // that lands truncated, which reads back as a different (much shorter) window, or as a bite
+  // earlier than the bark.
+  const uint32_t bark_after = w[WdtBark / 4], bite_after = w[WdtBite / 4];
+  wdt_io = w; wdt_armed = 1;
+  boot_reset_wdt_stats[0] = 1; boot_reset_wdt_stats[2] = (int32_t)en_before; boot_reset_wdt_stats[3] = (int32_t)sts_before;
+  snprintf(text, cap, "watchdog armed: bark %us bite %us rate %u en %x->%x sts %x->%x rb %u/%u ticks %u/%u%s%s deadline %us",
+           (unsigned)WdtBarkSeconds, (unsigned)WdtBiteSeconds, (unsigned)WdtRate,
+           en_before, en_after, sts_before, sts_after,
+           (unsigned)(bark_after / (uint32_t)WdtRate), (unsigned)(bite_after / (uint32_t)WdtRate),
+           bark_after, bite_after,
+           bark_clamped ? " bark-clamped" : "", bite_clamped ? " bite-clamped" : "",
+           deadline);
+  return 0;
+}
+// One pet. Called from the supervisor once a loop; a caller that stops calling it is the signal
+// the hardware acts on, so this must stay a plain register write with no lock and no allocation.
+void boot_reset_pet(void) {
+  if (!wdt_armed || !wdt_io) return;
+  wdt_io[WdtRst / 4] = 1;
+  boot_reset_wdt_stats[1] = boot_reset_wdt_stats[1] + 1;
+}
+int boot_reset_is_armed(void) {return wdt_armed;}

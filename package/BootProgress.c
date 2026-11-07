@@ -298,6 +298,20 @@ static uint32_t framebufferChecksum(void) {
   framebufferChannels[3] = samples ? (uint32_t)(oneSided * 1000 / samples) : 0;
   return hash;
 }
+// Sample the buffer the panel is scanning, now, and hand the result to whoever asks. framebufferSample() runs from the
+// monitor's loop, and that loop stops early on this board (measured: 7 turns in 170 s), so the GPUFB row freezes at
+// whatever the panel looked like around the second boot stage — which is the one reading that would say whether the
+// desktop is on the panel at all. The boot log's supervisor keeps running for the whole round, so it can keep this
+// reading alive: out gets nonblack/1000, luma, the three channel means, and the checksum of this sample.
+void boot_progress_panel_sample(unsigned out[6]) {
+  const uint32_t hash = framebufferChecksum();
+  out[0] = framebufferNonBlack;
+  out[1] = framebufferLuma;
+  out[2] = framebufferChannels[0];
+  out[3] = framebufferChannels[1];
+  out[4] = framebufferChannels[2];
+  out[5] = hash;
+}
 extern volatile uint32_t native_gop_ready __attribute__((weak_import));
 extern volatile uint32_t native_gop_failures __attribute__((weak_import));
 extern volatile uint64_t native_gop_transfers __attribute__((weak_import));
@@ -1789,21 +1803,39 @@ static void data_mount_report(void) {
   last_status = status;
   last_store = store;
 }
+// How many times the board monitor's loop has run, for the boot log's [tick] row. The monitor's loop is what usually drives
+// boot_log_tick, so a boot whose autoreset never fired has to say whether this loop was still turning: a still number is a stalled
+// monitor, a rising one with a still tick count is a tick that some other path stopped calling.
+volatile uint64_t boot_progress_monitor_ticks;
+// The step of the monitor's loop it last entered. The loop is what drives boot_log_tick, and a monitor that
+// stops is indistinguishable from a tick that stopped unless the loop says which call it never left. The
+// [tick] row prints this, in the same way the log writer's own phase names its stall.
+volatile unsigned boot_progress_monitor_step;
 static void monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
   unsigned capture_at=0,capture_attempt=~0U,named=0;
   for (;;) {
     __atomic_fetch_add(&thread_count,1,__ATOMIC_RELAXED);
+    __atomic_fetch_add(&boot_progress_monitor_ticks,1,__ATOMIC_RELAXED);
+    boot_progress_monitor_step=1;
     boot_progress_poll();
     unsigned now=seconds();
+    boot_progress_monitor_step=2;
     framebufferSample();
     if(nprocs>0 && !named){thread_set_thread_name(current_thread(),"boot_progress");named=1;}
+    boot_progress_monitor_step=3;
     if(boot_process_snapshot)boot_process_snapshot();
+    boot_progress_monitor_step=4;
     if(boot_log_tick)boot_log_tick(now);
+    boot_progress_monitor_step=5;
     ufs_time_report(now);
+    boot_progress_monitor_step=6;
     data_mount_report();
+    boot_progress_monitor_step=7;
     touch_time_report(now);
+    boot_progress_monitor_step=8;
     if(sheng_cpufreq_poll)sheng_cpufreq_poll();
+    boot_progress_monitor_step=9;
     if(boot_ui_trace_snapshot)boot_ui_trace_snapshot(now);
     if(&boot_process_attempts && &boot_process_busy) {
       unsigned attempt=__atomic_load_n(&boot_process_attempts,__ATOMIC_RELAXED);
@@ -1811,7 +1843,13 @@ static void monitor(void *arg, wait_result_t result) {
       if(attempt!=capture_attempt || !capturing)capture_at=now;
       capture_attempt=attempt;process_capture_age=capturing?now-capture_at:0;
     }
+    boot_progress_monitor_step=10;
     refresh(seconds());
+    boot_progress_monitor_step=11;
+    // The original wait, restored. b0b1be9 replaced this with delay_for_interval to avoid a waitq stall, and the
+    // measurement says the replacement is the stall: fix178's monitor stopped with step=11 (inside this wait) and
+    // tstep=6 (the tick had returned), while the same delay_for_interval on the autoreset thread kept waking. A
+    // timeout wait on the loop's own event says exactly what this wait means and has one wake source.
     assert_wait_timeout((event_t)&thread_count,THREAD_UNINT,1000,NSEC_PER_MSEC);
     thread_block(THREAD_CONTINUE_NULL);
   }
@@ -1860,6 +1898,7 @@ static void gpu_rows_report(unsigned now) {
 static void log_only_monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
   for (;;) {
+    __atomic_fetch_add(&boot_progress_monitor_ticks,1,__ATOMIC_RELAXED);
     const unsigned now=seconds();
     if(boot_log_tick)boot_log_tick(now);
     // The page-off loop has to sample the framebuffer too, or GPUFB freezes and a frozen

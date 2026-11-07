@@ -1,6 +1,3 @@
-> 本分支只带修复本身（`board.toml` 的 `sheng-gpu-dynfreq=0`）。文中用到的 `GICR` 探针字段
-> `nm=` / `ms=` / `ts=` / `mon=` 在 `test-gemini` 分支上，实测那三轮也是在那里跑的。
-
 # 失聪核的根因：没有时钟的 GMU 寄存器读
 
 2026-11-06 傍晚。设备仓库 `NEW/UniXNU-alioth`。真机读数，USB 串口抓取，`fastboot boot`，
@@ -92,3 +89,33 @@ w131500102  t=110s  sw=149/149/0 own=1 prep=149  tf=15977   deaf=00 wd=0/00 mon=
   没有单独测量。
 - `PANEL nonblack` 在 `ds=4`（直通扫描）下读的是固件帧缓冲，恒为 911，不能用于判断桌面是否出现。
   判据是 `sw` 的接受数与 `own`。
+
+## 5. 结构修复：不再依赖任何启动参数
+
+第 3 节的做法是关一个启动参数，安全依赖 `board.toml` 里的一行。按官方文档，这不够：
+
+- `unixnu.com/zh/porting/drivers` 要求驱动接口写明「寄存器范围、访问宽度、中断、**时钟**、复位和电源所有者」。
+  本处缺的正是时钟所有者：`gColdOk && gx_on` 只证明 GX 轨上电，不证明 GMU 时钟在跑。
+- `unixnu.com/zh/xnu/boot-arguments` 规定合并后的命令行最多 1000 字节。本板含该参数时是 1008，
+  不含是 988——参数本身就放不下。
+- `unixnu.com/zh/porting/device-repository` 规定共享组件源码是 pin 住的输入，不得就地修改，
+  所以「把采样搬进 Adreno 驱动的持电上下文」不属于设备仓库能做的事。
+
+改法三处：
+
+| 位置 | 改动 |
+| --- | --- |
+| `package/BootLog.c` | `boot_log_tick` 第 4 步不再调用采样；诊断路径从此无法访问 GMU 寄存器 |
+| `package/GpuProbe.cpp` | 默认值 `1` → `0`；新增 `native_gpu_freq_powered`，无人声明就返回 |
+| `board.toml` | 移除 `sheng-gpu-dynfreq=0`（1008 → 988 字节），注释保留参数名与重开条件 |
+
+### 验证
+
+| 镜像 | 内核 | 命令行里的参数 | 结果 |
+| --- | --- | --- | --- |
+| `boot-w14.img` | 带修复的旧版 | `sheng-gpu-dynfreq=0` | `deaf=00`，桌面 |
+| `boot-w15.img` | **旧内核**（`build-fast.sh` 只换 payload） | 无 | **`deaf=40 wd=2/48`、`mon=7`、无桌面** |
+| `boot-w16.img` | 新内核（`build-parity.sh`） | 无 | `deaf=00 wd=0/00 mon=191`，`sw=197/197/0` 与 `401/401/0`，`GICR` 行数为 0 |
+
+w15 是一次意外的对照：内核与 w14 相同，唯一差别是命令行少了那个参数，失聪核立刻回来。
+它同时说明 `tmp/build-fast.sh` 不会重编内核——`package/` 一改就必须走 `tmp/build-parity.sh`。

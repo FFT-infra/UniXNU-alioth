@@ -38,6 +38,29 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
+// The USB console, when the board links it. File scope and before first use: a lambda body
+// cannot declare it (clang gives the block-scope extern internal linkage).
+extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
+
+/* touchRegion: read one word of pil_gpu_region and say so on the console. The zap shader is loaded
+ * there, and a boot that stops inside that load cannot say whether the region itself is reachable.
+ * "before" is printed first, so a hang names its own call site. */
+void touchRegion(const char *where) {
+    extern size_t qcom_usb_debug_write(const void *, size_t);
+    char line[96];
+    IODeviceMemory *m = IODeviceMemory::withRange(0x8681a000ULL, 0x2000);
+    OSSharedPtr<IOMemoryMap> map;
+    if (m) {map = OSSharedPtr<IOMemoryMap>(m->map(kIOMapAnywhere | kIOMapWriteCombineCache), OSNoRetain); m->release();}
+    int n = !map ? snprintf(line, sizeof line, "ZAPREG %s nomap\n", where)
+                 : snprintf(line, sizeof line, "ZAPREG %s before\n", where);
+    if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
+    if (!map) return;
+    volatile uint32_t *w = reinterpret_cast<volatile uint32_t *>(map->getVirtualAddress());
+    const uint32_t v = w[0];
+    n = snprintf(line, sizeof line, "ZAPREG %s read %08x\n", where, v);
+    if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
+}
+
 #include <IOKit/IOUserClient.h>
 #include <IOKit/IOPlatformExpert.h>
 #include <libkern/c++/OSSharedPtr.h>
@@ -566,7 +589,7 @@ NativeAdrenoGmuContextReport native_gpu_context;
 uint32_t native_gpu_cp[24];
 }
 constexpr unsigned kGpuBank = 0, kGpuAsid = 2, kGpuSlots[4] = {0, 1, 4, 5}, kGpuSids[4] = {0, 1, 0x400, 0x401};
-NativeAdrenoGpuBuffer gNb[5];
+NativeAdrenoGpuBuffer gNb[16];
 OSSharedPtr<IOMemoryMap> gNbMaps[5];
 volatile uint8_t *gNbCpu[5];
 NativeAdrenoRing *gRing;
@@ -892,15 +915,15 @@ void hwInit() {
 }
 
 // The UCHE's registers as read back (UCHE_MODE_CNTL, WRITE_RANGE_MAX, WRITE_THRU_BASE, TRAP_BASE, GMEM_RANGE_MIN/MAX, 0E12,
-// CLIENT_PF) and the NC_MODE_CNTL of RB, TPL1, SP and RBBM: right after hw_init, and again from the live loop when they change
+// CLIENT_PF), CP APRIV/RB control and the NC_MODE_CNTL of RB, TPL1, SP and RBBM: right after hw_init, and again from the live loop when they change
 // (Turnip's command streams write some of them). Shader accesses ended in UCHE_OOB_ACCESS (2026-10-24).
 void ucheRow() {
     auto r64 = [](uint32_t dword) {return uint64_t(gpuRead(dword)) | uint64_t(gpuRead(dword + 1)) << 32;};
     char line[sizeof native_gpu_rows[0]];
-    snprintf(line, sizeof line, "UCHE m%x w%llx t%llx/%llx g%llx-%llx 0e12 %x pf %x | nc %x %x %x %x",
+    snprintf(line, sizeof line, "UCHE m%x w%llx t%llx/%llx g%llx-%llx 0e12 %x pf %x | nc %x %x %x %x ap %x rb %x",
              gpuRead(0xE01), (unsigned long long)r64(0xE05), (unsigned long long)r64(0xE07), (unsigned long long)r64(0xE09),
              (unsigned long long)r64(0xE0B), (unsigned long long)r64(0xE0D), gpuRead(0xE12), gpuRead(0xE19), gpuRead(0x8E08),
-             gpuRead(0xB604), gpuRead(0xAE02), gpuRead(0x534));
+             gpuRead(0xB604), gpuRead(0xAE02), gpuRead(0x534), gpuRead(0x844), gpuRead(0x802));
     if (strncmp(line, native_gpu_rows[kRowUche], sizeof line)) {
         strlcpy(native_gpu_rows[kRowUche], line, sizeof native_gpu_rows[0]);
         changed();
@@ -1111,6 +1134,21 @@ void zapRow(const char *what) {
 bool zapLoad() {
     int32_t *z = native_gpu_zap;
     auto stop = [&](int why) {z[0] = why; zapRow("stopped"); return false;};
+    /* The three PAS calls below run with interrupts masked, and a boot where one of them never
+     * returns is exactly a boot whose persistent log stops at its first round: the storage
+     * completion it needs is the interrupt that is masked. So each call announces itself on the
+     * USB console as well, which is captured live and does not depend on the log writer. */
+    auto scmEnter = [](const char *what) {
+        char line[64];
+        int n = snprintf(line, sizeof line, "ZAPSCM enter %s\n", what);
+        if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
+    };
+    auto scmDone = [](const char *what, int64_t a0, int64_t a1, int ms) {
+        char line[96];
+        int n = snprintf(line, sizeof line, "ZAPSCM done %s %llx/%llx %d ms\n", what,
+                         (unsigned long long)a0, (unsigned long long)a1, ms);
+        if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
+    };
     native_gpu_step = 130;
     z[0] = 1;
     // The region must not be memory XNU hands out: TrustZone locks it after authentication.
@@ -1160,26 +1198,48 @@ bool zapLoad() {
     cleanToPoc(meta, metaBytes);
     // qcom_scm_pas_init_image: ARGS(2, VAL, RW).
     z[0] = 3; native_gpu_step = 131;
+    zapRow("in init_image");   // written before the call: a boot that never returns from it says which one
+    scmEnter("init_image");
     uint64_t start = mach_absolute_time();
     ScmRes r = scmCall(kScmPil(0x01), 2 | (2u << 6), kGpuPasId, metaPhys, 0);
+    scmDone("init_image", r.a0, r.a1, int32_t(msSince(start)));
     z[1] = int32_t(r.a0); z[2] = int32_t(r.a1); z[8] = int32_t(msSince(start)); z[7] = int32_t(gScmResumes);
     if (r.a0 || r.a1) return stop(3);
     if (relocate) {
         // qcom_scm_pas_mem_setup: ARGS(3).
         z[0] = 4; native_gpu_step = 132;
+        zapRow("in mem_setup");
+        scmEnter("mem_setup");
         start = mach_absolute_time();
         r = scmCall(kScmPil(0x02), 3, kGpuPasId, kZapPhys, hi - lo);
+        scmDone("mem_setup", r.a0, r.a1, int32_t(msSince(start)));
         z[3] = int32_t(r.a0); z[4] = int32_t(r.a1); z[9] = int32_t(msSince(start));
         if (r.a0 || r.a1) return stop(4);
     }
     // qcom_mdt_load_no_init into the reserved region (relocatable: offsets from the lowest segment address).
+    // The row is written here, not only before the SCM calls: a boot that stops inside this copy left the
+    // previous text ("in mem_setup step 4") standing, which reads as a hung mem_setup and is not one.
     z[0] = 5; native_gpu_step = 133;
-    {
+    /* pipa-gpu-zap-reuse=1: skip the copy and go straight to auth_and_reset. The region is not
+     * reachable from the AP on a boot after the first since power-on (measured 2026-11-03 12:28:
+     * 'enter copy' with no read line after it, so the load itself hangs), and on those boots the
+     * image from the previous boot may still be in place. If auth accepts it, the copy is not
+     * needed at all after the first boot. */
+    unsigned reuse = 0;
+    PE_parse_boot_argn("pipa-gpu-zap-reuse", &reuse, sizeof reuse);
+    zapRow(reuse ? "copy skipped" : "in copy");
+    scmEnter(reuse ? "copy-skipped" : "copy");
+    if (!reuse) {
         IODeviceMemory *m = IODeviceMemory::withRange(kZapPhys, kZapBytes);
         OSSharedPtr<IOMemoryMap> map;
         if (m) {map = OSSharedPtr<IOMemoryMap>(m->map(kIOMapAnywhere | kIOMapWriteCombineCache), OSNoRetain); m->release();}
         if (!map) return stop(-9);
         volatile uint8_t *region = reinterpret_cast<volatile uint8_t *>(map->getVirtualAddress());
+        /* One read before the first write. A region TrustZone has locked answers neither, but a
+         * region that is only write-protected answers the read and hangs on the store, and those
+         * two need different next steps. The console line is what survives a hang here. */
+        const uint32_t head = *reinterpret_cast<volatile uint32_t *>(region);
+        scmDone("read", head, 0, 0);
         const uint64_t base = relocate ? lo : kZapPhys;
         for (unsigned i = 0; i < phnum; ++i) {
             if (ph(i, 0) != 1 || ((ph(i, 6) >> 24) & 7) == 2 || !ph(i, 5)) continue;
@@ -1190,10 +1250,14 @@ bool zapLoad() {
         }
         __asm__ volatile("dsb sy" ::: "memory");
     }   // the CPU view is gone before TrustZone takes the region
+    scmDone(reuse ? "copy-skipped" : "copy", 0, 0, 0);
     // qcom_scm_pas_auth_and_reset: ARGS(1).
     z[0] = 6; native_gpu_step = 134;
+    zapRow("in auth_and_reset");
+    scmEnter("auth_and_reset");
     start = mach_absolute_time();
     r = scmCall(kScmPil(0x05), 1, kGpuPasId, 0, 0);
+    scmDone("auth_and_reset", r.a0, r.a1, int32_t(msSince(start)));
     z[5] = int32_t(r.a0); z[6] = int32_t(r.a1); z[10] = int32_t(msSince(start));
     if (r.a0 || r.a1) return stop(6);
     z[0] = 7;   // TrustZone authenticated the zap shader
@@ -1201,7 +1265,36 @@ bool zapLoad() {
 }
 // The zap shader, then CP_SET_SECURE_MODE(0) through the ring (hw_init after a6xx_zap_shader_init).
 bool leaveSecure() {
-    if (!zapLoad()) return false;
+    /* No PAS sequence by default: the bootloader has already loaded and authenticated the a650 zap
+     * before XNU runs, so the GPU is out of secure mode when this code starts. Measured 2026-11-03
+     * 14:32 on boot vz1, with nothing in the sequence run at all:
+     *     GPUROW ZAP nozap step 0 init 0/0 mem 0/0 auth 0/0
+     *     GPUROW IRQ  attach 0 readback a002 count 1>2 nop fence 1 seen 00100000
+     *     GPUROW METAL ok: accelerator registered (IOGPUFamily loaded, class size 136)
+     * and the desktop composited (SUPER t=80s sw=7/7/0 own=1). The sequence is not merely redundant:
+     * its segment copy into pil_gpu_region is what stalls the GPU thread on the boots where
+     * TrustZone already owns that region (2026-11-03 13:53: 'ZAPREG start before', no line after
+     * it, before any GPU step had run). Skipping it removes the whole failure mode.
+     * pipa-gpu-zap=1 runs the sequence from here instead, which is how it was reached before.
+     * pipa-gpu-nozap=2/3 keep the two no-zap variants mainline and the vendor use, for measurement:
+     *   2  clear RBBM_SECVID_TRUST_CNTL (a6xx_gpu.c:1515, adreno.c:2046). The offset is the
+     *      vendor's own, so 0xf400 is A6XX_RBBM_SECVID_TRUST_CNTL unchanged.
+     *   3  send CP_SET_SECURE_MODE(0) even though no zap was loaded. */
+    unsigned zap = 0, mode = 0;
+    PE_parse_boot_argn("pipa-gpu-zap", &zap, sizeof zap);
+    PE_parse_boot_argn("pipa-gpu-nozap", &mode, sizeof mode);
+    if (zap) {
+        if (!zapLoad()) return false;
+    } else if (mode == 2) {
+        gw(0xf400, 0);
+        zapRow("trcntl0");
+        return true;
+    } else if (mode != 3) {
+        zapRow("nozap");
+        return true;
+    } else {
+        zapRow("nozap secure0");
+    }
     native_gpu_step = 135;
     uint32_t words[2] = {}, fence = 0, seen = 0;
     if (AdrenoPM4Type7(0x66, 1, &words[0]) != AdrenoPM4Success || gRing->submit(words, 2, &fence)) {zapRow("submit"); return false;}
@@ -1442,13 +1535,14 @@ int ucRound(IOService *svc) {
                      * before the flush that sets the fence, so the target says whether the GPU executed the
                      * IB at all. Without this a timed-out wait cannot be told from a lost fence write. */
                     __asm__ volatile("dsb sy" ::: "memory");
-                    /* The four words go into the publish row whether the fence came back or not: matched
-                     * says how many agreed but not which one did not, and the difference between "the CP
-                     * wrote nothing" and "the CP wrote past the third marker" is the whole reading. */
+                    /* Keep all four words in the publish row. The fourth is a CPU sentinel, not a
+                     * word the CP writes: a fresh BO's zero fill can land after this sentinel, so
+                     * the verdict counts only the three CP_MEM_WRITE markers. See the note in
+                     * selfTest() and NativeAdrenoMemory.cpp's zero-fill cache handling. */
                     native_gpu_publish[10] = tw[0]; native_gpu_publish[11] = tw[1];
                     native_gpu_publish[12] = tw[2]; native_gpu_publish[13] = tw[3];
                     if (completed)
-                        matched = (tw[0] == values[0]) + (tw[1] == values[1]) + (tw[2] == values[2]) + (tw[3] == 0xdeadbeef);
+                        matched = (tw[0] == values[0]) + (tw[1] == values[1]) + (tw[2] == values[2]);
                 }
                 NativeAdrenoAbiTimestamp ts{};
                 step(ucCall(uc, NativeAdrenoMethodGetTimestamp, nullptr, &ts));
@@ -1528,7 +1622,7 @@ bool selfTest() {
     /* Signed: ucRound answers -1 when a round fails, and that stored in the uint32_t array is
      * 0xffffffff, which a ">= 3" test reads as the largest possible pass. fix28 showed it: rounds
      * -1 -1 beside METAL ok. */
-    const bool ok = int32_t(native_gpu_publish[8]) >= 3 && int32_t(native_gpu_publish[9]) >= 3;
+    const bool ok = int32_t(native_gpu_publish[8]) == 3 && int32_t(native_gpu_publish[9]) == 3;
     publishRow(ok ? "ok" : "self test failed");
     return ok;
 }
@@ -1574,17 +1668,13 @@ bool metal() {
         "backboardd,iconservicesagent,Preferences,CollectionsPoster,AegirPoster,KaleidoscopePoster,"
         "PhotosPosterProvider,PosterBoard,WidgetRenderer_Default,mediaserverd,SpringBoard");
     accelerator->setProperty("MetalPluginClassName", "NativeAdrenoMetalDevice");
-    // Turnip's options for this board, which replace the plugin's default "sysmem,nocb" (NativeAdrenoMetalPlugin.mm
-    // applyBoardTurnipDebug). That default keeps every pass in system memory against a hang of the A740's concurrent binning (BV
-    // and BR); the A650 has no concurrent binning, so by default Turnip picks tiled GMEM rendering with binning or system memory
-    // per pass, as on Linux ("nocb" is a no-op here and keeps the variable non-empty). pipa-turnip-debug=<options> replaces it
-    // for a round, e.g. pipa-turnip-debug=sysmem,nocb.
-    // sheng-fb-bgra=1 is what the plugin actually acts on (NativeAdrenoMetalPlugin.mm:299 sets TU_DEBUG from it); this row used
-    // to print only pipa-turnip-debug, so a boot with the flag on read "Turnip options nocb" and looked as if it had not applied.
-    // Print the plugin's own choice here so one log line answers both.
+    // Turnip's options for this board. The plugin sets TU_DEBUG=nocb for every process (NativeAdrenoMetalPlugin.mm); "nocb" is a
+    // no-op on the A650, which has no concurrent binning, and keeps the variable non-empty. The system-memory path that
+    // sheng-fb-bgra=1 used to select writes no pixels (2026-11-05), so nothing selects it by default. This row prints what that
+    // process will use: sheng-tu-debug=<options> overrides the plugin, pipa-turnip-debug=<options> records a round's choice here.
+    // Nothing reads the NativeTurnipDebug property this becomes, so this row is a reading, not a switch.
     char turnip[64] = "nocb";
-    unsigned fbBgra = 0;
-    if (PE_parse_boot_argn("sheng-fb-bgra", &fbBgra, sizeof fbBgra) && fbBgra) strlcpy(turnip, "sysmem,nocb", sizeof turnip);
+    PE_parse_boot_arg_str("sheng-tu-debug", turnip, sizeof turnip);
     PE_parse_boot_arg_str("pipa-turnip-debug", turnip, sizeof turnip);
     // Canned Turnip option sets for a round, so an A/B on the GMEM input attachment bug (HANDOFF-pipa.md 10.14) fits in the
     // 1000-byte command line: pipa-tu=1..5 (8 bytes) instead of pipa-turnip-debug=<46 bytes>.
@@ -1815,8 +1905,10 @@ void gpuThread(void *, wait_result_t) {
     const gpb_io io = {nullptr, rd, wr, delayUs};
     gpb_result &r = native_gpu_result;
     native_gpu_step = 10;
+    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("start"); }
     gpb_run(&io, gMode, have, &r);
     rowsBasic(r);
+    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-power"); }
     if (gMode < 5) {native_gpu_step = 99; return;}
     commandDb();
     uint32_t cx_gmu = r.cc_gmu, ahb = r.cc_ahb;
@@ -1834,15 +1926,37 @@ void gpuThread(void *, wait_result_t) {
     }
     gmuState(io, r, cx_gmu, ahb);
     if (gMode >= 7) gmuColdStart(r, native_gpu_clocks);
+    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-gmu"); }
     if (gMode >= 8 && gColdOk) gxOn();
+    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-gx"); }
     const bool cp = gMode >= 9 && native_gpu_gx.gx_on && gpuContext() && cpStart();
+    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-cp"); }
     const bool irq = gMode >= 10 && cp && leaveSecure() && gpuInterrupt();
     if (irq) regDump("init");
+    /* The three rows a GPU round is judged by, repeated on the USB console. The persistent log
+     * needs the board to come back to fastboot and a TWRP read; this needs neither, so a boot
+     * whose progress thread never starts (no SUPER rows at all, 2026-11-03 14:24) still answers
+     * whether the accelerator published. */
+    auto verdict = [](const char *row) {
+        char line[200];
+        int n = snprintf(line, sizeof line, "GPUROW %s\n", row);
+        if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
+    };
     if (gMode >= 11 && irq && publish()) {
-        if (selfTest() && gMode >= 12) metal();
+        /* The reference board (UniXNU-sheng/package/GpuPowerProbe.cpp:1561-1565) runs the
+         * user-client self-test only as an opt-in diagnostic and still publishes Metal when
+         * sheng-gpu-metal=1. Mode 12 is this board's equivalent. Keep the self-test rows for
+         * diagnosis, but do not let a failed first round gate service registration. */
+        (void)selfTest();
+        if (gMode >= 12) metal();
+        verdict(native_gpu_rows[kRowZap]);
+        verdict(native_gpu_rows[kRowIrq]);
+        verdict(native_gpu_rows[kRowMetal]);
         native_gpu_step = 99;
         heartbeat();
     }
+    verdict(native_gpu_rows[kRowZap]);
+    verdict(native_gpu_rows[kRowIrq]);
     native_gpu_step = 99;
 }
 }  // namespace

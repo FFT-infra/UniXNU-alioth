@@ -109,6 +109,107 @@ def slot_text(d, h, index):
     return text(d[off:off + h['slot_blocks'] * BLOCK])
 
 
+# The diagnostic export (package/BootDiagExport.c) does not live in the log window. NativeUfs.cpp
+# keeps a kExportBlocks = 65536 block (256 MiB) region immediately below the 8192-block log
+# window, and the header's diag_first is a block offset inside that region, not inside userdata.
+# Reading it at --skip would return the log window again, which is why the two are separate reads.
+EXPORT_BELOW_LOG_BLOCKS = 65536
+DIAG_MAGIC = b'SHEXR001'
+DIAG_STREAM_MAGIC = b'M2VCACH1'
+
+
+def read_diag_via_adb(serial, skip, count, path):
+    target = '/tmp/sheng-diag.bin'
+    cmd = ['adb']
+    if serial:
+        cmd += ['-s', serial]
+    rc = subprocess.run(cmd + ['shell', 'dd if=/dev/block/by-name/userdata of=%s bs=4096 skip=%d count=%d'
+                               % (target, skip, count)], stdin=subprocess.DEVNULL).returncode
+    if rc:
+        return False
+    return subprocess.run(cmd + ['pull', target, path], stdin=subprocess.DEVNULL).returncode == 0
+
+
+def safe_parts(path):
+    """A relative path from the device, or None. The blob is written by the kernel from whatever
+    the filesystem holds, so a name that walks upwards or is absolute is dropped, not followed."""
+    parts = [p for p in path.replace('\\', '/').split('/') if p not in ('', '.')]
+    if not parts or any(p == '..' for p in parts):
+        return None
+    return parts
+
+
+def bgrx_to_bmp(raw, path):
+    """The panel's scanout, as BootDiagExport.c writes it: 'SHOT', width, height, stride, then
+    width*4-byte BGRX rows. BMP so the file opens without a dependency; the exporter stores BGRX
+    and BMP wants BGR, so the fourth byte is dropped rather than reordered."""
+    if len(raw) < 16 or raw[0:4] != b'SHOT':
+        return False
+    width, height, stride = struct.unpack_from('<3I', raw, 4)
+    if not width or not height or stride < width * 4 or 16 + stride * height > len(raw):
+        return False
+    row_bytes = (width * 3 + 3) & ~3
+    image = bytearray(row_bytes * height)
+    for y in range(height):
+        src = 16 + (height - 1 - y) * stride   # BMP rows are bottom-up
+        dst = y * row_bytes
+        for x in range(width):
+            b, g, r = raw[src + x * 4], raw[src + x * 4 + 1], raw[src + x * 4 + 2]
+            image[dst + x * 3:dst + x * 3 + 3] = bytes((b, g, r))
+    size = 54 + len(image)
+    with open(path, 'wb') as f:
+        f.write(b'BM' + struct.pack('<IHHI', size, 0, 0, 54))
+        f.write(struct.pack('<IiiHHIIiiII', 40, width, height, 1, 24, 0, len(image), 2835, 2835, 0, 0))
+        f.write(image)
+    return True
+
+
+def unpack_diag(blob, dest):
+    """SHEXR001, then the M2VCACH1 stream BootDiagExport.c streams: the blob header's second word
+    is the stream length, and the stream is the same shape the pipeline-cache export uses."""
+    if len(blob) < 16 or blob[0:8] != DIAG_MAGIC:
+        return None, 'no SHEXR001 header (the boot did not run sheng-diag-export, or the region moved)'
+    stream_bytes, = struct.unpack_from('<I', blob, 8)
+    stream = blob[16:16 + stream_bytes]
+    if len(stream) < stream_bytes:
+        return None, 'stream is %d bytes, the header names %d' % (len(stream), stream_bytes)
+    if stream[0:8] != DIAG_STREAM_MAGIC:
+        return None, 'stream has no M2VCACH1 header'
+    at = 8
+    root_len, = struct.unpack_from('<I', stream, at)
+    at += 4 + root_len
+    count, = struct.unpack_from('<I', stream, at)
+    at += 4
+    files, skipped = [], []
+    files_root = os.path.join(dest, 'files')
+    for _ in range(count):
+        path_len, mode, uid, gid = struct.unpack_from('<4I', stream, at)
+        size, = struct.unpack_from('<Q', stream, at + 16)
+        at += 24
+        name = stream[at:at + path_len].decode('utf-8', 'replace')
+        at += path_len
+        body = stream[at:at + size]
+        at += size
+        parts = safe_parts(name)
+        if parts is None:
+            skipped.append(name)
+            continue
+        out = os.path.join(files_root, *parts)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, 'wb') as f:
+            f.write(body)
+        files.append((name, len(body)))
+    shot = os.path.join(files_root, 'screen.bgrx')
+    screen = None
+    if os.path.isfile(shot):
+        with open(shot, 'rb') as f:
+            raw = f.read()
+        screen = os.path.join(dest, 'screen.bmp')
+        if not bgrx_to_bmp(raw, screen):
+            screen = None
+    return {'files': files, 'skipped': skipped, 'screen': screen}, None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--port', help='adb serial; read the window from the running recovery')
@@ -120,6 +221,9 @@ def main():
                     help='the partition first_lba from board.toml, added back for the header check')
     ap.add_argument('--count', type=int, default=DEFAULT_COUNT)
     ap.add_argument('--tag', default='alioth', help='directory prefix when the header has none')
+    ap.add_argument('--diag', action='store_true',
+                    help='also read the diagnostic export named by the header and unpack it')
+    ap.add_argument('--diag-blob', help='unpack an export blob already copied off the device')
     args = ap.parse_args()
     # None means the option was not given; '' means adb with no serial, which is what the
     # unattended script passes when SERIAL is unset. Both must stay distinguishable.
@@ -190,6 +294,43 @@ def main():
     latest = slot_text(d, h, (h['slots_written'] - 1) % h['slot_count']) if h['slots_written'] else ''
     with open(os.path.join(dest, 'latest.txt'), 'w') as f:
         f.write(latest)
+
+    # The diagnostic export: the unified log, the crash reports and the panel's scanout, written
+    # by the kernel itself, so they survive a boot whose userspace never answers. The header
+    # names it only when BootDiagExport.c ran; diag_bytes 0 means the boot did not ask for it.
+    if args.diag or args.diag_blob:
+        blob_path = os.path.join(dest, 'diag.bin')
+        if args.diag_blob:
+            with open(args.diag_blob, 'rb') as src, open(blob_path, 'wb') as dst:
+                dst.write(src.read())
+        elif not h['diag_bytes']:
+            print('read-sheng-log: the header carries no diagnostic export (diag_bytes 0); '
+                  'the boot did not pass sheng-diag-export', file=sys.stderr)
+            return 5
+        else:
+            blocks = (h['diag_bytes'] + BLOCK - 1) // BLOCK
+            export_skip = args.skip - EXPORT_BELOW_LOG_BLOCKS + h['diag_first']
+            if not read_diag_via_adb(args.port, export_skip, blocks, blob_path):
+                print('read-sheng-log: could not read the diagnostic export at block %d' % export_skip,
+                      file=sys.stderr)
+                return 2
+        with open(blob_path, 'rb') as f:
+            blob = f.read()
+        # Both the files and their list live under diag/; unpack_diag makes dest/files itself only
+        # when it has a file to write, so the list's directory is made here.
+        diag_dir = os.path.join(dest, 'diag')
+        os.makedirs(diag_dir, exist_ok=True)
+        summary, error = unpack_diag(blob, diag_dir)
+        if error:
+            print('read-sheng-log: diagnostic export: %s' % error, file=sys.stderr)
+            return 6
+        with open(os.path.join(dest, 'diag', 'files.list'), 'w') as f:
+            for name, size in sorted(summary['files']):
+                f.write('%10d %s\n' % (size, name))
+            for name in summary['skipped']:
+                f.write('%10s %s\n' % ('skipped', name))
+        print('  diag %d files in diag/files, %d dropped, screen %s'
+              % (len(summary['files']), len(summary['skipped']), summary['screen'] or 'none'))
 
     # The header records the absolute LBA; the read was at --skip blocks into a partition that
     # starts at --first-lba. A mismatch means the window moved (the partition geometry changed),
