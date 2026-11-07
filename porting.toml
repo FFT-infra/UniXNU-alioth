@@ -185,6 +185,7 @@ components = ["ShengUfs", "VerifiedRoot", "VirtioMmioBlock", "RamBlock"]
 paths = ["scripts/*ufs*", "scripts/*storage*", "scripts/*userdata*", "scripts/*root*"]
 inputs = [
   "UFS 3.1 host on SM8250, bound through ShengUfs, plus the two authenticated volume windows (OS and SystemOS) inside userdata.",
+  "The ShengUfs component ID resolves to the community repository `FFT-infra/NativeUfs-alioth`, the maintainer's fork, not to `UniXNU/ShengUfs`. The official component ID stays; the source identity is recorded here.",
   "The Data seed is a raw APFS container: scripts/prepare-owner-data-fixture.py requires NXSB at 0x20, so the ADT reserves RAMDisk rather than PackedRAMDisk.",
 ]
 configuration = [
@@ -298,6 +299,7 @@ inputs = [
   "Firmware already embedded in package/GpuFirmwareA650.c: gmu 41548 B, sqe 31632 B, and the zap image 13964 B (ELF header 148 B at 0, the 6712 B hash at 0x1000, the 1676 B segment at 0x3000). The vendor's a650_zap.mdt is packed as [header 148][hash 6712] and would not satisfy its own program headers; the embedded image is laid out by those headers, which is what zapLoad and qcom_mdt_load read.",
   "The pipa fork's A650 driver (reference/repo/Adreno650) is the same generation as this board; the upstream Adreno740 is not.",
   "The GPU line now follows upstream main: UniXNU/UniXNU b6de3eb (2026-11-07), AdrenoMetal 6d7f734, GopFramebuffer e47c1b8 and the metal2vulkan translator 963f0e64. The A650 driver is the board fork in `Adreno650`; its feeds.toml pin names the public branch base. A local iOS 17 guard fix on AdrenoMetal (5be6893) keeps its arm64e-only probe helpers out of the arm64 build.",
+  "`Adreno650` is a device branch of `UniXNU/Adreno740`. The base catalog carries its entry because the tool has no device-local catalog; the code is linked from this repository's `drivers/Adreno650` submodule.",
   "The on-device known-image check (plugin: NativeAdrenoMetal.selftest beside the bundle, then make-gpu-addon.py --selftest) reports wrong-pixel counts on the [gpu client text] row. Measured 2026-10-29 (u253): SpringBoard and iconservicesagent each reported ok cb=0 rb=0 ib=0, so compute, render-to-texture and import are correct on the GPU side and a black panel is not a rendering-correctness fault.",
   "Open deviation: packing that marker uses a new --selftest flag on scripts/make-gpu-addon.py in the core repository, which AGENTS.md limits to mount points and build-script macro branches. It is opt-in, changes no default, and implements the known-image step the GPU porting guide asks for; move it into a device-side script, or record it as accepted, before the next core sync.",
 ]
