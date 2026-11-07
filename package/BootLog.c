@@ -135,6 +135,15 @@ extern volatile uint32_t native_legacy_direct_vig[4] __attribute__((weak_import)
  * direct flip completed, [11] a retire completed, [15] the deepest validated queue. When flips stops growing, one of these is the
  * gate that stopped it: fix118b read flips=99 for the last 104 s, and only [4] can explain a queue that simply went empty. */
 extern volatile uint32_t native_legacy_swapstat[16] __attribute__((weak_import));
+/* This board's diagnostic package predates the upstream GopFramebuffer revision and still asks for the
+ * direct-scanout probes that revision does not publish. Weak zero definitions keep the package linkable after
+ * the 2026-11-07 upstream alignment; a board fork that defines them overrides these. */
+__attribute__((weak)) volatile uint32_t native_legacy_direct_stage;
+__attribute__((weak)) volatile uint32_t native_legacy_direct_flip_branch;
+__attribute__((weak)) volatile uint32_t native_legacy_direct_flip_stage;
+__attribute__((weak)) volatile uint32_t native_legacy_direct_ctl[2];
+__attribute__((weak)) volatile uint32_t native_legacy_direct_vig[4];
+__attribute__((weak)) volatile uint32_t native_legacy_fence_probe[4];
 extern volatile uint32_t native_adreno_fence_wait[8] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_stall[24] __attribute__((weak_import));
 /* CP_RB_WPTR writes and their GMU AHB fence: [0] writes, [1] writes that needed a repeat, [2] repeats, [3] writes still
@@ -362,7 +371,7 @@ extern unsigned native_legacy_clients_dump(char *, unsigned) __attribute__((weak
 extern unsigned native_legacy_swap_timeline(char *, unsigned) __attribute__((weak_import));
 extern unsigned native_legacy_prepare_report(char *, unsigned) __attribute__((weak_import));
 extern unsigned native_legacy_vsync_counts(uint64_t *, unsigned *) __attribute__((weak_import));
-extern volatile uint32_t native_legacy_direct_stage __attribute__((weak_import));
+/* native_legacy_direct_stage is defined above as a weak fallback; a second weak_import declaration would conflict. */
 extern void boot_progress_panel_sample(unsigned *) __attribute__((weak_import));
 extern volatile uint64_t native_gop_gpu_offers __attribute__((weak_import));
 extern volatile uint64_t native_gop_gpu_completions __attribute__((weak_import));
