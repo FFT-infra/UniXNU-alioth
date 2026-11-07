@@ -127,7 +127,7 @@ archives = [
   # run after the driver recipes above, because it reads their compile records.
   "build-gop-legacy-display.py",
   "build-alioth-pcie.py",
-  "build-adreno650.py",
+  "component:Adreno650",
   "component:QcomXnuUsbDebug",
   # Touch. QcomGeniSpi is the GENI SPI controller; ShengHidInput is the IOHIDFamily
   # consumer that turns the probe's native_touch_* seqlock into HID digitizer events.

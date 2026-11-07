@@ -13,7 +13,7 @@ components = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "XnuPrelink", "DarwinBoo
 paths = ["board.toml", "feeds.toml", "configs/**", ".gitmodules", ".github/**", ".gitignore"]
 inputs = [
   "Four profile files merged in a fixed order: profiles/arch/arm64/profile.toml, the SoC profile from the feed checkout out/feeds/UniXNU-sm8250-common-HASH/soc.toml, profiles/os/ipados-17.7.11-21H461/profile.toml, then this repository's board.toml.",
-  "feeds.toml pins the SoC repository (FFT-infra/UniXNU-sm8250-common, a6e7e36c) and four driver sources: ShengUfs, GopFramebuffer, QcomXnuUsbDebug and Adreno740. The OS profile pins XNU d8b80295 and the IPSW iPad_Pro_HFR_17.7.11_21H461.",
+  "feeds.toml pins the SoC repository (FFT-infra/UniXNU-sm8250-common, a67a9bf3) and two driver sources, ShengUfs and QcomXnuUsbDebug. The device branches ArmCpu, Adreno650 and AdrenoMetal are submodules of this repository, at FFT-infra/ArmCpu@df4f831, FFT-infra/Adreno650@6effc73 and FFT-infra/AdrenoMetal@5be6893. The OS profile pins XNU d8b80295 and the IPSW iPad_Pro_HFR_17.7.11_21H461.",
   "unixnu.lock records the resolved git sources, so a checkout resolves to the same commits without moving.",
 ]
 configuration = [
@@ -30,6 +30,7 @@ procedure = [
   "Acceptance, from the UniXNU checkout: python3 scripts/porting-record.py check --device ../UniXNU-alioth, which prints 13 structured areas checked.",
 ]
 findings = [
+  "2026-11-07: the resolver reads this repository before the base repository (feeds.py steps 5 and 6), so a driver under this repository's drivers/ overrides the base submodule of the same name. ArmCpu and Adreno650 are linked that way; AdrenoMetal stays a base submodule because build-adreno-metal-plugin.py reads it there, and the base .gitmodules now points at FFT-infra/AdrenoMetal so a fresh clone fetches the compile fix. A clean checkout with local.toml removed resolves ArmCpu df4f831 and Adreno650 6effc73 from this repository.",
   "Array values replace and dictionaries merge. profiles.merge deep-copies the overlay over the base and recurses only when both sides are dictionaries, so a board list is the final list. That is why board.toml repeats the arch profile's patch_series and archives in full instead of adding to them.",
   "Measured 2026-10-30: status prints a catalog revision beside the module it resolved, and the two disagree twice. ShengUfs shows e2b32cc4 (UniXNU/ShengUfs) while the module is ab54059 (FFT-infra/NativeUfs-alioth from feeds.toml); ShengHidInput shows 5f3a37ce while the device submodule is f35c4ff1. The build compiles the resolved module, so a catalog pin does not describe the image. This replaces the earlier claim that components.toml names the revisions the build compiles.",
   "The images that reached the desktop were not built from those pins either: every build script passes --local-module driver:ShengUfs=../NativeUfs-alioth (94a3dd6a) and driver:ArmCpu=../ArmCpu-alioth (a9c4585d), both ahead of what status reports without those flags. Repeating status with the same two --local-module flags shows the difference.",
@@ -44,11 +45,10 @@ findings = [
 ]
 completion = [
   "All source pins resolve, every selected component has a record, and status shows the intended overrides and patch order.",
-  "Measured 2026-10-30: status --json resolves fifteen components, 29 modules and 68 patches from the four profile files, and porting-record.py check passes with 13 areas.",
+  "Measured 2026-11-07: status --json resolves the device branches from drivers/ArmCpu and drivers/Adreno650, the base components and 68 patches from the four profile files, and porting-record.py check passes with 15 areas.",
 ]
 limits = [
-  "Two catalog pins disagree with the modules the build resolves, and the booted images were built from --local-module overrides that no repository records. This record describes the configuration; it cannot yet name the exact source set behind a given image.",
-  "The two SoC patches are applied only in the build feed checkout and are not committed to FFT-infra/UniXNU-sm8250-common, so a fetch or tree refresh loses them.",
+  "The base repository's own submodules still name UniXNU/ArmCpu, UniXNU/Adreno740 and UniXNU/AdrenoMetal. The resolver takes this repository's drivers/ directories first, so a clean checkout builds the device branches, but a reader must not take the base gitlinks as the image source.",
 ]
 next_action = [
   "Both halves of the previous step are now closed, and neither needed a code change. The two SoC patches are committed to NEW/UniXNU-sm8250-common/patches/xnu/ and listed in its series file; and the catalog rows stay as they are, because the divergence is the documented archive form rather than a defect (see the finding below).",
