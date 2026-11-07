@@ -658,15 +658,11 @@ kernel_args = [
   # discard only happens inside the `if (mode && ...)` block, so with mode 0 the overlay written
   # by u241 would simply stay.
   "sheng-data-persist=2",
-  # 2026-11-07: the block above already recorded this failure (u241): a boot that has to mount
-  # an overlay an earlier boot wrote stops about 5 s in, before launchd. Measured again today,
-  # four times: rd4, rd4b, rd5 and rd7 each read 611 blocks (2 MiB) and stopped, SUPER tf frozen,
-  # no EXITLOG; the [data] row of rd7 reads pres=166107 ld=11634 with ld never moving, so the
-  # boot stops on one synchronous store read. rd6, which discarded the overlay, booted and drew
-  # (sw=73 at t=390). So the overlay is discarded until that read is fixed.
-  # It takes com.apple.cryptexd's place in sheng-disable-jobs, an entry the comment there
-  # already says should not be there. rd6 ran exactly this pair and was healthy.
-  "sheng-data-reset=1",
+  # 2026-11-07: the overlay is kept this round on purpose. Every boot that resumed one stopped
+  # inside sheng_boot_watchdog_policy, before launchd: the persistent log's breadcrumbs end at
+  # "temporary watchdog launch policy enter" and never reach "ready". This round carries a
+  # breadcrumb for each step of that function's policy write, so the next stalled boot names
+  # the statement that does not return. sheng-data-reset=1 is the workaround, not the fix.
   # sheng-touch-edge=1 makes a contact that starts within ~3 mm of the bottom edge carry
   # kIOHIDDigitizerEventFromEdgeTip, which is the only thing UIKit reads to classify an edge
   # touch; without it the home-swipe and the switcher gestures are type 0 and never recognise.
@@ -787,7 +783,6 @@ kernel_args = [
   # (GPUFRAME gpu offered 59 done 59). So the boot-to-boot stall is the fault to fix in source,
   # not the sequence to drop. The fix belongs in zapLoad: bound the region read and take the
   # mainline no-zap branch (RBBM_SECVID_TRUST_CNTL, a6xx_gpu.c:1516) instead of stalling.
-  "pipa-gpu-zap=1",
   "sheng-gpu-norestart=1",
   # The GPU busy-counter poll in GpuProbe.cpp hangs the core it runs on, so it is off. It is off in
   # code, not here: native_gpu_freq_tick now returns unless its caller declares the GPU powered
