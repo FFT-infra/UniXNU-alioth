@@ -726,22 +726,10 @@ kernel_args = [
   # the USB PHY rail down? The CDC device leaves the bus at t~5 s, which is when that vote runs.
   # Touch is off for this round only.
   "native-touch=1",
-  # sheng-touch-synth=<ms>: hold one synthetic contact for <ms>, once per boot, from
-  # sheng-touch-synth-at=<ms> (default 60 s). The compositor draws when something asks it to, so
-  # an unattended boot publishes a handful of frames and stops: of6 read prep=12 sw=12, and every
-  # round that showed a desktop had a real finger on the panel (of1 9 taps, of1b 27, of3 21,
-  # g1 8). reference.md:3350 recorded the same shape with native-touch=0 (prep=11 sw=11). The
-  # contact goes through the driver's own publish(), so the HID report and the sink notification
-  # are the ones the system already trusts. Off unless this argument is given.
-  "sheng-touch-synth=4000",
-  # 2026-11-07 night: the posters hold a device and make no Metal object at all, so the next question is
-  # whether a poster is configured at all. Both probes below print on the console as well as in the log.
-  # sheng-wp=1 lists the entries under the Data container's Library/Application Support, including
-  # PRBPosterExtensionDataStore; sheng-wallpaper-db=1 prints the printable runs of its SQLite page 1.
-  # They take sheng-touch-synth-swipe's bytes: with nobody at the panel the swipe only unlocks a still
-  # screen, and this round reads the store, not the desktop.
-  "sheng-wp=1",
-  "sheng-wallpaper-scan=1",
+  # sheng-touch-synth and the wallpaper store probes are one-off diagnostics, not release
+  # defaults. Pass them with --kernel-arg in a dedicated round; the baseline keeps the line
+  # for the official GPU diagnostics instead.
+
   # The contact is a swipe up from the bottom edge, not a press held at the centre. A centre press
   # opened Settings on of8 and the screenshot taken from it measured a grouped table background
   # instead of a wallpaper; the swipe asks for the home screen and leaves the display drawing.
@@ -795,7 +783,7 @@ kernel_args = [
   # (GPUFRAME gpu offered 59 done 59). So the boot-to-boot stall is the fault to fix in source,
   # not the sequence to drop. The fix belongs in zapLoad: bound the region read and take the
   # mainline no-zap branch (RBBM_SECVID_TRUST_CNTL, a6xx_gpu.c:1516) instead of stalling.
-  "sheng-gpu-norestart=1",
+  # sheng-gpu-norestart is a one-off hang counter; the baseline lets the driver restart.
   # The GPU busy-counter poll in GpuProbe.cpp hangs the core it runs on, so it is off. It is off in
   # code, not here: native_gpu_freq_tick now returns unless its caller declares the GPU powered
   # (native_gpu_freq_powered), no caller does, and the old 1 Hz call from boot_log_tick is gone.
@@ -963,6 +951,11 @@ kernel_args = [
   # deadline: "no reset at 150 s" was the writer never having started, not the reset path
   # failing. The official unattended example passes both arguments together.
   "sheng-log=1",
+  # The official frame diagnostics documented in zh/porting/gpu-diagnostics.md. They are
+  # defaults again now that the one-off wallpaper and synthetic-touch arguments are gone.
+  "sheng-gpu-trace=1",
+  "sheng-gpu-perf=1",
+  "sheng-diag-export=240",
   # Four processes sampled for stacks (BootProcessProbe.c). The GPU stack is up and waiting for a
   # swap while the compositor submits none, so the open question is where the render server sits:
   # with these four the answer is a stack, not a guess. BootLog prints two rows per role to the
