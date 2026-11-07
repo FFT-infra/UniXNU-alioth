@@ -114,7 +114,7 @@ evidence = [
 id = "cpu"
 status = "device-verified"
 components = []
-paths = ["package/CpuFreq*", "scripts/*armcpu*"]
+paths = ["drivers/ArmCpu", "package/CpuFreq*", "scripts/*armcpu*"]
 inputs = ["kona: four Cortex-A55 (cpu0-3) and four Cortex-A77 (cpu4-7), MPIDR core number in Affinity1 so phys ids are 0x000-0x700. Interrupts and timers come from the ArmCpu component; secondary start is PSCI CPU_ON over smc."]
 configuration = ["board.toml: sheng-smp=1 starts secondary CPUs, armcpu-spi-ipi=1 routes IPIs through software-pended SPIs, armcpu-self-ipi=1 makes each core signal itself so XNU enables its IPI (a component argument, not one of the documented boot arguments), armcpu-diagnostics=1 reports the bring-up. sheng-gpu-dynfreq is not on the command line: the merged line measures 988 bytes of the 1000 unixnu.com/zh/xnu/boot-arguments allows, and the switch therefore lives in GpuProbe.cpp with a default of 0. dts: unixnu,cluster-type E on cpu0-3 and P on cpu4-7."]
 procedure = ["Apply both SoC patches (native-smp-secondary, native-smp-type-clusters) through the SoC repository's patch series, then build kernel, payload and boot image and boot over USB. Verify in the build tree that MAX_CPUS is 8 in the BCM2837 block, MAX_CPU_CLUSTERS is 2 and __ARM_AMP__ survives the later #undef."]
@@ -220,7 +220,7 @@ evidence = [
 id = "display"
 status = "implemented"
 components = ["GopFramebuffer"]
-paths = ["package/*Display*", "package/*Framebuffer*", "package/*Backlight*", "scripts/*display*", "scripts/*gop*", "scripts/*framebuffer*"]
+paths = ["package/*Display*", "package/*Framebuffer*", "package/*Backlight*", "scripts/*display*", "scripts/*gop*", "scripts/*framebuffer*", "scripts/build-boot-progress.py"]
 inputs = [
   "The panel is 1080x2400 and the loader hands over a framebuffer at 0x9c000000 with 4320-byte rows and 32 bpp, so the display path starts from that memory rather than from a GPU.",
   "IOMobileFramebufferLegacy is prelinked and exports nothing, so the board archive binds each name to its original absolute address.",
@@ -271,7 +271,7 @@ evidence = [{ kind = "device", reference = "docs/evidence/2026-11-06-backlight-p
 id = "input"
 status = "implemented"
 components = ["QcomGeniSpi", "ShengHidInput", "ShengNovatekTouch"]
-paths = ["drivers/ShengHidInput", "package/HidInputProbe.cpp", "kits/alioth-touch", "scripts/build-alioth-touch.py", "scripts/build-gop-legacy-display.py", "package/*Button*", "package/tests/buttons_host.c"]
+paths = ["drivers/ShengHidInput", "package/HidInputProbe.cpp", "kits/alioth-touch", "kits/alioth-touch/**", "scripts/build-alioth-touch.py", "scripts/build-gop-legacy-display.py", "package/*Button*", "package/tests/buttons_host.c"]
 inputs = ["FocalTech FT5652 on GENI SE4 (QUPv3 wrapper 0), per alioth-sm8250.dtsi: spi-max-frequency 6000000, interrupts <39 0x2008>, reset GPIO 33, irq GPIO 39, vdd L10C, vcc_i2c L1C, display-coords 0 0 8640 19200, max-touch-number 10."]
 configuration = ["board.toml: native-touch=1 starts kits/alioth-touch, sheng-touch-hid=1 enables the publication path in ShengHidInput, native-touch-diag=1 is a measurement-only round and must be removed for release images. SPI clock is the device tree's 6 MHz; the source is TCXO 19.2 MHz on DFS level 0."]
 procedure = ["Build with component ShengHidInput selected and the board display recipe, which invokes build-sheng-hid-input.py and archives NativeHidInput.late.o plus hid-original-bindings.o into the force-loaded libNativeLegacyDisplay.late.a. Then build payload and boot image, verify the payload carries the built kernel, and boot over USB."]
@@ -292,7 +292,7 @@ evidence = [{ kind = "device", reference = "docs/evidence/2026-11-06-the-deaf-co
 id = "gpu"
 status = "implemented"
 components = ["Adreno650", "AdrenoMetal", "ArmSmmu4K", "AdrenoPM4", "AdrenoFirmware"]
-paths = ["package/*Gpu*", "package/*Gmu*", "package/*Adreno*", "package/pipa/*", "scripts/*adreno*", "scripts/*gpu*", "scripts/*metal*", "scripts/*turnip*", "scripts/*air*"]
+paths = ["drivers/Adreno650", "drivers/AdrenoMetal", "package/*Gpu*", "package/*Gmu*", "package/*Adreno*", "package/pipa/*", "scripts/*adreno*", "scripts/*gpu*", "scripts/*metal*", "scripts/*turnip*", "scripts/*air*"]
 inputs = [
   "Adreno 650 on SM8250-AC; chip id 0x06050002; blocks GPU 0x3d00000, GMU 0x3d6a000, GPUCC 0x3d90000, SMMU 0x3da0000.",
   "Firmware already embedded in package/GpuFirmwareA650.c: gmu 41548 B, sqe 31632 B, and the zap image 13964 B (ELF header 148 B at 0, the 6712 B hash at 0x1000, the 1676 B segment at 0x3000). The vendor's a650_zap.mdt is packed as [header 148][hash 6712] and would not satisfy its own program headers; the embedded image is laid out by those headers, which is what zapLoad and qcom_mdt_load read.",
@@ -503,7 +503,7 @@ evidence = [
 id = "diagnostics"
 status = "device-verified"
 components = ["QcomXnuUsbDebug"]
-paths = ["scripts/check-*", "scripts/probe-*", "scripts/audit-*", "scripts/read-*", "scripts/prepare-*", "scripts/data/**", "package/tests/**", "package/*Tests*", "package/*Diagnostic*", "package/*Probe*", "package/Boot*", "package/linux-log/**", "unixnu.lock", "scripts/run-sheng-unattended.sh", "docs/evidence/**"]
+paths = ["scripts/check-*", "scripts/probe-*", "scripts/audit-*", "scripts/read-*", "scripts/prepare-*", "scripts/decode-*", "scripts/run-host-tests.sh", "scripts/sheng-*", "scripts/*latency*", "scripts/data/**", "package/tests/**", "package/*Tests*", "package/*Diagnostic*", "package/*Probe*", "package/Boot*", "package/linux-log/**", "unixnu.lock", "scripts/run-sheng-unattended.sh", "docs/evidence/**"]
 inputs = [
   "The board's DWC3 controller, its apps SMMU stream, and the boot arguments qcom-usb-debug=1 and qcom-usb-ctl=1 in board.toml.",
   "The diagnostic page is boot-progress=2 with boot-diag-resume=10, so it returns after scanout stops.",
