@@ -761,7 +761,12 @@ kernel_args = [
   # cannot wedge the kernel and the route can be checked before anything is written.
   # Mode 6 adds CX power-on, the GPU SMMU clock and the 200 MHz GMU clock. Judgement line:
   # "GPU m1 gcc=ok cc=ok smmu=ok gpu=ok io=0".
+  # 2026-11-07: ZAP is not optional. A round without it (acc1) started the poster extensions and
+  # then hung the ring: GPUHANG h=1349 with r=0 over one boot, DeviceLost in WidgetRenderer_Defa
+  # and CollectionsPoster, and nothing drew. Every earlier boot read h=0. With sheng-gpu-norestart=1
+  # one hang is counted every 500 ms and never restarted, so a single missing ZAP poisons the boot.
   "pipa-gpu=12",
+  "pipa-gpu-zap=1",
   # Restoring the configuration the GPU actually consumed a ring under. 11-01 and 11-03 both ran
   # with write-combining off, the zap/secure-mode handshake done, and the hangcheck disabled; today
   # all three are the other way. One round with all three back answers "is any of them the cause"
