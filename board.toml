@@ -22,7 +22,7 @@ kit = "alioth"
 # They are "embedded" kits with no build of their own, so selecting them adds no archive and
 # no second copy. Without them the device repository needed three symbolic links into
 # ../../UniXNU/kits, which resolved in this workspace only.
-include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "ShengUfs", "ShengHidInput", "VirtioMmioBlock", "RamBlock", "GopFramebuffer", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState", "QcomXnuUsbDebug", "ArmSmmu4K", "AdrenoPM4", "AdrenoFirmware"]
+include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "ShengUfs", "ShengHidInput", "VirtioMmioBlock", "RamBlock", "GopFramebuffer", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState", "QcomXnuUsbDebug", "ArmSmmu4K", "Adreno650", "AdrenoPM4", "AdrenoFirmware"]
 
 [package]
 # docs/porting/packaging.md: scripts/package.sh is copied unchanged from the UniXNU

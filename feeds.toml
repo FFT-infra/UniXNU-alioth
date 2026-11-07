@@ -2,7 +2,7 @@
 name = "sm8250"
 kind = "soc"
 git = "https://github.com/FFT-infra/UniXNU-sm8250-common"
-commit = "a6e7e36caab58f5b9a5625dbdb8da2bf290fa5cc"
+commit = "a67a9bf33e44b29c275d13225633ec3475c38461"
 
 # The UFS driver fork that carries the alioth SM8250 stream configuration.
 [[source]]
@@ -20,20 +20,7 @@ kind = "driver"
 git = "https://github.com/FFT-infra/QcomXnuUsbDebug"
 commit = "18bcc385bc0c97ff38343a83040f19711392867b"
 
-# The GPU driver compiled in this image, named for the component that consumes it (Adreno740 in
-# components.toml; the silicon is this board's A650). The feed names the public branch base;
-# local.toml points this machine at the working checkout, whose board work is not pushed.
-[[source]]
-name = "Adreno740"
-kind = "driver"
-git = "https://github.com/FFT-infra/Adreno650"
-commit = "cedcaa2949c795e71a47e78ae413c8a41b17d7d0"
-
-# The ARM CPU driver for this board. xVanTuring's pipa branch carries the SM8250 SMP and
-# IPI bring-up the base repository's copy does not have, so the board pins it here instead
-# of passing a --local-module on every build.
-[[source]]
-name = "ArmCpu"
-kind = "driver"
-git = "https://github.com/xVanTuring/ArmCpu"
-commit = "a9c4585dbb1b75b8594dd0ae54962cc59969d98f"
+# The A650 GPU driver and the ArmCpu device branch are submodules of this repository:
+# drivers/Adreno650 follows UniXNU/Adreno740, and drivers/ArmCpu follows UniXNU/ArmCpu.
+# The base repository's own submodules stay at the upstream revisions, and the resolver
+# takes the device repository's directories first.
