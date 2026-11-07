@@ -1408,6 +1408,7 @@ pcie_steps_thread(void *argument, wait_result_t wait_result)
 {
 	(void)argument;
 	(void)wait_result;
+	thread_set_thread_name(current_thread(), "alioth-pcie");
 	if (!map_all()) {
 		thread_terminate(current_thread());
 	}

@@ -42,7 +42,10 @@ case "$BRANCH" in main|test|test-gemini|align-main-*) ;; *) echo "NOT ON main/te
 WORK="$BASE/UniXNU/out/alioth/ipados-17.7.11-21H461/alioth"
 OUT="$WORKSPACE/tmp/boot-$TAG.img"
 DEV="$DEVICE"
-DRV=""
+# Extra resolver arguments, e.g. DRV="--local-module driver:ShengUfs=../NativeUfs-alioth" to
+# build a driver from its local checkout while measuring a change to it. Empty by default so a
+# round builds from feeds.toml and unixnu.lock exactly as a clean checkout would.
+DRV="${DRV:-}"
 
 ./unixnu defconfig alioth_defconfig -D "$DEV" $DRV || exit 1
 # The feed fetch was completed from the Mac checkout; the shared unixnu.lock and out/feeds

@@ -130,6 +130,16 @@ extern volatile uint64_t native_ufs_block_failures;
 extern volatile uint32_t native_ufs_integrity_failures, native_ufs_blocks_published;
 extern volatile uint32_t native_ufs_probe_calls __attribute__((weak_import)), native_ufs_matched __attribute__((weak_import));
 extern volatile uint32_t native_ufs_root_step __attribute__((weak_import));
+extern volatile uint32_t native_ufs_diag_step __attribute__((weak_import));
+extern volatile uint32_t native_ufs_diag_opcode __attribute__((weak_import));
+extern volatile uint32_t native_ufs_diag_type __attribute__((weak_import));
+extern volatile uint64_t native_ufs_diag_lba __attribute__((weak_import));
+extern volatile uint32_t native_ufs_last_polls __attribute__((weak_import));
+extern volatile uint64_t native_ufs_lock_owner __attribute__((weak_import));
+extern volatile uint64_t native_ufs_lock_wait __attribute__((weak_import));
+extern volatile uint32_t native_ufs_last_db __attribute__((weak_import));
+extern volatile uint32_t native_ufs_last_is __attribute__((weak_import));
+extern volatile uint32_t native_ufs_last_ocs __attribute__((weak_import));
 extern const char *volatile native_ufs_root_failure __attribute__((weak_import));
 extern volatile uint32_t native_virtio_ready, native_virtio_read_requests, native_virtio_read_failures;
 extern volatile uint64_t native_virtio_verified_blocks;
@@ -174,6 +184,10 @@ extern volatile uint32_t native_hid_touch_status __attribute__((weak_import));
 // The A650 probe's rows. Row 0 is its verdict line ("GPU m1 gcc=... cc=... smmu=... gpu=...
 // io=..."); the board does not render these on the page, so the console carries the first one.
 extern char native_gpu_rows[][256] __attribute__((weak_import));   // must match GpuProbe's definition
+extern volatile uint32_t native_gmu_last_access __attribute__((weak_import));
+extern volatile uint32_t native_gmu_last_count __attribute__((weak_import));
+extern volatile uint32_t native_gpu_step __attribute__((weak_import));
+extern volatile uint64_t native_gpu_step_at __attribute__((weak_import));
 extern volatile uint32_t native_adreno_close_step[8] __attribute__((weak_import));
 // Who opens the published GPU service apart from the probe, whether the two sandbox gates let
 // them in, and the last line each streamed. Without these the console only shows that clients
@@ -1130,6 +1144,13 @@ size_t boot_progress_spawn_rows(char *out,size_t cap) {
 enum {BpProfSamples = 65536};
 static uint64_t bp_prof[BpProfSamples];
 static uint32_t bp_prof_head;
+/* The PC each core was interrupted at, kernel or user, every IRQ. A core that is running a loop
+ * and taking no interrupts shows nothing here; an IPI sent to it fills this in, which names the
+ * loop. One per core, no lock: a diagnostic snapshot. */
+volatile uint64_t boot_progress_core_pc[8];
+/* Set by the sampler before it sends its IPI; the next interrupt on that core answers and clears it.
+ * A flag read per interrupt keeps the line shared instead of written by every core on every IRQ. */
+volatile uint32_t boot_progress_core_pc_want[8];
 // Interrupted samples per core and process (pid % 61), since boot: shows which cores the busy processes run on.
 static uint32_t bp_cpu_cnt[8][64];
 // Kernel samples also keep the interrupted frame chain (int-147): int-146's hottest kernel PC was the instruction after DAIFClr in
@@ -1154,6 +1175,16 @@ static void bp_kernel_chain(uint64_t pc) {
 void boot_progress_irq(uint64_t pc,uint64_t psr,uint64_t sp) {
   // Independent of the recorder lock. IRQ still performs no pixel stores.
   if(enabled) {
+    {
+      cpu_data_t *cpu=getCpuDatap();
+      if((uintptr_t)cpu>0xffff000000000000ull) {
+        const uint32_t c=cpu->cpu_number&7;
+        if(__atomic_load_n(&boot_progress_core_pc_want[c],__ATOMIC_RELAXED)) {
+          __atomic_store_n(&boot_progress_core_pc[c],pc,__ATOMIC_RELAXED);
+          __atomic_store_n(&boot_progress_core_pc_want[c],0u,__ATOMIC_RELAXED);
+        }
+      }
+    }
     __atomic_fetch_add(&irq_entries,1,__ATOMIC_RELAXED);
     __atomic_store_n(&irq_entry_pc,pc,__ATOMIC_RELAXED);
     if(started && nprocs>0) {
@@ -1211,6 +1242,7 @@ void boot_progress_poll(void) {
   release();
 }
 static void pulse_monitor(void *arg, wait_result_t result) {
+  thread_set_thread_name(current_thread(), "boot_pulse");
   (void)arg;(void)result;
   // No thread-name allocation or BSD dependency on this heartbeat path.
   __atomic_store_n(&pulse_worker_status,2,__ATOMIC_RELEASE);
@@ -1239,6 +1271,7 @@ static void pulse_monitor(void *arg, wait_result_t result) {
   }
 }
 static void process_monitor(void *arg, wait_result_t result) {
+  thread_set_thread_name(current_thread(), "boot_procs");
   (void)arg;(void)result;
   unsigned named=0;
   __atomic_store_n(&process_worker_status,2,__ATOMIC_RELEASE);
@@ -1592,6 +1625,7 @@ static void touch_overlay_locked(void) {
 // much later than asked means timers or wakeups reach an idle core late, which looks like a slow system with idle CPUs.
 static void touch_monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
+  thread_set_thread_name(current_thread(), "boot_touch");
   for(;;) {
     touch_overlay();
     uint64_t f,t0,t1;__asm__ volatile("mrs %0, cntfrq_el0":"=r"(f));if(!f)f=19200000;
@@ -1646,19 +1680,66 @@ static void ufs_time_report(unsigned now) {
     done, now, vms, rms, now > spent ? (uint64_t)now - spent : 0, blocks, blocks * 4096 >> 20, reqs,
     reqs ? blocks / reqs : 0, vms + rms ? vms * 100 / (vms + rms) : 0);
   if (n > 0) qcom_usb_debug_write(log, (size_t)n < sizeof(log) ? (size_t)n : sizeof(log) - 1);
+  /* Same fields as the boot page's UFS line. The serial capture otherwise cannot tell a root
+   * whose verification failed (integrity>0) from a transport that stopped answering (counters
+   * frozen, integrity=0), which is the difference between two unrelated fixes. */
+  {
+    char diag[240];
+    const uint64_t failures = __atomic_load_n(&native_ufs_block_failures, __ATOMIC_RELAXED);
+    const uint32_t integrity = __atomic_load_n(&native_ufs_integrity_failures, __ATOMIC_RELAXED);
+    const uint32_t published = __atomic_load_n(&native_ufs_blocks_published, __ATOMIC_RELAXED);
+    const uint32_t step = &native_ufs_root_step ? __atomic_load_n(&native_ufs_root_step, __ATOMIC_RELAXED) : 0u;
+    const char *why = &native_ufs_root_failure && native_ufs_root_failure ? native_ufs_root_failure : "-";
+    /* A transfer that wedges inside a register access leaves the access and the command here. */
+    const uint32_t io_step = &native_ufs_diag_step ? __atomic_load_n(&native_ufs_diag_step, __ATOMIC_RELAXED) : 0u;
+    const uint32_t io_op = &native_ufs_diag_opcode ? __atomic_load_n(&native_ufs_diag_opcode, __ATOMIC_RELAXED) : 0u;
+    const uint32_t io_type = &native_ufs_diag_type ? __atomic_load_n(&native_ufs_diag_type, __ATOMIC_RELAXED) : 0u;
+    const uint64_t io_lba = &native_ufs_diag_lba ? __atomic_load_n(&native_ufs_diag_lba, __ATOMIC_RELAXED) : 0ull;
+    int d = snprintf(diag, sizeof(diag),
+      "UFSDIAG requests=%llu verified4K=%llu failures=%llu integrity=%u published=%u step=%u io=%u/%u/%u/%llx "
+      "polls=%u db=%x is=%x ocs=%x lock=%llx/%llx why=%.40s\n",
+      reqs, blocks, failures, integrity, published, step, io_step, io_type, io_op, io_lba,
+      &native_ufs_last_polls ? __atomic_load_n(&native_ufs_last_polls, __ATOMIC_RELAXED) : 0u,
+      &native_ufs_last_db ? __atomic_load_n(&native_ufs_last_db, __ATOMIC_RELAXED) : 0u,
+      &native_ufs_last_is ? __atomic_load_n(&native_ufs_last_is, __ATOMIC_RELAXED) : 0u,
+      &native_ufs_last_ocs ? __atomic_load_n(&native_ufs_last_ocs, __ATOMIC_RELAXED) : 0u,
+      &native_ufs_lock_owner ? (unsigned long long)__atomic_load_n(&native_ufs_lock_owner, __ATOMIC_RELAXED) : 0ull,
+      &native_ufs_lock_wait ? (unsigned long long)__atomic_load_n(&native_ufs_lock_wait, __ATOMIC_RELAXED) : 0ull,
+      why);
+    if (d > 0) qcom_usb_debug_write(diag, (size_t)d < sizeof(diag) ? (size_t)d : sizeof(diag) - 1);
+  }
   // Once the A650 probe has filled its summary row, say it on the console. Without this the
   // probe runs and nothing anywhere shows what it found.
   static unsigned gpuRowsSentAt;
   if (&native_gpu_rows && native_gpu_rows[0][0] && now >= gpuRowsSentAt + 15) {
     // The summary alone hides every step after it: modes 7 and above report in the GMU and
     // HFI rows. Print the summary and those, one line each.
-    static const int rows[] = {0, 3, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31};
+    static const int rows[] = {0, 1, 2, 3, 4, 5, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31};
     for (unsigned r = 0; r < sizeof rows / sizeof rows[0]; ++r) {
       const char *text = native_gpu_rows[rows[r]];
       if (!text[0]) continue;
       char gpu[240];
       int m = snprintf(gpu, sizeof gpu, "GPUROW%d %s\n", rows[r], text);
       if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
+    }
+    /* The cold start that never returns leaves the last GMU register it touched here: window in
+     * the top byte, byte offset below it. A row that stays unchanged while the boot page freezes
+     * names the access, which no returned status can. */
+    if (&native_gmu_last_access) {
+      char gl[160];
+      /* The step also carries when it was reached, so a stalled probe separates "it ran late"
+       * from "it ran at once and stopped". */
+      uint64_t age = 0, freq; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq)); if (!freq) freq = 1;
+      if (&native_gpu_step_at) {
+        const uint64_t at = __atomic_load_n(&native_gpu_step_at, __ATOMIC_RELAXED);
+        if (at) age = (mach_absolute_time() - at) / freq;
+      }
+      int gn = snprintf(gl, sizeof gl, "GPUROWLAST gmu=%08x step=%u count=%u age=%llus\n",
+                        __atomic_load_n(&native_gmu_last_access, __ATOMIC_RELAXED),
+                        &native_gpu_step ? __atomic_load_n(&native_gpu_step, __ATOMIC_RELAXED) : 0u,
+                        &native_gmu_last_count ? __atomic_load_n(&native_gmu_last_count, __ATOMIC_RELAXED) : 0u,
+                        age);
+      if (gn > 0) qcom_usb_debug_write(gl, (size_t)gn < sizeof(gl) ? (size_t)gn : sizeof(gl) - 1);
     }
     gpuRowsSentAt = now;
     // The close step also goes to the console: the persistent log is lost when the round
@@ -1749,13 +1830,32 @@ static void touch_time_report(unsigned now) {
   if (&native_gpu_rows && native_gpu_rows[0][0] && now >= gpuRowsSentAt + 15) {
     // The summary alone hides every step after it: modes 7 and above report in the GMU and
     // HFI rows. Print the summary and those, one line each.
-    static const int rows[] = {0, 3, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31};
+    static const int rows[] = {0, 1, 2, 3, 4, 5, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31};
     for (unsigned r = 0; r < sizeof rows / sizeof rows[0]; ++r) {
       const char *text = native_gpu_rows[rows[r]];
       if (!text[0]) continue;
       char gpu[240];
       int m = snprintf(gpu, sizeof gpu, "GPUROW%d %s\n", rows[r], text);
       if (m > 0) qcom_usb_debug_write(gpu, (size_t)m < sizeof(gpu) ? (size_t)m : sizeof(gpu) - 1);
+    }
+    /* The cold start that never returns leaves the last GMU register it touched here: window in
+     * the top byte, byte offset below it. A row that stays unchanged while the boot page freezes
+     * names the access, which no returned status can. */
+    if (&native_gmu_last_access) {
+      char gl[160];
+      /* The step also carries when it was reached, so a stalled probe separates "it ran late"
+       * from "it ran at once and stopped". */
+      uint64_t age = 0, freq; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq)); if (!freq) freq = 1;
+      if (&native_gpu_step_at) {
+        const uint64_t at = __atomic_load_n(&native_gpu_step_at, __ATOMIC_RELAXED);
+        if (at) age = (mach_absolute_time() - at) / freq;
+      }
+      int gn = snprintf(gl, sizeof gl, "GPUROWLAST gmu=%08x step=%u count=%u age=%llus\n",
+                        __atomic_load_n(&native_gmu_last_access, __ATOMIC_RELAXED),
+                        &native_gpu_step ? __atomic_load_n(&native_gpu_step, __ATOMIC_RELAXED) : 0u,
+                        &native_gmu_last_count ? __atomic_load_n(&native_gmu_last_count, __ATOMIC_RELAXED) : 0u,
+                        age);
+      if (gn > 0) qcom_usb_debug_write(gl, (size_t)gn < sizeof(gl) ? (size_t)gn : sizeof(gl) - 1);
     }
     gpuRowsSentAt = now;
     // The close step also goes to the console: the persistent log is lost when the round
@@ -1878,7 +1978,7 @@ static void gpu_rows_report(unsigned now) {
   if (!&qcom_usb_debug_write || !&native_gpu_rows || !native_gpu_rows[0][0]) return;
   static unsigned sentAt;
   if (now < sentAt + 15) return;
-  static const int rows[] = {0, 3, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28};
+  static const int rows[] = {0, 1, 2, 3, 4, 5, 6, 7, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28};
   for (unsigned r = 0; r < sizeof rows / sizeof rows[0]; ++r) {
     const char *text = native_gpu_rows[rows[r]];
     if (!text[0]) continue;
@@ -1897,6 +1997,7 @@ static void gpu_rows_report(unsigned now) {
 }
 static void log_only_monitor(void *arg, wait_result_t result) {
   (void)arg;(void)result;
+  thread_set_thread_name(current_thread(), "boot_log_monitor");
   for (;;) {
     __atomic_fetch_add(&boot_progress_monitor_ticks,1,__ATOMIC_RELAXED);
     const unsigned now=seconds();

@@ -10,6 +10,7 @@
 // 16 MiB area at the window's tail; the UI's pipeline caches outgrew it in int-148 and int-149.)
 // The header is written last in each round, so a reader never trusts a slot or an export the header does not count yet.
 #include <kern/thread.h>
+#include <arm/thread.h>
 #include <kern/task.h>
 #include <kern/processor.h>
 #include <arm/cpu_data_internal.h>
@@ -24,6 +25,10 @@
 // (osfmk/kern/thread.h) is declared for the same reason: keeping thread.h out avoids its macro set.
 extern void proc_name(int, char *, int) __attribute__((weak_import));
 extern void thread_get_thread_name(thread_t, char *) __attribute__((weak_import));
+/* Filled by the kernel patch osfmk/kern/thread.c: every kernel thread's tid and the
+ * continuation it was created with, so a deaf core's thread names its own code. */
+extern volatile uint64_t sheng_thread_trail[][2] __attribute__((weak_import));
+extern volatile uint32_t sheng_thread_trail_count __attribute__((weak_import));
 extern int native_ufs_log_open(uint64_t *, uint64_t *, const char **) __attribute__((weak_import));
 extern int native_ufs_log_write(uint64_t, uint32_t, const void *) __attribute__((weak_import));
 extern int native_ufs_log_read(uint64_t, uint32_t, void *) __attribute__((weak_import));
@@ -274,7 +279,12 @@ extern void armcpu_core_note_deaf(uint32_t core) __attribute__((weak_import));
 // Reads the suspect core's own redistributor frame from a healthy core: pending, enabled, active and WAKER.
 // Pending-but-not-taken says the core is masked or halted; cleared enables say its GIC was turned off;
 // nothing pending says no sender targets it.
-extern int armcpu_core_gicr_probe(uint32_t core, uint32_t out[5]) __attribute__((weak_import));
+extern int armcpu_core_gicr_probe(uint32_t core, uint32_t out[7]) __attribute__((weak_import));
+/* Sends an IPI to a core by number; the IRQ entry records where it interrupted, so a core that takes
+ * no interrupts of its own can still be sampled. */
+extern int armcpu_ipi_probe_core(uint32_t core) __attribute__((weak_import));
+extern volatile uint64_t boot_progress_core_pc[8] __attribute__((weak_import));
+extern volatile uint32_t boot_progress_core_pc_want[8] __attribute__((weak_import));
 // The phase that core last wrote, and the count (units of 1024) at which it entered the handler. A deaf
 // core with phase 2 was inside the timer handler, 4 or 5 inside the IPI handler, 7 inside a device
 // handler, and 0 or 6 was not in a handler at all.
@@ -566,6 +576,7 @@ static int diag_emit(const void *data, uint32_t size, void *arg) {
 }
 static void diag_thread(void *arg, wait_result_t wait) {
   (void)arg; (void)wait;
+  thread_set_thread_name(current_thread(), "boot_diag");
   IOLockLock(export_lock);
   const uint32_t half = export_region / 2;
   struct diag_sink k = {NULL, export_ready && export_ready_first == 0 ? half : 0, 0};
@@ -2660,7 +2671,7 @@ static void core_health_thread(void *arg, wait_result_t result)
      * pending, enabled, active and WAKER. A core that is pending but never takes the interrupt is masked or
      * halted; one whose enables are clear had its GIC turned off; one with nothing pending is not targeted. */
     if (deaf != 0 && &armcpu_core_gicr_probe) {
-      char gr[512];
+      char gr[768];
       /* The two step counters belong to the threads that most often go deaf, so they sit in the
        * header (they are global, not per core) where this row can still print them from a healthy
        * core. ms is the page monitor's step when it last moved, ts the log tick's: a monitor that
@@ -2670,9 +2681,14 @@ static void core_health_thread(void *arg, wait_result_t result)
                        &boot_progress_monitor_step ? (unsigned)__atomic_load_n(&boot_progress_monitor_step, __ATOMIC_RELAXED) : 0u,
                        (unsigned)boot_log_tick_step,
                        &boot_progress_monitor_ticks ? (unsigned long long)__atomic_load_n(&boot_progress_monitor_ticks, __ATOMIC_RELAXED) : 0ULL);
-      for (unsigned c = 0; c < cores && m > 0 && (unsigned)m < sizeof gr - 96; ++c) {
+      for (unsigned c = 0; c < cores && m > 0 && (unsigned)m < sizeof gr - 168; ++c) {
         if (!((deaf >> c) & 1u)) continue;
-        uint32_t p[5] = {0, 0, 0, 0, 0};
+        uint32_t p[7] = {0, 0, 0, 0, 0, 0, 0};
+        /* Ask the core where it is. The sample lands in the next round's row. */
+        if (&armcpu_ipi_probe_core && &boot_progress_core_pc_want) {
+          __atomic_store_n(&boot_progress_core_pc_want[c], 1u, __ATOMIC_RELAXED);
+          (void)armcpu_ipi_probe_core(c);
+        }
         const int ok = armcpu_core_gicr_probe(c, p);
         /* How long it has been inside the handler it last entered, in seconds. A phase that never
          * changes and an age that keeps climbing is a core stuck in that one handler. */
@@ -2717,12 +2733,45 @@ static void core_health_thread(void *arg, wait_result_t result)
             if (nm[0] == '-' || nm[0] == 0) snprintf(nm, sizeof nm, "%s", pn);
           }
         }
-        m += snprintf(gr + m, sizeof gr - (unsigned)m, " c%u=%s%x/%x/%x/%x/%x ph%u age%us ac=%llx/%llx nm=%s k=%llx pr=%u",
+        /* Where the thread was when the core stopped: the user PC and CPSR it trapped from. A CPSR
+         * with I set on a thread that is on a core means the mask it trapped with is what holds the
+         * timer pending. */
+        unsigned long long upc = 0, ucsr = 0;
+        if (at && at->machine.upcb) {
+          upc = (unsigned long long)get_saved_state_pc(at->machine.upcb);
+          ucsr = (unsigned long long)get_saved_state_cpsr(at->machine.upcb);
+        }
+        m += snprintf(gr + m, sizeof gr - (unsigned)m, " c%u=%s%x/%x/%x/%x/%x gr=%x ip=%x ph%u age%us ac=%llx/%llx nm=%s k=%llx pr=%u up=%llx cs=%llx",
                       c, ok == 0 ? "" : "?",
                       (unsigned)p[0], (unsigned)p[1], (unsigned)p[2], (unsigned)p[3], (unsigned)p[4],
-                      ph, age, ac, acstate, nm, cont, pri);
+                      (unsigned)p[5], (unsigned)p[6],
+                      ph, age, ac, acstate, nm, cont, pri, upc, ucsr);
+        if (&boot_progress_core_pc)
+          m += snprintf(gr + m, sizeof gr - (unsigned)m, " ic=%llx",
+                        (unsigned long long)__atomic_load_n(&boot_progress_core_pc[c], __ATOMIC_RELAXED));
+        if (at && &sheng_thread_trail && &sheng_thread_trail_count) {
+          const uint32_t trail = __atomic_load_n(&sheng_thread_trail_count, __ATOMIC_RELAXED);
+          for (uint32_t i = 0; i < trail && i < 256; ++i) {
+            if (__atomic_load_n(&sheng_thread_trail[i][0], __ATOMIC_RELAXED) != ac) continue;
+            char kt[112];
+            const int kn = snprintf(kt, sizeof kt, "GICRKT tid=%llx continuation=%llx\n", ac,
+              (unsigned long long)__atomic_load_n(&sheng_thread_trail[i][1], __ATOMIC_RELAXED));
+            if (kn > 0) qcom_usb_debug_write(kt, (size_t)kn < sizeof(kt) ? (size_t)kn : sizeof(kt) - 1);
+            break;
+          }
+        }
       }
       if (m > 0 && (unsigned)m < sizeof gr) {gr[m++] = '\n'; qcom_usb_debug_write(gr, (size_t)m < sizeof gr ? (size_t)m : sizeof gr - 1);}
+      if (&armcpu_core_gicr_probe) {
+        char gq[256];
+        int qn = snprintf(gq, sizeof gq, "GICRG t=%us", elapsed);
+        for (unsigned c = 0; c < cores && qn > 0 && (unsigned)qn < sizeof gq - 24; ++c) {
+          uint32_t q[7] = {0, 0, 0, 0, 0, 0, 0};
+          if (armcpu_core_gicr_probe(c, q) != 0) { qn += snprintf(gq + qn, sizeof gq - (unsigned)qn, " c%u=?", c); continue; }
+          qn += snprintf(gq + qn, sizeof gq - (unsigned)qn, " c%u=%x/%x/%x", c, (unsigned)q[5], (unsigned)q[6], (unsigned)q[1]);
+        }
+        if (qn > 0 && (unsigned)qn < sizeof gq) {gq[qn++] = '\n'; qcom_usb_debug_write(gq, (size_t)qn < sizeof gq ? (size_t)qn : sizeof gq - 1);}
+      }
     }
   }
 }

@@ -1,0 +1,31 @@
+diff --git a/osfmk/kern/thread.c b/osfmk/kern/thread.c
+index 35cc23b0d..406d08af0 100644
+--- a/osfmk/kern/thread.c
++++ b/osfmk/kern/thread.c
+@@ -112,6 +112,12 @@
+ #include <kern/syscall_subr.h>
+ #include <kern/task.h>
+ #include <kern/thread.h>
++
++/* sheng: every kernel thread's (tid, creation continuation). A core that stops taking
++ * interrupts keeps its last thread on the books; this table names the code that thread was
++ * created to run, which the console cannot otherwise report. Read by the board package. */
++volatile uint64_t sheng_thread_trail[256][2];
++volatile uint32_t sheng_thread_trail_count;
+ #include <kern/thread_group.h>
+ #include <kern/coalition.h>
+ #include <kern/host.h>
+@@ -1916,6 +1922,13 @@ kernel_thread_create(
+ 	if (debug_task & 1) {
+ 		kprintf("kernel_thread_create: thread = %p continuation = %p\n", thread, continuation);
+ 	}
++	{
++		uint32_t slot = __atomic_fetch_add(&sheng_thread_trail_count, 1, __ATOMIC_RELAXED);
++		if (slot < 256) {
++			sheng_thread_trail[slot][0] = thread_tid(thread);
++			sheng_thread_trail[slot][1] = (uint64_t)(uintptr_t)continuation;
++		}
++	}
+ 	*new_thread = thread;
+ 
+ 	return result;

@@ -147,6 +147,7 @@ extern "C" {
 char native_gpu_rows[kRows][256];
 volatile uint32_t native_gpu_changes;
 volatile uint32_t native_gpu_step;
+volatile uint64_t native_gpu_step_at;
 struct gpb_result native_gpu_result;
 struct gpb_gmu_clock_on native_gpu_clocks;
 struct gpb_gmu_state native_gpu_gmu_state;
@@ -280,15 +281,22 @@ bool gColdOk;
 extern "C" {
 NativeAdrenoGmuContextReport native_gpu_gmu_context;
 }
-void contextProgress(uint32_t step) {native_gpu_step = 80 + step;}
+void contextProgress(uint32_t step) {native_gpu_step = 80 + step; native_gpu_step_at = mach_absolute_time();}
 volatile uint8_t *gWin[A650GmuWindows];
+/* The last GMU register the probe touched, window in the top byte and the byte offset below it.
+ * A cold start that never returns leaves this at the access it died on; the console row prints it. */
+extern "C" volatile uint32_t native_gmu_last_access = 0, native_gmu_last_count = 0;
 int gmuRead(void *, unsigned w, size_t at, uint32_t *out) {
     if (w >= A650GmuWindows || !gWin[w] || (at & 3) || at + 4 > gDevice.io.bytes[w]) return 1;
+    native_gmu_last_access = (w << 24) | (uint32_t)(at & 0xffffff);
+    __atomic_fetch_add(&native_gmu_last_count, 1, __ATOMIC_RELAXED);
     *out = *reinterpret_cast<volatile uint32_t *>(gWin[w] + at);
     return 0;
 }
 int gmuWrite(void *, unsigned w, size_t at, uint32_t value) {
     if (w >= A650GmuWindows || !gWin[w] || (at & 3) || at + 4 > gDevice.io.bytes[w]) return 1;
+    native_gmu_last_access = (w << 24) | (uint32_t)(at & 0xffffff);
+    __atomic_fetch_add(&native_gmu_last_count, 1, __ATOMIC_RELAXED);
     *reinterpret_cast<volatile uint32_t *>(gWin[w] + at) = value;
     return 0;
 }
@@ -403,6 +411,41 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
             if ((*s2cr & (3u << 16)) == (2u << 16)) *s2cr = 0x00020000u;
         }
         __asm__ volatile("dsb sy" ::: "memory");
+    }
+    /* The first SMMU access below is the one that never returned on 2026-11-08 (step 81, the ID2
+     * read at 0x28, core 4 stopped taking its timer). Re-read the two GPUCC prerequisites here,
+     * after the GMU clock stage, and record them before the access, so a boot that hangs still
+     * shows what the CX domain and the SMMU clock read at that moment. When either is off, ask
+     * the shared kit to run its mode-3 CX/clock sequence once more -- the kit owns that sequence,
+     * the probe only calls it -- and check again. If it is still off, skip the bring-up rather
+     * than issue a read into a gated SMMU: a gated access never returns and takes the core. */
+    {
+        const gpb_io io = {nullptr, rd, wr, delayUs};
+        unsigned have = 0;
+        for (unsigned w = 0; w < GPB_WINDOWS; ++w) if (gVa[w]) have |= 1u << w;
+        uint32_t vote = 0, cx = 0;
+        for (unsigned attempt = 0; attempt < 2; ++attempt) {
+            const int bad = rd(nullptr, GPB_WIN_GPUCC, GPB_CC_SMMU_VOTE_CLK, &vote) |
+                            rd(nullptr, GPB_WIN_GPUCC, GPB_CC_CX_GDSCR, &cx);
+            snprintf(ctx, cap, "GMUCTX pre vote %08x cx %08x try %u", vote, cx, attempt);
+            changed();
+            if (!bad && gpb_clock_on(vote) && gpb_gdsc_on(cx)) break;
+            if (attempt) break;
+            gpb_result again;
+            gpb_run(&io, 3, have, &again);
+        }
+        if (!gpb_clock_on(vote) || !gpb_gdsc_on(cx)) {
+            snprintf(ctx, cap, "GMUCTX skipped: gated smmu vote %08x cx %08x", vote, cx);
+            changed();
+            return;
+        }
+        /* The same window and the same register the bring-up reads first (ID2 at 0x28), through the
+         * same mapping. If this returns, the kit's identical read a moment later cannot be the
+         * stall; a boot that still stops at step 81 then names the kit's allocation, not the bus. */
+        volatile uint32_t *s = reinterpret_cast<volatile uint32_t *>(gSmmuMap->getVirtualAddress());
+        const uint32_t id2 = s[0x28 / 4];
+        snprintf(ctx, cap, "GMUCTX pre vote %08x cx %08x id2 %08x", vote, cx, id2);
+        changed();
     }
     NativeAdrenoGmuContextReport &g = native_gpu_gmu_context;
     const IOReturn status = NativeAdrenoGmuContextBringupRoutes(reinterpret_cast<volatile uint8_t *>(gSmmuMap->getVirtualAddress()),
@@ -1894,6 +1937,9 @@ void memBench() {
 }
 
 void gpuThread(void *, wait_result_t) {
+    /* The GICR row names the thread a stopped core was running; without this name every unnamed
+     * kernel thread reads the same. */
+    thread_set_thread_name(current_thread(), "gpu_probe");
     IOSleep(5000);
     memBench();
     native_gpu_step = 1;
