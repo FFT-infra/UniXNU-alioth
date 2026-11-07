@@ -317,10 +317,10 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # StaticTrustCache entries and is absent from the 76-entry SystemTrustCache.
 # Since the Metal staging it is the three-module owner bundle that
 # scripts/make-owner-trust-bundle.py builds: one owner module carrying the Adreno Metal
-# plugin's CDHash (a54f0f71) plus the same two original modules byte for byte, which the
+# plugin's CDHash (1cc7f47b) plus the same two original modules byte for byte, which the
 # script verifies against build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "15f99943ca6b2cccafa80ff39f200f72e6d3bab1e51f3a00ad39dd640ac4bed6",
+  "071cbd8e69ffc4ddb8de7ad69eff829d128fea97a4c71228650ab3e5a3d394e0",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -619,7 +619,7 @@ kernel_args = [
   # seven, with two distinct failure shapes (tf frozen at 840/841 with the display never owned; and a boot that
   # stayed alive to 260 s with own=0). The 400 rounds before it read askers 5-8 with sw climbing. One variable
   # changed against sy5, so this round measures the reset deadline and nothing else.
-  "sheng-autoreset=900",
+  "sheng-autoreset=600",
   # The physical keys and the panel brightness are both compiled in and both called from
   # LegacyDisplayProbe (alioth_buttons_probe and alioth_backlight_probe, :951-954), but each
   # returns on its first line unless its own boot argument is present, so until these two
