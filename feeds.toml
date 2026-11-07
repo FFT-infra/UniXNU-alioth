@@ -15,10 +15,9 @@ commit = "d6bd207347cb9c870452ff7d2e6ae488b9b13feb"
 # revision. Its local checkout is clean against UniXNU/GopFramebuffer main; a board feed
 # entry here previously named a commit that did not exist, so it is not repeated.
 
-# QcomXnuUsbDebug is a submodule of this repository for the archive build, but the OS
-# profile's patch series names component:QcomXnuUsbDebug, so the resolver still needs a
-# source for it. The base catalog keeps its entry for the other alioth device records and
-# munch; scripts/build-qcom-xnu-usb-debug.py builds the archive from the submodule.
+# This device's QcomXnuUsbDebug branch. The component is selected and built by the catalog;
+# the OS profile patch series names it as well, so its source must resolve. The pin below is
+# the device branch.
 [[source]]
 name = "QcomXnuUsbDebug"
 kind = "driver"
