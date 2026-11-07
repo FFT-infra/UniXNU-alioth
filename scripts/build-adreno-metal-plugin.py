@@ -26,6 +26,30 @@ import shutil
 import subprocess
 from pathlib import Path
 
+
+def use_full_xcode():
+    """xcode-select points at the Command Line Tools, whose xcrun reports no iPhoneOS SDK.
+    Pick a full Xcode for this build only; DEVELOPER_DIR or XCODE_APP overrides the search."""
+    if not os.environ.get('DEVELOPER_DIR'):
+        if subprocess.run(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'],
+                          capture_output=True).returncode != 0:
+            candidates = [os.environ.get('XCODE_APP', '')]
+            for root in ('/Applications', '/Volumes/Disk/Applications'):
+                candidates += [str(path) for path in sorted(Path(root).glob('Xcode*.app'))]
+            for candidate in candidates:
+                developer = Path(candidate) / 'Contents/Developer' if candidate else None
+                if developer and (developer / 'Platforms/iPhoneOS.platform').is_dir():
+                    os.environ['DEVELOPER_DIR'] = str(developer)
+                    break
+            else:
+                raise SystemExit('no iPhoneOS SDK: set DEVELOPER_DIR or XCODE_APP to a full Xcode')
+    # gen-turnip-smoke-shaders.py runs glslc and spirv-val; homebrew supplies both on the Mac.
+    if shutil.which('glslc') is None and Path('/opt/homebrew/bin/glslc').is_file():
+        os.environ['PATH'] = os.environ.get('PATH', '') + ':/opt/homebrew/bin'
+
+
+use_full_xcode()
+
 DEVICE = Path(__file__).resolve().parent.parent
 ROOT = Path(os.environ.get('UNIXNU_BASE', DEVICE.parent / 'UniXNU')).resolve()
 METAL = DEVICE / 'drivers' / 'AdrenoMetal'
@@ -53,7 +77,9 @@ for path in sorted(METAL.rglob('*')):
 metal_build_id = source_hash.hexdigest()
 base += ['-DNATIVE_METAL_BUILD_ID="' + metal_build_id + '"']
 (bundle / 'gpu-build.json').write_text(json.dumps({'metal_source_sha256': metal_build_id, 'target': args.target}, indent=2)+'\n')
-VULKAN_INCLUDE = ROOT / '.cache/mesa-work/include'
+VULKAN_INCLUDE = Path(os.environ.get('VULKAN_INCLUDE', ROOT / '.cache/mesa-work/include'))
+if not (VULKAN_INCLUDE / 'vulkan/vulkan.h').is_file():
+    raise SystemExit('no Vulkan headers at %s; set VULKAN_INCLUDE to the Mesa include directory' % VULKAN_INCLUDE)
 TURNIP = ROOT / ('build/mesa-tu-ios27' if IOS27 else 'build/mesa-tu-ios') / 'src/freedreno/vulkan/libvulkan_freedreno.dylib'
 turnip_profile = TURNIP.parents[3] / 'builtin-build-profile.json'
 if turnip_profile.is_file():
