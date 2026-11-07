@@ -11,7 +11,7 @@ kits/alioth, so resolving that link names the device checkout even though unixnu
 UNIXNU_DEVICE to archive steps.
 
 Why a package recipe and not a component: components are catalog entries in the shared base
-repository (NEW/UniXNU/components.toml), and this driver is board-private. GpuProbe,
+repository (`UniXNU/components.toml`), and this driver is board-private. GpuProbe,
 BacklightProbe and the PCIe bring-up all arrive the same way, through scripts/build-*.py.
 
 The header is package/IOUSBDeviceController.h, reconstructed from this board's own kernelcache

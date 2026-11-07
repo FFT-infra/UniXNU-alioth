@@ -6,6 +6,6 @@
   "current_orb_diff_sha256": "124d491ffc98f0e97f39952cce714d428f39a3e5e5e61c45bb4549d46dc111c0",
   "old_untracked_sources_match": true,
   "patches": [
-    "/Volumes/Disk/xinyang/Lab/Bridge/WorkSpace/alioth/NEW/UniXNU-alioth/patches/mesa/takeover-source-baseline.patch"
+    "patches/mesa/takeover-source-baseline.patch"
   ]
 }
