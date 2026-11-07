@@ -49,6 +49,10 @@ if not reference.is_file():
 # (out/<board>/tree/ before the migration, out/<device>/<os_profile>/<config>/tree/ after), so walk up to out/
 # instead of assuming a depth.
 original = ROOT / '.cache/firmware/kernelcache.macho/kernelcache.release.ipad7.decompressed'
+# A broken symlink makes exists() false, so the old check entered this block and symlink_to
+# raised FileExistsError on every build after the first. Replace the link instead.
+if original.is_symlink():
+    original.unlink()
 if not original.exists():
     cache_roots = [parent for parent in ROOT.parents if (parent / 'ipsw').is_dir()]
     require(cache_roots, 'The original kernelcache is not in the IPSW cache; run "unixnu ipsw fetch"')
