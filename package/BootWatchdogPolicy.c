@@ -90,7 +90,17 @@ char sheng_wallpaper_names[256];
 // SQLite keeps its schema in page 1, so the CREATE TABLE names come out without a SQLite reader.
 volatile int32_t sheng_wallpaper_db_ran = 0;
 char sheng_wallpaper_db[400];
+// Why the row above is short or empty: [0] containers matched by the walk, [1] the path lookup's
+// errno (0 = opened), [2] bytes read, [3] the first bytes of the path that failed. of12 printed
+// "[wallpaper db] " two hundred times with nothing after it, which is the same shape as a probe
+// that found the container and one that never found it.
+volatile int32_t sheng_wallpaper_db_status[4];
 extern vfs_context_t vfs_context_kernel(void);
+// Breadcrumbs for the boot that stops inside this function (rd7): the persistent log is the only
+// channel readable after such a boot, and printf does not reach it. Each step of the policy write
+// names itself, so the next stalled boot says which statement did not return.
+extern void boot_progress_stage(const char *text);
+#define POLICY_STAGE(text) boot_progress_stage("watchdog policy " text)
 
 static int sheng_unlink_one(proc_t p, uint64_t scratch, const char *file) {
  int32_t result = 0;
@@ -453,12 +463,17 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
   if(wdb==1 && !sheng_wallpaper_db_ran) {
    sheng_wallpaper_db_ran=1;
    if(!sheng_wallpaper_container[0])
-    (void)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
+    sheng_wallpaper_db_status[0]=(int32_t)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
+   else sheng_wallpaper_db_status[0]=-1;   /* carried over from an earlier probe */
    if(sheng_wallpaper_container[0]) {
     char path[320], head[2048];
     snprintf(path,sizeof path,"%s/Library/Application Support/PRBPosterExtensionDataStore/61/PBFPosterExtensionDataStoreSQLiteDatabase.sqlite3",sheng_wallpaper_container);
     const int n=sheng_read_head(p,scratch,path,head,sizeof head);
+    /* sheng_read_head returns -errno for a failed open and -1 for a short read; both used to look
+     * exactly like a file that opened empty, because only n > 0 produced any text. */
+    if(n<=0) sheng_wallpaper_db_status[1]=n;
     if(n>0) {
+     sheng_wallpaper_db_status[2]=n;
      size_t used=0; unsigned run=0;
      for(int i=0;i<n;++i) {
       const unsigned char c=(unsigned char)head[i];
@@ -540,6 +555,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  strlcat(policy,policy_tail,sizeof(policy));
  const char *directory="/private/var/db/com.apple.xpc.launchd";
  const char *path="/private/var/db/com.apple.xpc.launchd/disabled.plist";
+ POLICY_STAGE("mkdir");
  if((error=copyout(directory,scratch,strlen(directory)+1)))goto done;
  struct mkdir_args md={.path=scratch,.mode=0755};
  error=mkdir(p,&md,&result);
@@ -548,8 +564,10 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  // With persistent Data the previous boot's file is there: this policy is rewritten in place on every boot (it must follow the
  // boot arguments). Symlinks are still refused (O_NOFOLLOW) and the fstat check below insists on a root-owned regular file.
  struct open_args op={.path=scratch,.flags=O_WRONLY|O_CREAT|O_TRUNC|O_NOFOLLOW,.mode=0644};
+ POLICY_STAGE("open");
  if((error=open(p,&op,&result)))goto done;
  fd=result;
+ POLICY_STAGE("opened");
  // The scratch page keeps the cache-mount environment slots at +0x400, so the policy (the lite list makes it longer than 0x200 bytes) goes
  // out in pieces through the 0x200 bytes at +0x200.
  for(size_t sent=0,total=strlen(policy);sent<total;) {
@@ -561,20 +579,26 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
   if(written!=(user_ssize_t)piece){error=EIO;goto done;}
   sent+=piece;
  }
+ POLICY_STAGE("written");
  struct fchown_args owner={.fd=fd,.uid=0,.gid=0};
+ POLICY_STAGE("fchown");
  if((error=fchown(p,&owner,&result)))goto done;
  struct fchmod_args mode={.fd=fd,.mode=0644};
  if((error=fchmod(p,&mode,&result)))goto done;
  struct fsync_args sync={.fd=fd};
+ POLICY_STAGE("fsync");
  if((error=fsync(p,&sync,&result)))goto done;
+ POLICY_STAGE("synced");
  // Preserve the cache-mount environment slots at +0x400, +0x500, +0x600.
  struct fstat64_args sa={.fd=fd,.ub=scratch+0x800};struct stat64 st={0};
  if((error=sys_fstat64(p,&sa,&result)) || (error=copyin(sa.ub,&st,sizeof(st))))goto done;
  if(st.st_uid!=0 || st.st_gid!=0 || !S_ISREG(st.st_mode) || (st.st_mode&0777)!=0644 || st.st_size!=(off_t)(strlen(policy)))error=EINVAL;
  done:
+ POLICY_STAGE("done");
  if(fd>=0){struct close_args cl={.fd=fd};int e=sys_close(p,&cl,&result);if(!error)error=e;}
  // A real empty migration marker selects the qualified modern override loader.
  if(!error) {
+  POLICY_STAGE("marker");
   const char *marker="/private/var/db/com.apple.xpc.launchd/disabled.migrated";
   error=copyout(marker,scratch,strlen(marker)+1);
   if(!error) {
@@ -585,6 +609,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
   }
  }
  sheng_watchdog_policy_status=error;
+ POLICY_STAGE("returned");
  printf("sheng bring-up watchdogd launch policy: %d (hardware watchdog not implemented)\n",error);
  return error;
 }
