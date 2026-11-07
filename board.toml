@@ -317,10 +317,10 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # StaticTrustCache entries and is absent from the 76-entry SystemTrustCache.
 # Since the Metal staging it is the three-module owner bundle that
 # scripts/make-owner-trust-bundle.py builds: one owner module carrying the Adreno Metal
-# plugin's CDHash (bb44c4be) plus the same two original modules byte for byte, which the
+# plugin's CDHash (5ed52966) plus the same two original modules byte for byte, which the
 # script verifies against build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "35684e79c41f8e7656f0059ee1dca1702270113171311e058a53b3ca2ad71d7f",
+  "3b7ae0f91a9258aadf14fa0df21b5793fdaa5e17386f6a05510916fe0ab49371",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -729,6 +729,12 @@ kernel_args = [
   # contact goes through the driver's own publish(), so the HID report and the sink notification
   # are the ones the system already trusts. Off unless this argument is given.
   "sheng-touch-synth=4000",
+  # The contact is a swipe up from the bottom edge, not a press held at the centre. A centre press
+  # opened Settings on of8 and the screenshot taken from it measured a grouped table background
+  # instead of a wallpaper; the swipe asks for the home screen and leaves the display drawing.
+  # 2026-11-07: the round that carried the render summary (rd2) had no swipe, so its only contact
+  # was the centre press and the boot ended on the lock screen with askers=0 and no GPU client.
+  "sheng-touch-synth-swipe=1",
   # The HID half. NativeHidInput only registers the touch sink when this argument is 1
   # (ShengHidInput-*/NativeHidInput.cpp:291,303); without it the frame loop reads contacts and
   # drops them, because publish() finds no sink. Measured 2026-10-28 on boot-usb57: the probe
@@ -892,7 +898,9 @@ kernel_args = [
   # SURFACEL row, which read as "the CPU path cannot present here". Those boots were losing a core
   # about seven seconds in, and the render server never started on them for that reason. With the
   # GPU busy-counter poll off (see sheng-gpu-dynfreq) the CPU path presents.
-  "sheng-dpu-scanout=0",
+  # The argument itself is gone, not the choice: NativeLegacyDisplay.cpp:341 parses it into
+  # `unsigned mode = 0`, so absent and =0 are the same CPU-copy path this file selects above.
+  # 2026-11-07 it was dropped to make room for sheng-touch-synth-swipe=1 on a 1023-byte command line.
   # pipa-metal-withhold=none was tried on 2026-10-29: SpringBoard stops trapping but the
   # compositor then sends swaps with no surface (reason 1), so nothing draws. The default
   # withholds the Apple GPU families, which is the configuration where the desktop appears.
@@ -994,6 +1002,12 @@ kernel_args = [
   # (pc in memcpy, lr in hostRead4k, far = sp + 0x3b0). The read-back now goes through
   # native_ufs_log_read_bytes, so the boot below is the first that can reach the timed reset.
   # "sheng-autoreset=180",
+  #
+  # The per-process render summary (what each Metal process completes, draws, dispatches, blits and
+  # the largest surface it stores) has no boot argument. 2026-11-07: the line is 1006 bytes of the
+  # 1023-byte limit, and a tagged build adds "sheng-build-tag=<tag>" on top, so a switch of its own
+  # does not fit. The frontend therefore sends that row always, and only while the process has
+  # reported no real problem, so a client's failure text still wins its own row.
 ]
 
 [payload.adt]
