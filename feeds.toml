@@ -14,11 +14,10 @@ commit = "d6bd207347cb9c870452ff7d2e6ae488b9b13feb"
 # This board's display path is the upstream GopFramebuffer component at the base catalog
 # revision. Its local checkout is clean against UniXNU/GopFramebuffer main; a board feed
 # entry here previously named a commit that did not exist, so it is not repeated.
-[[source]]
-name = "QcomXnuUsbDebug"
-kind = "driver"
-git = "https://github.com/FFT-infra/QcomXnuUsbDebug"
-commit = "18bcc385bc0c97ff38343a83040f19711392867b"
+
+# QcomXnuUsbDebug is a submodule of this repository (drivers/QcomXnuUsbDebug), built by
+# scripts/build-qcom-xnu-usb-debug.py. The base catalog keeps its own entry for the other
+# alioth device records and munch; this repository no longer selects that entry.
 
 # The A650 GPU driver and the ArmCpu device branch are submodules of this repository:
 # drivers/Adreno650 follows UniXNU/Adreno740, and drivers/ArmCpu follows UniXNU/ArmCpu.

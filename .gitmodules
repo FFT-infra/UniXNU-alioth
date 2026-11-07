@@ -10,3 +10,6 @@
 [submodule "drivers/AdrenoMetal"]
 	path = drivers/AdrenoMetal
 	url = https://github.com/FFT-infra/AdrenoMetal.git
+[submodule "drivers/QcomXnuUsbDebug"]
+	path = drivers/QcomXnuUsbDebug
+	url = https://github.com/FFT-infra/QcomXnuUsbDebug.git

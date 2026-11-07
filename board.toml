@@ -22,7 +22,7 @@ kit = "alioth"
 # They are "embedded" kits with no build of their own, so selecting them adds no archive and
 # no second copy. Without them the device repository needed three symbolic links into
 # ../../UniXNU/kits, which resolved in this workspace only.
-include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "ShengUfs", "ShengHidInput", "VirtioMmioBlock", "RamBlock", "GopFramebuffer", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState", "QcomXnuUsbDebug", "ArmSmmu4K", "Adreno650", "AdrenoPM4", "AdrenoFirmware"]
+include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "ShengUfs", "ShengHidInput", "VirtioMmioBlock", "RamBlock", "GopFramebuffer", "XnuPrelink", "DarwinBoot", "AppleKeyStoreState", "ArmSmmu4K", "Adreno650", "AdrenoPM4", "AdrenoFirmware"]
 
 [package]
 # docs/porting/packaging.md: scripts/package.sh is copied unchanged from the UniXNU
@@ -128,7 +128,10 @@ archives = [
   "build-gop-legacy-display.py",
   "build-alioth-pcie.py",
   "component:Adreno650",
-  "component:QcomXnuUsbDebug",
+  # The board-private USB debug driver. It is a submodule of this repository and is built by
+  # scripts/build-qcom-xnu-usb-debug.py. The base catalog keeps its own QcomXnuUsbDebug entry
+  # for the other alioth device records and munch; this repository no longer selects it.
+  "build-qcom-xnu-usb-debug.py",
   # Touch. QcomGeniSpi is the GENI SPI controller; ShengHidInput is the IOHIDFamily
   # consumer that turns the probe's native_touch_* seqlock into HID digitizer events.
   # The board's own FocalTech FT5652 probe and protocol come from kits/alioth-touch, built by
