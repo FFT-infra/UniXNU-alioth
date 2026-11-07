@@ -130,16 +130,20 @@ extern volatile uint64_t native_ufs_block_failures;
 extern volatile uint32_t native_ufs_integrity_failures, native_ufs_blocks_published;
 extern volatile uint32_t native_ufs_probe_calls __attribute__((weak_import)), native_ufs_matched __attribute__((weak_import));
 extern volatile uint32_t native_ufs_root_step __attribute__((weak_import));
-extern volatile uint32_t native_ufs_diag_step __attribute__((weak_import));
-extern volatile uint32_t native_ufs_diag_opcode __attribute__((weak_import));
-extern volatile uint32_t native_ufs_diag_type __attribute__((weak_import));
-extern volatile uint64_t native_ufs_diag_lba __attribute__((weak_import));
-extern volatile uint32_t native_ufs_last_polls __attribute__((weak_import));
-extern volatile uint64_t native_ufs_lock_owner __attribute__((weak_import));
-extern volatile uint64_t native_ufs_lock_wait __attribute__((weak_import));
-extern volatile uint32_t native_ufs_last_db __attribute__((weak_import));
-extern volatile uint32_t native_ufs_last_is __attribute__((weak_import));
-extern volatile uint32_t native_ufs_last_ocs __attribute__((weak_import));
+/* The transfer diagnostics a newer NativeUfs exports. weak_import does not survive the kernel's
+ * static link, so each name gets an empty definition here and the driver's own symbol is linked
+ * over it when that build of the driver is present (same reason as native_adreno_metal_starter
+ * below). A feeds pin without them then leaves the row at zero instead of failing the link. */
+__attribute__((weak)) volatile uint32_t native_ufs_diag_step;
+__attribute__((weak)) volatile uint32_t native_ufs_diag_opcode;
+__attribute__((weak)) volatile uint32_t native_ufs_diag_type;
+__attribute__((weak)) volatile uint64_t native_ufs_diag_lba;
+__attribute__((weak)) volatile uint32_t native_ufs_last_polls;
+__attribute__((weak)) volatile uint64_t native_ufs_lock_owner;
+__attribute__((weak)) volatile uint64_t native_ufs_lock_wait;
+__attribute__((weak)) volatile uint32_t native_ufs_last_db;
+__attribute__((weak)) volatile uint32_t native_ufs_last_is;
+__attribute__((weak)) volatile uint32_t native_ufs_last_ocs;
 extern const char *volatile native_ufs_root_failure __attribute__((weak_import));
 extern volatile uint32_t native_virtio_ready, native_virtio_read_requests, native_virtio_read_failures;
 extern volatile uint64_t native_virtio_verified_blocks;
