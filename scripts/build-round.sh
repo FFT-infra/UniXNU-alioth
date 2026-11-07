@@ -10,6 +10,9 @@
 # boot argument without editing this file:
 #   TAG=rail2 scripts/build-round.sh --kernel-arg pcie=13 --kernel-arg pcie_rail=2
 set -x
+# unixnu reads git output as UTF-8; a localized git message in a non-UTF-8 locale aborts it.
+export LC_ALL=C
+export LANG=C
 DEVICE=$(cd "$(dirname "$0")/.." && pwd) || exit 1
 BASE=$(cd "$DEVICE/.." && pwd) || exit 1
 WORKSPACE=$(cd "$BASE/.." && pwd) || exit 1
