@@ -313,6 +313,9 @@ extern volatile uint32_t native_adreno_metal_marks[17] __attribute__((weak_impor
  * archive is present. */
 __attribute__((weak)) char native_adreno_metal_starter[3][17];
 extern volatile uint32_t native_adreno_mount_fail[12] __attribute__((weak_import));
+// The queue-range index the next user connection will be given (NativeAdrenoPublish.cpp): how many 4 GiB ranges
+// this boot has handed out. A client whose range never drains keeps this from advancing.
+extern volatile uint32_t native_adreno_next_client __attribute__((weak_import));
 // {site,count} pairs: which poison() call in NativeAdrenoSubmit.cpp refused, and how often.
 extern volatile uint32_t native_adreno_submit_poison[6] __attribute__((weak_import));
 // The hang-recovery step that refused (step, status) and the counters around it: hangs, restarts, failed.
@@ -1060,12 +1063,20 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
   // slot, 2 core open, 3 window scope; status; slot; count), then one line per process other than the render server: why its Metal device failed.
   if (&native_adreno_window_overflow && &native_adreno_mount_fail) {
     char row[300];
-    snprintf(row, sizeof row, "[gpu windows] ovf %u/%uK/%uM %u/%uK/%uM %u/%uK/%uM %u/%uK/%uM | mount fail stage %u st %x slot %u n %u",
+    snprintf(row, sizeof row, "[gpu windows] ovf %u/%uK/%uM %u/%uK/%uM %u/%uK/%uM %u/%uK/%uM | mount fail stage %u st %x slot %u n %u | vm %u/%u last %x at %u nc %u",
              native_adreno_window_overflow[0][0], native_adreno_window_overflow[0][1], native_adreno_window_overflow[0][2],
              native_adreno_window_overflow[1][0], native_adreno_window_overflow[1][1], native_adreno_window_overflow[1][2],
              native_adreno_window_overflow[2][0], native_adreno_window_overflow[2][1], native_adreno_window_overflow[2][2],
              native_adreno_window_overflow[3][0], native_adreno_window_overflow[3][1], native_adreno_window_overflow[3][2],
-             native_adreno_mount_fail[0], native_adreno_mount_fail[1], native_adreno_mount_fail[2], native_adreno_mount_fail[3]);
+             native_adreno_mount_fail[0], native_adreno_mount_fail[1], native_adreno_mount_fail[2], native_adreno_mount_fail[3],
+             /* Address spaces alive now and at most, then why the last createVm that failed did: its status and the step
+              * (2 tables prepared, 3 attached, 4+i mapped kernel buffer i, 0x30|op<<8 the attach refused at op). nc is the
+              * next queue-range index: against vm it says whether ranges or VMs are the thing that ran out. */
+             &native_adreno_table_switches ? native_adreno_table_switches[4] : 0u,
+             &native_adreno_table_switches ? native_adreno_table_switches[5] : 0u,
+             &native_adreno_table_switches ? native_adreno_table_switches[6] : 0u,
+             &native_adreno_table_switches ? native_adreno_table_switches[7] : 0u,
+             &native_adreno_next_client ? native_adreno_next_client : 0u);
     at = put(out, at, cap, row, sizeof row);
     /* Who reached the plugin's initWithAcceleratorPort:. Three names, newest first, so a client that
      * opens the device without entering the plugin is visible here next to [gpu clients]. */
