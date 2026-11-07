@@ -734,12 +734,19 @@ kernel_args = [
   # contact goes through the driver's own publish(), so the HID report and the sink notification
   # are the ones the system already trusts. Off unless this argument is given.
   "sheng-touch-synth=4000",
+  # 2026-11-07 night: the posters hold a device and make no Metal object at all, so the next question is
+  # whether a poster is configured at all. Both probes below print on the console as well as in the log.
+  # sheng-wp=1 lists the entries under the Data container's Library/Application Support, including
+  # PRBPosterExtensionDataStore; sheng-wallpaper-db=1 prints the printable runs of its SQLite page 1.
+  # They take sheng-touch-synth-swipe's bytes: with nobody at the panel the swipe only unlocks a still
+  # screen, and this round reads the store, not the desktop.
+  "sheng-wp=1",
+  "sheng-wallpaper-scan=1",
   # The contact is a swipe up from the bottom edge, not a press held at the centre. A centre press
   # opened Settings on of8 and the screenshot taken from it measured a grouped table background
   # instead of a wallpaper; the swipe asks for the home screen and leaves the display drawing.
   # 2026-11-07: the round that carried the render summary (rd2) had no swipe, so its only contact
   # was the centre press and the boot ended on the lock screen with askers=0 and no GPU client.
-  "sheng-touch-synth-swipe=1",
   # The HID half. NativeHidInput only registers the touch sink when this argument is 1
   # (ShengHidInput-*/NativeHidInput.cpp:291,303); without it the frame loop reads contacts and
   # drops them, because publish() finds no sink. Measured 2026-10-28 on boot-usb57: the probe
