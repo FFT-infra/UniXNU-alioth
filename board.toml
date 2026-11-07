@@ -317,10 +317,10 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # StaticTrustCache entries and is absent from the 76-entry SystemTrustCache.
 # Since the Metal staging it is the three-module owner bundle that
 # scripts/make-owner-trust-bundle.py builds: one owner module carrying the Adreno Metal
-# plugin's CDHash (5ed52966) plus the same two original modules byte for byte, which the
+# plugin's CDHash (a54f0f71) plus the same two original modules byte for byte, which the
 # script verifies against build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "3b7ae0f91a9258aadf14fa0df21b5793fdaa5e17386f6a05510916fe0ab49371",
+  "15f99943ca6b2cccafa80ff39f200f72e6d3bab1e51f3a00ad39dd640ac4bed6",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -659,11 +659,13 @@ kernel_args = [
   # by u241 would simply stay.
   "sheng-data-persist=2",
   # 2026-11-07: the block above already recorded this failure (u241): a boot that has to mount
-  # an overlay an earlier boot wrote stops about 5 s in, before launchd. Measured again today, four
-  # times: rd4, rd4b, rd5 and rd7 each read 611 blocks (2 MiB) and stopped, SUPER tf frozen from
-  # t=10, no EXITLOG at all; rd6, which discarded the overlay, booted and drew (sw=73 at t=390).
-  # So the overlay is discarded until that read is fixed. It takes com.apple.cryptexd's place in
-  # sheng-disable-jobs, an entry the comment there already says should not be there.
+  # an overlay an earlier boot wrote stops about 5 s in, before launchd. Measured again today,
+  # four times: rd4, rd4b, rd5 and rd7 each read 611 blocks (2 MiB) and stopped, SUPER tf frozen,
+  # no EXITLOG; the [data] row of rd7 reads pres=166107 ld=11634 with ld never moving, so the
+  # boot stops on one synchronous store read. rd6, which discarded the overlay, booted and drew
+  # (sw=73 at t=390). So the overlay is discarded until that read is fixed.
+  # It takes com.apple.cryptexd's place in sheng-disable-jobs, an entry the comment there
+  # already says should not be there. rd6 ran exactly this pair and was healthy.
   "sheng-data-reset=1",
   # sheng-touch-edge=1 makes a contact that starts within ~3 mm of the bottom edge carry
   # kIOHIDDigitizerEventFromEdgeTip, which is the only thing UIKit reads to classify an edge
