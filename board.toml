@@ -597,7 +597,7 @@ kernel_args = [
   # routined keeps aborting here: measured 2026-10-27, SIGABRT (status=6 ns=2) and several
   # successive pids in one window. It drives location and routine learning, and this board has
   # no GNSS and no accounts, so it has nothing to do.
-  "sheng-disable-jobs=com.apple.liveactivitiesd,com.apple.cryptexd,com.apple.routined",
+  "sheng-disable-jobs=com.apple.liveactivitiesd,com.apple.routined",
   # Unattended loop, on for the return-path round. Measured 2026-10-27 in an earlier round:
   # Unattended loop. The reset returns to fastboot, measured on u276 and u277 (198 s and
   # 201 s), so an earlier note here claiming it came back to the kernel instead is withdrawn:
@@ -619,7 +619,7 @@ kernel_args = [
   # seven, with two distinct failure shapes (tf frozen at 840/841 with the display never owned; and a boot that
   # stayed alive to 260 s with own=0). The 400 rounds before it read askers 5-8 with sw climbing. One variable
   # changed against sy5, so this round measures the reset deadline and nothing else.
-  "sheng-autoreset=400",
+  "sheng-autoreset=900",
   # The physical keys and the panel brightness are both compiled in and both called from
   # LegacyDisplayProbe (alioth_buttons_probe and alioth_backlight_probe, :951-954), but each
   # returns on its first line unless its own boot argument is present, so until these two
@@ -658,6 +658,13 @@ kernel_args = [
   # discard only happens inside the `if (mode && ...)` block, so with mode 0 the overlay written
   # by u241 would simply stay.
   "sheng-data-persist=2",
+  # 2026-11-07: the block above already recorded this failure (u241): a boot that has to mount
+  # an overlay an earlier boot wrote stops about 5 s in, before launchd. Measured again today, four
+  # times: rd4, rd4b, rd5 and rd7 each read 611 blocks (2 MiB) and stopped, SUPER tf frozen from
+  # t=10, no EXITLOG at all; rd6, which discarded the overlay, booted and drew (sw=73 at t=390).
+  # So the overlay is discarded until that read is fixed. It takes com.apple.cryptexd's place in
+  # sheng-disable-jobs, an entry the comment there already says should not be there.
+  "sheng-data-reset=1",
   # sheng-touch-edge=1 makes a contact that starts within ~3 mm of the bottom edge carry
   # kIOHIDDigitizerEventFromEdgeTip, which is the only thing UIKit reads to classify an edge
   # touch; without it the home-swipe and the switcher gestures are type 0 and never recognise.
