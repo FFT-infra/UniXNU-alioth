@@ -100,7 +100,10 @@ extern vfs_context_t vfs_context_kernel(void);
 // channel readable after such a boot, and printf does not reach it. Each step of the policy write
 // names itself, so the next stalled boot says which statement did not return.
 extern void boot_progress_stage(const char *text);
-#define POLICY_STAGE(text) boot_progress_stage("watchdog policy " text)
+#define POLICY_STAGE(text) do{if(policy_traced)boot_progress_stage("watchdog policy " text);}while(0)
+// Only the first call is traced: this function runs on every exec, and ten stage rows per exec
+// would push everything else out of the log ring.
+static int policy_traced = 1;
 
 static int sheng_unlink_one(proc_t p, uint64_t scratch, const char *file) {
  int32_t result = 0;
@@ -610,6 +613,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  }
  sheng_watchdog_policy_status=error;
  POLICY_STAGE("returned");
+ policy_traced=0;
  printf("sheng bring-up watchdogd launch policy: %d (hardware watchdog not implemented)\n",error);
  return error;
 }

@@ -87,6 +87,7 @@ extern volatile int32_t sheng_wallpaper_scan_group __attribute__((weak_import));
 extern volatile int32_t sheng_wallpaper_list_ran __attribute__((weak_import));
 extern char sheng_wallpaper_names[256] __attribute__((weak_import));
 extern volatile int32_t sheng_wallpaper_db_ran __attribute__((weak_import));
+extern volatile int32_t sheng_wallpaper_db_status[4] __attribute__((weak_import));
 extern char sheng_wallpaper_db[400] __attribute__((weak_import));
 extern volatile int native_gpu_addon2_status __attribute__((weak_import));
 extern volatile int native_gpu_addon3_stage __attribute__((weak_import));
@@ -302,6 +303,15 @@ struct native_adreno_client_text {char name[20]; char text[64];};
 extern struct native_adreno_client_text native_adreno_client_text[8] __attribute__((weak_import));
 /* [0] the marker count, [1..16] the plugin's newest progress markers, from NativeAdrenoPublish.cpp. */
 extern volatile uint32_t native_adreno_metal_marks[17] __attribute__((weak_import));
+/* The processes that sent plugin marker 1, i.e. that reached the plugin's initWithAcceleratorPort:.
+ * NativeAdrenoPublish.cpp records them in native_adreno_metal_diag.starter[3][17] and never printed
+ * them, which left "did this process ever enter the plugin" unanswerable: on of14 CollectionsPoster
+ * sat in [metal askers] but not in [gpu clients] or [gpu client text], and the marks ring that could
+ * have said so is overwritten by mediaserverd's 6730/6731 pair every frame.
+ * The driver exports this as its own symbol; weak_import does not survive the kernel's static link,
+ * so the array is declared with an empty definition here and the driver's is linked over it when the
+ * archive is present. */
+__attribute__((weak)) char native_adreno_metal_starter[3][17];
 extern volatile uint32_t native_adreno_mount_fail[12] __attribute__((weak_import));
 // {site,count} pairs: which poison() call in NativeAdrenoSubmit.cpp refused, and how often.
 extern volatile uint32_t native_adreno_submit_poison[6] __attribute__((weak_import));
@@ -676,9 +686,16 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
     }
   }
   if (&sheng_wallpaper_db_ran && sheng_wallpaper_db_ran && &sheng_wallpaper_db) {
-    /* Page 1 of the poster store holds the schema, so these runs are the table names. */
+    /* Page 1 of the poster store holds the schema, so these runs are the table names.
+     * The status prefix says why the text is short: of12 printed this row two hundred times with
+     * nothing after the tag, and "the container was never found" and "the file opened empty" are
+     * the same bytes. [0] containers matched, [1] the open/read result, [2] bytes read. */
     char crow[420];
-    snprintf(crow, sizeof crow, "[wallpaper db] %.390s", sheng_wallpaper_db);
+    snprintf(crow, sizeof crow, "[wallpaper db] c=%d r=%d n=%d %.370s",
+             &sheng_wallpaper_db_status ? (int)sheng_wallpaper_db_status[0] : -9,
+             &sheng_wallpaper_db_status ? (int)sheng_wallpaper_db_status[1] : -9,
+             &sheng_wallpaper_db_status ? (int)sheng_wallpaper_db_status[2] : -9,
+             sheng_wallpaper_db);
     if (&qcom_usb_debug_write) {char cl[426]; const int cn = snprintf(cl, sizeof cl, "%s\n", crow);
       if (cn > 0) qcom_usb_debug_write(cl, (size_t)cn < sizeof cl ? (size_t)cn : sizeof cl - 1);}
     at = put(out, at, cap, crow, sizeof crow);
@@ -1050,6 +1067,14 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_adreno_window_overflow[3][0], native_adreno_window_overflow[3][1], native_adreno_window_overflow[3][2],
              native_adreno_mount_fail[0], native_adreno_mount_fail[1], native_adreno_mount_fail[2], native_adreno_mount_fail[3]);
     at = put(out, at, cap, row, sizeof row);
+    /* Who reached the plugin's initWithAcceleratorPort:. Three names, newest first, so a client that
+     * opens the device without entering the plugin is visible here next to [gpu clients]. */
+    if (&native_adreno_metal_starter && native_adreno_metal_starter[0][0]) {
+      char row2[120];
+      snprintf(row2, sizeof row2, "[gpu plugin] started %.16s | %.16s | %.16s",
+               native_adreno_metal_starter[0], native_adreno_metal_starter[1], native_adreno_metal_starter[2]);
+      at = put(out, at, cap, row2, sizeof row2);
+    }
     if (&native_adreno_client_text)
       for (unsigned i = 0; i < 8 && native_adreno_client_text[i].name[0]; ++i) {
         if (!native_adreno_client_text[i].text[0]) continue;
@@ -2369,6 +2394,13 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                           who, txt, rest);
         if (gn > 0 && &qcom_usb_debug_write)
           qcom_usb_debug_write(g, (size_t)gn < sizeof g ? (size_t)gn : sizeof g - 1);
+        if (&native_adreno_metal_starter && native_adreno_metal_starter[0][0] && &qcom_usb_debug_write) {
+          char p[120];
+          const int pn = snprintf(p, sizeof p, "GPUPLUG started %.16s | %.16s | %.16s\n",
+                                  native_adreno_metal_starter[0], native_adreno_metal_starter[1],
+                                  native_adreno_metal_starter[2]);
+          if (pn > 0) qcom_usb_debug_write(p, (size_t)pn < sizeof p ? (size_t)pn : sizeof p - 1);
+        }
       }
       // The first GPU hang of the boot, once: what the CP was executing and where its pointers were. A steady state of one hang
       // per submission says less than the hang that started it.
