@@ -337,6 +337,10 @@ extern volatile uint64_t sheng_gpu_probe_thread __attribute__((weak_import));
 extern volatile uint64_t sheng_kobject_owner_thread __attribute__((weak_import));
 extern volatile uint64_t sheng_kobject_owner_tid __attribute__((weak_import));
 extern volatile uint64_t sheng_kobject_locks __attribute__((weak_import));
+/* The zone a thread is waiting on, named. A ticket lock in the zone allocator has no timeout. */
+extern volatile uint64_t sheng_zone_wait_name __attribute__((weak_import));
+extern volatile uint64_t sheng_zone_wait_tid __attribute__((weak_import));
+extern volatile uint64_t sheng_zone_wait_count __attribute__((weak_import));
 // The last waitq_wakeup64_all per CPU: the caller's return address, the waitq, the event, how many
 // calls that CPU made and how many of them returned. That call masks interrupts and takes the waitq
 // interlock, so it is the call the mask site above belongs to. A frozen caller with a frozen call
@@ -2314,6 +2318,24 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
             if (ksn > 0 && (unsigned)ksn < sizeof ksk) {ksk[ksn++] = '\n'; qcom_usb_debug_write(ksk, (size_t)ksn < sizeof ksk ? (size_t)ksn : sizeof ksk - 1);}
           }
         }
+      }
+      if (&sheng_zone_wait_name) {
+        const uint64_t zn = __atomic_load_n(&sheng_zone_wait_name, __ATOMIC_RELAXED);
+        const uint64_t zt = &sheng_zone_wait_tid ? __atomic_load_n(&sheng_zone_wait_tid, __ATOMIC_RELAXED) : 0ULL;
+        char zr[160];
+        const char *zname = "-";
+        char zbuf[32];
+        if (zn >= 0xfffffff007004000ULL && zn < 0xfffffff010000000ULL) {
+          const char *zp = (const char *)(uintptr_t)zn;
+          int zi = 0;
+          while (zi < (int)sizeof zbuf - 1 && zp[zi]) { zbuf[zi] = zp[zi]; ++zi; }
+          zbuf[zi] = 0;
+          zname = zbuf;
+        }
+        const int zn2 = snprintf(zr, sizeof zr, "ZONE t=%us tid=%llx name=%s count=%llu\n", elapsed,
+                                 (unsigned long long)zt, zname,
+                                 &sheng_zone_wait_count ? (unsigned long long)__atomic_load_n(&sheng_zone_wait_count, __ATOMIC_RELAXED) : 0ULL);
+        if (zn2 > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(zr, (size_t)zn2 < sizeof zr ? (size_t)zn2 : sizeof zr - 1);
       }
       /* Per-core interrupt health, next to the row it explains. On this board two different timed
        * waits stop about six seconds into the boot while the supervisor's own one keeps ticking:

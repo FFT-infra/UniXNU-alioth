@@ -1,0 +1,32 @@
+--- a/osfmk/kern/zalloc.c
++++ b/osfmk/kern/zalloc.c
+@@ -2404,6 +2404,11 @@
+ 	hw_lck_ticket_unlock_nopreempt(&zone->z_recirc_lock);
+ }
+ 
++volatile uint64_t sheng_zone_wait_zone;
++volatile uint64_t sheng_zone_wait_name;
++volatile uint64_t sheng_zone_wait_tid;
++volatile uint64_t sheng_zone_wait_count;
++
+ static inline void
+ zone_lock_nopreempt_check_contention(zone_t zone)
+ {
+@@ -2423,7 +2428,17 @@
+ 		return;
+ 	}
+ 
++	/* sheng: which zone a thread is waiting on, and for how long. A ticket lock here has no
++	 * timeout, so a zone whose holder never calls the ticket strands every allocation that
++	 * needs that zone; naming it turns "some allocator" into one zone. */
++	sheng_zone_wait_zone = (uint64_t)(uintptr_t)zone;
++	sheng_zone_wait_name = (uint64_t)(uintptr_t)zone->z_name;
++	sheng_zone_wait_tid = thread_tid(current_thread());
++	sheng_zone_wait_count = sheng_zone_wait_count + 1;
+ 	hw_lck_ticket_wait(&zone->z_lock, ticket, NULL, &zone_locks_grp);
++	sheng_zone_wait_zone = 0;
++	sheng_zone_wait_name = 0;
++	sheng_zone_wait_tid = 0;
+ #if KASAN_FAKESTACK
+ 	zone->z_kasan_spl = s;
+ #endif /* KASAN_FAKESTACK */
