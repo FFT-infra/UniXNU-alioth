@@ -299,6 +299,16 @@ extern volatile uint64_t armcpu_ipi_sent __attribute__((weak_import));
 // on a deadline there never wakes. These two counters say whether that path runs at all.
 extern volatile uint32_t armcpu_quiesce_calls __attribute__((weak_import));
 extern volatile uint32_t armcpu_halt_calls __attribute__((weak_import));
+// A hw_lock spin is unbounded until its policy timeout expires; hw_spin_should_keep_spinning returns
+// true for ever when the stored timeout is zero, and the panic policy decides whether the timeout
+// names the lock or keeps spinning. Both are boot-arg/DT tunables, so a silent spin is only silent
+// when one of them is not what the source says.
+// lock_panic_timeout is already declared by osfmk/arm/locks.h as _Atomic(uint64_t); read it through
+// a raw pointer because the diagnostic only needs the snapshot.
+extern int32_t spinlock_timeout_panic __attribute__((weak_import));
+// CNTKCTL_EL1 per core as read in initCPU, plus this core's live value. EVNTEN (bit 2) is the timer
+// event stream, the only wakeup a hw_lock wfe waits for on this kernel (hw_unlock sends no event).
+extern volatile uint64_t armcpu_core_cntkctl[8] __attribute__((weak_import));
 extern volatile uint32_t armcpu_irq_phase __attribute__((weak_import));
 // The mask sites each CPU passed through, newest last, filled by patches/xnu/irq-mask-site.patch
 // inside ml_set_interrupts_enabled, which splhigh() and splsched() reach as macros. A core that
@@ -3077,6 +3087,82 @@ static void core_health_thread(void *arg, wait_result_t result)
           }
           if (gn > 0 && (unsigned)gn < sizeof gm) {gm[gn++] = '\n'; qcom_usb_debug_write(gm, (size_t)gn < sizeof gm ? (size_t)gn : sizeof gm - 1);}
         }
+      }
+      /* The lock that core stopped on, read from another core while it spins. lck_rw_clear_promotion
+       * masks interrupts and then takes the current thread's own sched_lock, so that word is the one
+       * the newest GICRM site names. hw_lock stores the owning thread's pointer in it, so a nonzero
+       * value names the holder even when the holder never reaches the console. self means the same
+       * thread is taking its own lock again; core=-1 means the holder is not on any core (asleep,
+       * and its continuation and wait event say where). The two policy words say whether the spin
+       * can ever end: hw_spin_should_keep_spinning never expires while the timeout reads zero, and
+       * spinlock_timeout_panic=0 turns the timeout into another silent continue. */
+      if (&sheng_irq_mask_count) {
+        char gl[320];
+        for (unsigned c = 0; c < cores; ++c) {
+          if (!((deaf >> c) & 1u)) continue;
+          cpu_data_t *ld = cpu_datap((int)c);
+          thread_t lat = ld ? ld->cpu_active_thread : NULL;
+          const uint64_t self = (uint64_t)(uintptr_t)lat;
+          const uint64_t tlw = lat ? *(const volatile uint64_t *)(const void *)&lat->sched_lock : 0;
+          unsigned long long htid = 0, hst = 0, hcont = 0, hev = 0;
+          unsigned hpri = 0;
+          char hnm[24] = "-";
+          int hcore = -1;
+          if (tlw && tlw >= 0xfffffff000000000ULL) {
+            thread_t ht = (thread_t)(uintptr_t)tlw;
+            htid = (unsigned long long)ht->thread_id;
+            hst = (unsigned long long)ht->state;
+            hpri = (unsigned)ht->sched_pri;
+            hcont = (unsigned long long)(uintptr_t)ht->continuation;
+            hev = (unsigned long long)ht->wait_event;
+            if (&thread_get_thread_name) thread_get_thread_name(ht, hnm);
+            for (unsigned k = 0; k < 8; ++k) {
+              cpu_data_t *kd = cpu_datap((int)k);
+              if (kd && kd->cpu_active_thread == ht) { hcore = (int)k; break; }
+            }
+          }
+          const int ln = snprintf(gl, sizeof gl,
+                                  "GICRL t=%us c%u self=%llx tl=%llx%s%llx/%llx pri=%u nm=%s core=%d cont=%llx ev=%llx panic_to=%llu panic_on=%u\n",
+                                  elapsed, c, (unsigned long long)self, (unsigned long long)tlw,
+                                  tlw && tlw == self ? " SELF:" : " own=", htid, hst, hpri, hnm, hcore,
+                                  hcont, hev,
+                                  (unsigned long long)*(const volatile uint64_t *)(const void *)&lock_panic_timeout,
+                                  &spinlock_timeout_panic ? (unsigned)__atomic_load_n(&spinlock_timeout_panic, __ATOMIC_RELAXED) : 0u);
+          if (ln > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(gl, (size_t)ln < sizeof gl ? (size_t)ln : sizeof gl - 1);
+          /* The holder's own stack. A holder that is running has the call chain that keeps the lock
+           * live; a holder that is asleep shows the frames it went to sleep in. Both are useful and
+           * the row names which case it is by the core= field above. */
+          if (tlw && tlw != self && tlw >= 0xfffffff000000000ULL) {
+            thread_t ht = (thread_t)(uintptr_t)tlw;
+            if (ht->machine.kstackptr) {
+              const uint64_t *htop = (const uint64_t *)(uintptr_t)ht->machine.kstackptr;
+              char hs[400];
+              int hn = snprintf(hs, sizeof hs, "GICRLS t=%us c%u", elapsed, c);
+              int hshown = 0;
+              for (int i = 1; i <= 384 && hshown < 16 && hn > 0 && (unsigned)hn < sizeof hs - 24; ++i) {
+                const uint64_t v = *(const uint64_t *)(htop - i);
+                if (v < 0xfffffff007004000ULL || v >= 0xfffffff00c000000ULL) continue;
+                hn += snprintf(hs + hn, sizeof hs - (unsigned)hn, " %d:%llx", i, (unsigned long long)v);
+                ++hshown;
+              }
+              if (hn > 0 && (unsigned)hn < sizeof hs) {hs[hn++] = '\n'; qcom_usb_debug_write(hs, (size_t)hn < sizeof hs ? (size_t)hn : sizeof hs - 1);}
+            }
+          }
+        }
+      }
+      /* The timer event stream, which is what a wfe in hw_lock_trylock_contended sleeps on: bit 2 of
+       * CNTKCTL_EL1 enables it, and no unlock path sends an event of its own. live is this core now;
+       * cN is what each core read when it registered, so a core that never got the write shows 0
+       * here even while every healthy core shows f or 1f. */
+      if (&armcpu_core_cntkctl) {
+        char ck[208];
+        uint64_t live = 0;
+        __asm__ volatile ("mrs %0, cntkctl_el1" : "=r" (live));
+        int kn = snprintf(ck, sizeof ck, "CNTK t=%us live=%llx |", elapsed, (unsigned long long)live);
+        for (unsigned c = 0; c < cores && kn > 0 && (unsigned)kn < sizeof ck - 22; ++c)
+          kn += snprintf(ck + kn, sizeof ck - (unsigned)kn, " c%u=%llx", c,
+                         (unsigned long long)__atomic_load_n(&armcpu_core_cntkctl[c], __ATOMIC_RELAXED));
+        if (kn > 0 && (unsigned)kn < sizeof ck) {ck[kn++] = '\n'; qcom_usb_debug_write(ck, (size_t)kn < sizeof ck ? (size_t)kn : sizeof ck - 1);}
       }
       /* The same cores from the wakeup side: the caller of their last waitq_wakeup64_all, the waitq
        * and event it carried, and how many of those calls returned. A core that entered one and never
