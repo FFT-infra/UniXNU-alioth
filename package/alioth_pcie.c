@@ -399,7 +399,14 @@ map_all(void)
 #define PHY_POWER_DOWN          0x840           /* dt: qcom,phy-power-down-offset */
 
 #define GDSC_PWR_ON             (1u << 31)      /* gdsc.c: PWR_ON_MASK */
-#define CLOCK_VOTES             0x2fu           /* slv_axi, mstr_axi, cfg_ahb, aux, slv_q2a (pipe comes with the PHY) */
+/*
+ * All six branches in gcc_pcie_0_axi_clk_misc: bit 0 slv_axi, 1 mstr_axi, 2 cfg_ahb, 3 aux,
+ * 4 pipe, 5 slv_q2a. Bit 4 is the core's own pipe clock coming back from the PHY. The external
+ * same-board success records that with bit 4 out the core never answered a DBI, address-
+ * translator or link-block read, while every PARF read returned -- exactly the first-access
+ * hang this file measured at step 11.
+ */
+#define CLOCK_VOTES             0x3fu
 
 static bool
 step_look(void)
@@ -509,8 +516,8 @@ step_gdsc(void)
 static bool
 step_clocks(void)
 {
-	announce("vote for its clocks (slv_axi, mstr_axi, cfg_ahb, aux, slv_q2a, and the WiFi clock reference the device "
-	    "tree calls pcie_0_ldo; the pipe clock comes with the PHY) and read the halt state of each");
+	announce("vote for its clocks (slv_axi, mstr_axi, cfg_ahb, aux, pipe, slv_q2a, and the WiFi clock reference the "
+	    "device tree calls pcie_0_ldo) and read the halt state of each");
 	put(0, "pcie_0_axi_misc (vote for its clocks)", GCC_PCIE_0_AXI_MISC, rd(GCC(GCC_PCIE_0_AXI_MISC)) | CLOCK_VOTES);
 	/* The WiFi clock reference, which the device tree calls "pcie_0_ldo": a branch of its own at
 	 * 0x8c004, not one of the six bits in the vote above. */
@@ -805,10 +812,10 @@ step_parf_init(void)
 	value = get(1, "parf_axi_mstr_wr_addr_halt_v2", 0x1a8);
 	put(1, "parf_axi_mstr_wr_addr_halt_v2 (bit 31 in)", 0x1a8, value | (1u << 31));
 	/* Read the clock vote register once more now that the PHY reference generator is running. Step 3
-	 * votes CLOCK_VOTES and reads it back; bit 4 (pipe) is deliberately left out there because the pipe
-	 * clock comes from the PHY. If it is still clear at the end of step 9, then the controller's AXI
-	 * branches are not clocked when step 10 touches the IATU window, and a bus that never returns is
-	 * what that predicts. Read only: nothing here changes a vote. */
+	 * votes all six branches (0x3f), including pipe bit 4. The earlier 0x2f left the core's own pipe
+	 * clock out; the external same-board success reports that DBI, address-translator and link-block
+	 * reads never return in that state while PARF reads do -- the step 11 first access measured here.
+	 * Read only: nothing here changes a vote. */
 	get(0, "pcie_0_axi_misc after the PHY reference generator", GCC_PCIE_0_AXI_MISC);
 	/*
 	 * The link's own state, read last and read only: step 8 took this before any of the writes
@@ -878,6 +885,14 @@ step_endpoint(void)
 	get(7, "tlmm gpio20 cfg after", TLMM_CFG(GPIO_WLAN_EN));
 	io = get(7, "tlmm gpio20 io after", TLMM_IO(GPIO_WLAN_EN));
 	line("WLAN_EN is %s (io %#x)", (io & TLMM_OUT) ? "HIGH" : "STILL LOW", io);
+
+	/*
+	 * kona-pcie.dtsi:103 gives qcom,ep-latency = <10>: the vendor waits ten milliseconds
+	 * after raising the endpoint enable and before it releases PERST (pci-msm.c:4571-4583).
+	 * The local sequence used to go straight from WLAN_EN to PERST; this restores the
+	 * vendor's settling time before step 11's first DBI access.
+	 */
+	sleep_ms(10);
 
 	/* PERST#: release means high. Set the level before making the pad an output. */
 	cfg = TLMM_FUNC_GPIO | TLMM_PULL_DOWN | TLMM_DRIVE(2) | TLMM_OE;
