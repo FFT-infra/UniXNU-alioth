@@ -4,9 +4,10 @@
 // (adrenoprobed) stands in the way. BootLog.c asks for the stream once (sheng-diag-export=<seconds>) and writes it into the half of the
 // export region the pipeline-cache blob does not hold; scripts/read-sheng-log.py unpacks it into the run's diag/ directory.
 // Stream: "SHEXR001", u32 stream bytes, u32 0, then the cache export's stream (drivers/AdrenoMetal/CacheExport.h, "M2VCACH1") with root
-// "/" and every path relative to it. The scan lists every file first and spends the budget in the order of worth (the log newest file
-// first, then its format strings, then the crash reports), so an older boot's large log files never push out this boot's. The format
-// strings come last among the log's files because they only change with the binaries: the host keeps those of earlier runs.
+// "/" and every path relative to it. The scan lists every file first and spends the budget in the order of worth (the dyld shared
+// cache's format-string catalog, then the persisted log's newest file, then the rest), so neither the log nor its format strings are
+// pushed out by what is expendable: the catalog composes the system frameworks' messages, and the other files keep changing only with
+// the binaries the host already has.
 // screen.bgrx is the panel's scanout at half resolution (16-byte header "SHOT", u32 width, height, stride, then BGRX rows), so the
 // run shows what was on the screen. Files that do not fit the budget are named in diag-skipped.txt, the stream's last file.
 #include <sys/param.h>
@@ -21,7 +22,7 @@
 #include <pexpert/pexpert.h>
 
 enum {DiagMaxFiles = 6144, DiagPath = 192, DiagDepth = 6, DiagChunk = 256 * 1024, DiagNote = 32768};
-struct diag_file {char path[DiagPath]; uint64_t size; uint32_t mode, uid, gid, root, keep;};
+struct diag_file {char path[DiagPath]; uint64_t size, mtime; uint32_t mode, uid, gid, root, keep;};
 static struct diag_file *diag_files;
 static uint32_t diag_count, diag_skipped_count;
 static char *diag_note;   // diag-skipped.txt
@@ -77,6 +78,7 @@ static void add(const char *path, uint32_t root, vfs_context_t ctx) {
   VATTR_WANTED(&va, va_mode);
   VATTR_WANTED(&va, va_uid);
   VATTR_WANTED(&va, va_gid);
+  VATTR_WANTED(&va, va_modify_time);
   error = vnode_getattr(file, &va, ctx);
   vnode_put(file);
   if (error) {note("getattr", path, error); ++boot_diag_errors; return;}
@@ -84,6 +86,7 @@ static void add(const char *path, uint32_t root, vfs_context_t ctx) {
   struct diag_file *f = &diag_files[diag_count++];
   strlcpy(f->path, path, sizeof f->path);
   f->size = va.va_data_size; f->mode = va.va_mode; f->uid = va.va_uid; f->gid = va.va_gid; f->root = root; f->keep = 0;
+  f->mtime = va.va_modify_time.tv_sec > 0 ? (uint64_t)va.va_modify_time.tv_sec : 0;
 }
 
 static void scan(const char *path, unsigned depth, uint32_t root, vfs_context_t ctx) {
@@ -126,9 +129,29 @@ static void scan(const char *path, unsigned depth, uint32_t root, vfs_context_t 
   vnode_put(dir);
 }
 
-// Root order first; inside a root the later name first (log files are numbered upward, so the newest comes first).
+// The order the budget is spent in. Three classes, worth first:
+//
+// 0. The dyld shared cache's format-string catalog (/private/var/db/uuidtext/dsc, the one entry an
+//    order of magnitude larger than the per-image catalogs). Without it every message a system
+//    framework logged composes as "compose failure [shared UUID]": the last export held the whole
+//    unified log and not this file, so SpringBoard's and backboardd's own lines were unreadable.
+//    It is picked as the largest dsc entry the scan listed rather than by its UUID, which changes
+//    with the OS build.
+// 1. The persisted unified log's own files. logd numbers them in a rotation, so the name does not
+//    say which is newest: they are ordered by modification time, newest first.
+// 2. Everything else in root order; inside a root the later name first (log files are numbered
+//    upward, so the newest comes first).
+static uint64_t diag_dsc_max;
+static int diag_rank(const struct diag_file *f) {
+  if (diag_dsc_max && f->size == diag_dsc_max && !strncmp(f->path, "/private/var/db/uuidtext/dsc/", 29)) return 0;
+  if (!strncmp(f->path, "/private/var/db/diagnostics/Persist/", 36)) return 1;
+  return 2;
+}
 static int worth(const void *a, const void *b) {
   const struct diag_file *x = a, *y = b;
+  const int rx = diag_rank(x), ry = diag_rank(y);
+  if (rx != ry) return rx < ry ? -1 : 1;
+  if (rx == 1 && x->mtime != y->mtime) return x->mtime > y->mtime ? -1 : 1;
   if (x->root != y->root) return x->root < y->root ? -1 : 1;
   return -strcmp(x->path, y->path);
 }
@@ -150,6 +173,10 @@ uint64_t boot_diag_scan(uint64_t budget) {
   }
   vfs_context_t ctx = vfs_context_kernel();
   for (unsigned i = 0; i < sizeof diag_roots / sizeof diag_roots[0]; ++i) scan(diag_roots[i], 0, i, ctx);
+  diag_dsc_max = 0;
+  for (uint32_t i = 0; i < diag_count; ++i)
+    if (diag_files[i].size > diag_dsc_max && !strncmp(diag_files[i].path, "/private/var/db/uuidtext/dsc/", 29))
+      diag_dsc_max = diag_files[i].size;
   qsort(diag_files, diag_count, sizeof diag_files[0], worth);
   uint32_t kept = 0;
   for (uint32_t i = 0; i < diag_count; ++i) {
