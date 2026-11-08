@@ -2236,6 +2236,22 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                                   (unsigned long long)(uintptr_t)pt->waitq.wq_q,
                                   (unsigned)pt->sched_pri, pnm);
           if (pn > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(gp_row, (size_t)pn < sizeof gp_row ? (size_t)pn : sizeof gp_row - 1);
+          /* The call chain the parked thread left on its own kernel stack. Only words that fall
+           * inside the kernel's text range are printed, so the line names functions rather than
+           * data: the newest return address is nearest the top of the stack. */
+          if (pt->machine.kstackptr) {
+            const uint64_t *top = (const uint64_t *)(uintptr_t)pt->machine.kstackptr;
+            char sk[400];
+            int sn2 = snprintf(sk, sizeof sk, "GPSTK t=%us", elapsed);
+            int shown = 0;
+            for (int i = 1; i <= 96 && shown < 12 && sn2 > 0 && (unsigned)sn2 < sizeof sk - 20; ++i) {
+              const uint64_t v = *(const uint64_t *)(top - i);
+              if (v < 0xfffffff007004000ULL || v >= 0xfffffff00c000000ULL) continue;
+              sn2 += snprintf(sk + sn2, sizeof sk - (unsigned)sn2, " %llx", (unsigned long long)v);
+              ++shown;
+            }
+            if (sn2 > 0 && (unsigned)sn2 < sizeof sk) {sk[sn2++] = '\n'; qcom_usb_debug_write(sk, (size_t)sn2 < sizeof sk ? (size_t)sn2 : sizeof sk - 1);}
+          }
         }
       }
       /* Per-core interrupt health, next to the row it explains. On this board two different timed
