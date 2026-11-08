@@ -822,6 +822,15 @@ step_parf_init(void)
 	get(1, "parf_mhi_clock_reset_ctrl read back", 0x174);
 	value = get(1, "parf_axi_mstr_wr_addr_halt_v2", 0x1a8);
 	put(1, "parf_axi_mstr_wr_addr_halt_v2 (bit 31 in)", 0x1a8, value | (1u << 31));
+	/*
+	 * The vendor masks every PARF interrupt before it trains the link
+	 * (pci-msm.c:4537-4552). This kernel has no PCIe interrupt handler yet, so an
+	 * unmasked link-up or AER event is an interrupt with no owner. Mask all and clear
+	 * pending now; the later wifi component will enable the MSI set it owns.
+	 */
+	put(1, "parf_int_all_mask (mask all before link training)", 0x22c, 0);
+	put(1, "parf_int_all_clear (clear pending)", 0x228, 0xffffffffu);
+	get(1, "parf_int_all_mask read back", 0x22c);
 	/* Read the clock vote register once more now that the PHY reference generator is running. Step 3
 	 * votes all six branches (0x3f), including pipe bit 4. The earlier 0x2f left the core's own pipe
 	 * clock out; the external same-board success reports that DBI, address-translator and link-block
