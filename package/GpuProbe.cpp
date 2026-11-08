@@ -174,15 +174,17 @@ static void gpuMarkStep(const char *what, unsigned step) {
     if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
 }
 
-/* Window 6 (RSCC) is read for two status bits only. Mapping it is what stopped every boot after
- * 2026-11-08 06:55: windows 0..5 complete in about 200 us each, then the map() call for window 6
- * never returns, and the boot stops with it. It is skipped unless pipa-gpu-rscc=1 asks for it, so
- * the probe reaches the firmware load and the rest of the boot continues. */
+/* Window 6 (RSCC) is the GPU's always-on register block and the GMU cold start reads its two
+ * status bits, so it is mapped by default. It was skipped for a while because its map() call
+ * never returned and the boot stopped there; that turned out to be the state of the Data volume,
+ * not this window: with the persistent overlay reset, the same map completes in 15 us and the
+ * accelerator registers again (GPUROW24 METAL, askers 5). pipa-gpu-rscc=0 skips it, which is
+ * what makes a boot survive when the overlay is bad. */
 static bool rsccWanted() {
     static int wanted = -1;
     if (wanted < 0) {
         unsigned p = 0;
-        wanted = (PE_parse_boot_argn("pipa-gpu-rscc", &p, sizeof p) && p) ? 1 : 0;
+        wanted = (PE_parse_boot_argn("pipa-gpu-rscc", &p, sizeof p) && p == 0) ? 0 : 1;
     }
     return wanted != 0;
 }
