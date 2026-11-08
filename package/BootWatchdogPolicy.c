@@ -573,6 +573,9 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  if(enabled)strlcat(policy,policy_watchdogd,sizeof(policy));
  if(lite)for(const char *c=lite_jobs;*c;) {if((error=append_job(&c)))return error;}
  {int posters=0;PE_parse_boot_argn("sheng-wallpaper-posters",&posters,sizeof posters);
+  /* The full name costs 26 bytes and the command line has 1023 for everything; wp-poster is the
+   * short form for a round that needs the two wallpaper extensions and nothing else changed. */
+  if(!posters)PE_parse_boot_argn("wp-poster",&posters,sizeof posters);
   if(lite && posters!=1)for(const char *c=lite_posters;*c;) {if((error=append_job(&c)))return error;}}
  for(const char *c=jobs;*c;) {if((error=append_job(&c)))return error;}
  strlcat(policy,policy_tail,sizeof(policy));
