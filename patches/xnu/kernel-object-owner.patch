@@ -1,6 +1,6 @@
 --- a/osfmk/vm/vm_object.c
 +++ b/osfmk/vm/vm_object.c
-@@ -7195,15 +7195,40 @@
+@@ -7195,6 +7195,20 @@
  
  uint32_t scan_object_collision = 0;
  
@@ -17,32 +17,23 @@
 +volatile uint64_t sheng_kobject_owner_tid;
 +volatile uint64_t sheng_kobject_owner_thread;
 +volatile uint64_t sheng_kobject_locks;
-+volatile uint64_t sheng_kobject_wait_tid;
 +
  void
  vm_object_lock(vm_object_t object)
  {
-+	boolean_t contended;
-+
- 	if (object == vm_pageout_scan_wants_object) {
- 		scan_object_collision++;
- 		mutex_pause(2);
+@@ -7204,6 +7218,11 @@
  	}
  	DTRACE_VM(vm_object_lock_w);
--	lck_rw_lock_exclusive(&object->Lock);
-+	contended = lck_rw_lock_exclusive(&object->Lock);
+ 	lck_rw_lock_exclusive(&object->Lock);
 +	if (object == kernel_object) {
 +		sheng_kobject_owner_thread = (uint64_t)(uintptr_t)current_thread();
 +		sheng_kobject_owner_tid = thread_tid(current_thread());
 +		sheng_kobject_locks = sheng_kobject_locks + 1;
-+		if (contended) {
-+			sheng_kobject_wait_tid = thread_tid(current_thread());
-+		}
 +	}
  }
  
  boolean_t
-@@ -7321,6 +7346,10 @@
+@@ -7321,6 +7340,10 @@
  #if DEVELOPMENT || DEBUG
  	DTRACE_VM(vm_object_unlock);
  #endif
