@@ -313,6 +313,16 @@ extern volatile uint64_t sheng_irq_mask_count[8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_unmask_count[8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_ring_cntv_ctl[8] __attribute__((weak_import));
 extern volatile int64_t sheng_irq_ring_cntv_rem[8] __attribute__((weak_import));
+/* The page allocator's own counters. The GPU probe thread blocks in its first handful of
+ * IOKit allocations while 3.8 GB of memory exists at boot, so the question is whether the
+ * free pool ran dry: an allocation waits for the pageout scan, the scan needs I/O, and the
+ * I/O never starts. Free against reserved answers it in one number. */
+extern unsigned int vm_page_free_count __attribute__((weak_import));
+extern unsigned int vm_page_free_target __attribute__((weak_import));
+extern unsigned int vm_page_free_reserved __attribute__((weak_import));
+extern unsigned int vm_page_active_count __attribute__((weak_import));
+extern unsigned int vm_page_inactive_count __attribute__((weak_import));
+extern unsigned int vm_page_speculative_count __attribute__((weak_import));
 // The last waitq_wakeup64_all per CPU: the caller's return address, the waitq, the event, how many
 // calls that CPU made and how many of them returned. That call masks interrupts and takes the waitq
 // interlock, so it is the call the mask site above belongs to. A frozen caller with a frozen call
@@ -2168,6 +2178,18 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                              &native_legacy_swap_req ? native_legacy_swap_req[2] : 0u,
                              &native_legacy_swap_req ? native_legacy_swap_req[3] : 0u);
       if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+      if (&vm_page_free_count) {
+        char vp[192];
+        const int vn = snprintf(vp, sizeof vp, "VMPAGE t=%us free=%u target=%u reserve=%u active=%u inactive=%u spec=%u\n",
+                                elapsed,
+                                (unsigned)__atomic_load_n(&vm_page_free_count, __ATOMIC_RELAXED),
+                                &vm_page_free_target ? (unsigned)__atomic_load_n(&vm_page_free_target, __ATOMIC_RELAXED) : 0u,
+                                &vm_page_free_reserved ? (unsigned)__atomic_load_n(&vm_page_free_reserved, __ATOMIC_RELAXED) : 0u,
+                                &vm_page_active_count ? (unsigned)__atomic_load_n(&vm_page_active_count, __ATOMIC_RELAXED) : 0u,
+                                &vm_page_inactive_count ? (unsigned)__atomic_load_n(&vm_page_inactive_count, __ATOMIC_RELAXED) : 0u,
+                                &vm_page_speculative_count ? (unsigned)__atomic_load_n(&vm_page_speculative_count, __ATOMIC_RELAXED) : 0u);
+        if (vn > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(vp, (size_t)vn < sizeof vp ? (size_t)vn : sizeof vp - 1);
+      }
       /* Per-core interrupt health, next to the row it explains. On this board two different timed
        * waits stop about six seconds into the boot while the supervisor's own one keeps ticking:
        * the boot-progress monitor stops after seven iterations in every boot, and the touch loop
