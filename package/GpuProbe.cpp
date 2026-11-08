@@ -162,12 +162,27 @@ constexpr uint64_t kLen[GPB_WINDOWS] = {0x1000, 0x1000, GPB_GPUCC_SIZE, GPB_SMMU
 OSSharedPtr<IOMemoryMap> gMaps[GPB_WINDOWS];
 uintptr_t gVa[GPB_WINDOWS];
 
+/* Which of the two calls in mapWindow blocks, and on which window. Both are kernel operations:
+ * withRange builds the descriptor and map creates an IOMemoryMap, so a boot that stops here stops
+ * inside one of them, and the window number says which physical range is involved. */
+static void gpuMarkStep(const char *what, unsigned step) {
+    char line[128];
+    const uint64_t now = mach_absolute_time();
+    const int n = snprintf(line, sizeof line, "GPUTHR %s w=%u tid=%llx cpu=%u t=%llu\n", what, step,
+                           (unsigned long long)thread_tid(current_thread()),
+                           (unsigned)cpu_number(), (unsigned long long)now);
+    if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+}
+
 bool mapWindow(unsigned w) {
+    gpuMarkStep("range", w);
     IODeviceMemory *memory = IODeviceMemory::withRange(kPhys[w], kLen[w]);
     if (!memory) return false;
+    gpuMarkStep("map", w);
     gMaps[w] = OSSharedPtr<IOMemoryMap>(memory->map(kIOMapAnywhere | kIOMapInhibitCache), OSNoRetain);
     memory->release();
     gVa[w] = gMaps[w] ? static_cast<uintptr_t>(gMaps[w]->getVirtualAddress()) : 0;
+    gpuMarkStep("done", w);
     return gVa[w] != 0;
 }
 void delayUs(void *, unsigned us) {IODelay(us);}
@@ -1940,6 +1955,8 @@ void memBench() {
  * A boot that never reaches the first GPU row is stuck in the three steps below, and the row scan
  * is silent until the summary row exists, so these four writes are the only record of how far the
  * probe thread got and on which core. */
+static void gpuMarkStep(const char *what, unsigned step);
+
 static void gpuMark(const char *what) {
     char line[128];
     /* mach_absolute_time, not cntpct_el0: the physical counter reads a value near 2^64 on this
