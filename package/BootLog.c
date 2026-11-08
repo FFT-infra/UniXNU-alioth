@@ -2233,7 +2233,7 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                                   elapsed, (unsigned long long)pt->state,
                                   (unsigned long long)pt->wait_event,
                                   (unsigned long long)(uintptr_t)pt->continuation,
-                                  (unsigned long long)(uintptr_t)pt->waitq,
+                                  (unsigned long long)(uintptr_t)pt->waitq.wq_q,
                                   (unsigned)pt->sched_pri, pnm);
           if (pn > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(gp_row, (size_t)pn < sizeof gp_row ? (size_t)pn : sizeof gp_row - 1);
         }
