@@ -104,7 +104,7 @@ pause_group(void)
 	}
 }
 
-#define BLOCK_NAMES 8
+#define BLOCK_NAMES 9
 static struct {
 	const char *name;
 	uint64_t base;
@@ -126,6 +126,10 @@ static struct {
 	 * +0x7c000; the touch driver maps the same tile (FocalTouchBoard.h:56-59).
 	 */
 	{ "tlmm", 0x0f900000, 0x80000 },
+	/* The device tree's memory range (kona-pcie.dtsi:18: cpu 0x60300000, 0x3d00000). The
+	 * endpoint's BAR0 is placed at its start so the outbound MEM region reaches it. Appended last
+	 * so the block numbers the earlier steps use keep their positions. */
+	{ "mem", 0x60300000, 0x100000 },
 };
 
 static uint64_t
@@ -1556,11 +1560,20 @@ step_rail_vote(void)
 #define PCIE_IATU_LTAR(n)        ((n) * 0x200 + 0x14)
 #define PCIE_IATU_UTAR(n)        ((n) * 0x200 + 0x18)
 #define PCIE_CONF_CPU_BASE       0x60100000u
-#define PCIE_CONF_CPU_SIZE       0x00100000u
+#define PCIE_MEM_CPU_BASE        0x60300000u
+#define PCIE_MEM_CPU_SIZE        0x00100000u
+/* msm_pcie_cfg_bdf maps only one 4 KB page per access: axi_conf->start .. start + SZ_4K - 1
+ * (pci-msm.c:3080), not the whole 1 MB config resource. */
+#define PCIE_CONF_CPU_SIZE       0x00001000u
 
+/* The vendor's msm_pcie_iatu_config order (pci-msm.c:3016): switch the region off, write the
+ * type, the host window and the target, then enable. Writing the enable last is what makes the
+ * new window take effect; a region left enabled while its base changes is the state that reads
+ * back as all ones. */
 static void
 atu_program_unrolled(uint32_t index, uint32_t type, uint32_t target)
 {
+	put(4, "iatu ctrl2 (disable before programming)", PCIE_IATU_CTRL2(index), 0);
 	put(4, "iatu ctrl1 (type)", PCIE_IATU_CTRL1(index), type);
 	put(4, "iatu lower base", PCIE_IATU_LBAR(index), PCIE_CONF_CPU_BASE);
 	put(4, "iatu upper base", PCIE_IATU_UBAR(index), 0);
@@ -1574,6 +1587,7 @@ static void
 atu_program_viewport(uint32_t index, uint32_t type, uint32_t target)
 {
 	put(6, "atu viewport (outbound index)", PCIE_ATU_VIEWPORT, index);
+	put(6, "atu ctrl2 (disable before programming)", PCIE_ATU_CR2, 0);
 	put(6, "atu ctrl1 (type)", PCIE_ATU_CR1, type);
 	put(6, "atu lower base", PCIE_ATU_LOWER_BASE, PCIE_CONF_CPU_BASE);
 	put(6, "atu upper base", PCIE_ATU_UPPER_BASE, 0);
@@ -1581,6 +1595,22 @@ atu_program_viewport(uint32_t index, uint32_t type, uint32_t target)
 	put(6, "atu lower target", PCIE_ATU_LOWER_TARGET, target);
 	put(6, "atu upper target", PCIE_ATU_UPPER_TARGET, 0);
 	put(6, "atu ctrl2 (enable)", PCIE_ATU_CR2, PCIE_ATU_ENABLE);
+}
+
+/* The outbound MEM region: host window at @host, PCI address @target, @size bytes. Type 0 is a
+ * memory TLP (PCIE20_CTRL1_TYPE_MEM in pci-msm.c), the one the vendor's device tree ranges encode
+ * for cpu 0x60300000 (kona-pcie.dtsi:18). */
+static void
+atu_program_mem(uint32_t index, uint32_t host, uint32_t target, uint32_t size)
+{
+	put(4, "iatu ctrl2 (disable before programming)", PCIE_IATU_CTRL2(index), 0);
+	put(4, "iatu ctrl1 (type mem)", PCIE_IATU_CTRL1(index), 0);
+	put(4, "iatu lower base", PCIE_IATU_LBAR(index), host);
+	put(4, "iatu upper base", PCIE_IATU_UBAR(index), 0);
+	put(4, "iatu limit", PCIE_IATU_LAR(index), host + size - 1);
+	put(4, "iatu lower target", PCIE_IATU_LTAR(index), target);
+	put(4, "iatu upper target", PCIE_IATU_UTAR(index), 0);
+	put(4, "iatu ctrl2 (enable)", PCIE_IATU_CTRL2(index), PCIE_ATU_ENABLE);
 }
 
 static bool
@@ -1606,30 +1636,35 @@ step_config(void)
 	put(6, "rc command (io|mem|master|serr)", 0x04, (v & 0xffff0000u) | 0x0007u);
 	v = get(6, "rc bus numbers before", 0x18);
 	put(6, "rc primary/secondary/subordinate (0/1/ff)", 0x18, (v & 0xff000000u) | 0x00ff0100u);
+	/* The two words the window depends on, read back while the DBI still accepts writes. */
+	line("rc header now: command/status %#x, bus numbers %#x", get(6, "rc command/status after", 0x04),
+	    get(6, "rc bus numbers after", 0x18));
 	put(6, "dbi misc_control (register writes disabled)", 0x8bc, get(6, "dbi misc_control again", 0x8bc) & ~1u);
 
 	announce("program the address translator for the endpoint's configuration space; the link is up and "
 	    "the window the vendor enumerates through has never been set by this file");
-	atu_program_unrolled(1, PCIE_ATU_TYPE_CFG1, bus << 24);
+	/* The endpoint sits on bus 1 directly behind the root complex, and that is the case the vendor's
+	 * dw_pcie_rd_other_conf encodes as PCIE_ATU_TYPE_CFG0 with the busdevice as the target
+	 * (pcie-designware-host.c:534: bus->parent->number == pp->root_bus_nr). CFG1 is the deeper-bus
+	 * case and never answered here. */
+	atu_program_unrolled(0, PCIE_ATU_TYPE_CFG0, bus << 24);
 	risky();
-	id = get(5, "conf vendor/device, unrolled CFG1", 0x00);
-	line("unrolled CFG1 bus %u returned %#x (vendor %#x device %#x)", bus, id, id & 0xffffu, id >> 16);
+	id = get(5, "conf vendor/device, unrolled CFG0", 0x00);
+	line("unrolled CFG0 bus %u returned %#x (vendor %#x device %#x)", bus, id, id & 0xffffu, id >> 16);
 
 	if (id == 0xffffffffu || id == 0) {
 		line("the unrolled layout did not answer; trying the viewport layout in the core's own 4 KB");
-		atu_program_viewport(1, PCIE_ATU_TYPE_CFG1, bus << 24);
+		atu_program_viewport(0, PCIE_ATU_TYPE_CFG0, bus << 24);
+		risky();
+		id = get(5, "conf vendor/device, viewport CFG0", 0x00);
+		line("viewport CFG0 bus %u returned %#x (vendor %#x device %#x)", bus, id, id & 0xffffu, id >> 16);
+	}
+	if (id == 0xffffffffu || id == 0) {
+		line("CFG0 did not answer; the deeper-bus form (CFG1) as the last layout comparison");
+		atu_program_viewport(0, PCIE_ATU_TYPE_CFG1, bus << 24);
 		risky();
 		id = get(5, "conf vendor/device, viewport CFG1", 0x00);
 		line("viewport CFG1 bus %u returned %#x (vendor %#x device %#x)", bus, id, id & 0xffffu, id >> 16);
-	}
-	if (id == 0xffffffffu || id == 0) {
-		/* CFG0 reaches the root complex's own header through the translator: if that answers, the
-		 * window works and only the bus number is wrong. */
-		line("CFG1 did not answer; reading the root complex's own header through CFG0 instead");
-		atu_program_viewport(1, PCIE_ATU_TYPE_CFG0, 0);
-		risky();
-		id = get(5, "conf vendor/device, viewport CFG0", 0x00);
-		line("viewport CFG0 returned %#x (vendor %#x device %#x)", id, id & 0xffffu, id >> 16);
 	}
 	if (id == 0xffffffffu || id == 0) {
 		line("no window answered; the next step is the rest of the vendor's root-complex setup (link width, "
@@ -1641,6 +1676,30 @@ step_config(void)
 	get(5, "conf header type", 0x0c);
 	get(5, "conf bar0", 0x10);
 	get(5, "conf bar1", 0x14);
+	/*
+	 * Place the endpoint's BAR0 in the firmware's memory range and open the outbound MEM region.
+	 * The BAR is 64-bit (bar0 low word read 0x4: bit 2 set, bit 0 clear), so both words are sized
+	 * and written; the PCI core would do the same during enumeration. Then the first MMIO read of
+	 * the chip itself through 0x60300000.
+	 */
+	put(5, "conf bar0 (size probe, all ones)", 0x10, 0xffffffffu);
+	put(5, "conf bar1 (size probe, all ones)", 0x14, 0xffffffffu);
+	const uint32_t mask0 = get(5, "conf bar0 size mask", 0x10), mask1 = get(5, "conf bar1 size mask", 0x14);
+	line("BAR0 size mask %#x/%#x (window %#x bytes)", mask0, mask1, (~(mask0 & ~0xfu)) + 1u);
+	put(5, "conf bar0 low (memory base)", 0x10, PCIE_MEM_CPU_BASE & ~0xfu);
+	put(5, "conf bar1 high", 0x14, 0);
+	v = get(5, "conf command before", 0x04);
+	put(5, "conf command (memory|master)", 0x04, (v & 0xffff0000u) | ((v | 0x6u) & 0xffffu));
+	line("conf command now %#x, bar0 %#x/%#x", get(5, "conf command now", 0x04), get(5, "conf bar0 readback", 0x10),
+	    get(5, "conf bar1 readback", 0x14));
+	announce("open the outbound memory region at the firmware's range and read the chip through it");
+	atu_program_mem(1, PCIE_MEM_CPU_BASE, PCIE_MEM_CPU_BASE, PCIE_MEM_CPU_SIZE);
+	risky();
+	for (uint32_t off = 0; off < 0x40; off += 4) {
+		char nm[32];
+		snprintf(nm, sizeof nm, "mem+%#x", off);
+		get(8, nm, off);
+	}
 	return true;
 }
 
