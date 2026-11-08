@@ -327,8 +327,15 @@ extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak
  * after a short settle. It goes through the same publish() path as a real contact, so the HID
  * report, the seqlock and the sink notification are the ones the system already trusts; nothing
  * here fabricates a report or bypasses the driver. Off unless the argument is given. */
-static uint32_t synthHoldMs, synthAtMs = 60000, synthState, synthStartMs;
+static uint32_t synthHoldMs, synthAtMs = 60000, synthState, synthStartMs, synthEndMs;
 static unsigned synthLog;
+/* sheng-synth-repeat=<s>: after the contact is released, wait this many seconds and perform the
+ * same gesture again, for as long as the boot lasts. One contact per boot leaves a single chance:
+ * if it lands while the system is still setting the display up, or while the screen is being
+ * woken, nothing moves and the round cannot say whether the gesture was refused or never seen.
+ * Repeating also keeps the compositor drawing, which is what an unattended round needs. Off (0)
+ * keeps the single contact every earlier round used. */
+static uint32_t synthRepeatS;
 /* The gesture the contact performs. A contact held still at the centre is a long press, and on
  * of8 that opened Settings: the screenshot the round exported was Settings, not the home screen,
  * so every reading taken from it (the "wallpaper area is solid (242,242,247)") measured the
@@ -357,7 +364,21 @@ static void synthTap(unsigned nowMs) {
     }
     if (synthState == 1 && nowMs >= synthStartMs + synthHoldMs) {
         synthState = 2;
+        synthEndMs = nowMs;
         if (&qcom_usb_debug_write) qcom_usb_debug_write("TOUCHSYNTH up\n", 14);
+    }
+    /* The repeat: after the lift, wait the interval and arm the same gesture again. The log line
+     * is the only record each one happened; a round that repeats and still never moves the screen
+     * says the gesture itself is refused, not that its one moment was missed. */
+    if (synthState == 2 && synthRepeatS) {
+        if (nowMs - synthEndMs < synthRepeatS * 1000u) return;
+        synthState = 0;
+        synthAtMs = 0;   /* the first frame after this one begins the next contact */
+        if (&qcom_usb_debug_write) {
+            char text[64];
+            int n = snprintf(text, sizeof text, "TOUCHSYNTH repeat after %us\n", synthRepeatS);
+            if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof text ? (size_t)n : sizeof text - 1);
+        }
     }
 }
 
@@ -750,7 +771,8 @@ bool touchProbeStart(void) {
     /* sheng-touch-synth=<ms>: hold one synthetic contact for <ms>, once per boot, at
      * sheng-touch-synth-at=<ms> counted from the first published frame (default 60 s, after the
      * desktop is up). sheng-touch-synth-swipe=1 makes the contact a swipe up from the bottom edge
-     * instead of a press held at the centre. See synthTap(). */
+     * instead of a press held at the centre. sheng-synth-repeat=<s> repeats the same gesture every
+     * <s> seconds after the first one lifts. See synthTap(). */
     {
         unsigned hold = 0;
         if (PE_parse_boot_argn("sheng-touch-synth", &hold, sizeof hold) && hold) {
@@ -759,9 +781,11 @@ bool touchProbeStart(void) {
             if (PE_parse_boot_argn("sheng-touch-synth-at", &at, sizeof at) && at) synthAtMs = at;
             unsigned swipe = 0;
             if (PE_parse_boot_argn("sheng-touch-synth-swipe", &swipe, sizeof swipe) && swipe) synthSwipe = 1;
+            unsigned repeat = 0;
+            if (PE_parse_boot_argn("sheng-synth-repeat", &repeat, sizeof repeat) && repeat) synthRepeatS = repeat;
             if (&qcom_usb_debug_write) {
                 char text[96];
-                int n = snprintf(text, sizeof text, "TOUCHSYNTH cfg hold=%u at=%u swipe=%u\n", synthHoldMs, synthAtMs, synthSwipe);
+                int n = snprintf(text, sizeof text, "TOUCHSYNTH cfg hold=%u at=%u swipe=%u repeat=%u\n", synthHoldMs, synthAtMs, synthSwipe, synthRepeatS);
                 if (n > 0) qcom_usb_debug_write(text, (size_t)n < sizeof text ? (size_t)n : sizeof text - 1);
             }
         }
