@@ -2047,7 +2047,9 @@ void gpuThread(void *, wait_result_t) {
     native_gpu_step = 10;
     { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("start"); }
     gpb_run(&io, gMode, have, &r);
+    gpuMark("ran");
     rowsBasic(r);
+    gpuMark("rows");
     { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-power"); }
     if (gMode < 5) {native_gpu_step = 99; return;}
     commandDb();
@@ -2065,13 +2067,18 @@ void gpuThread(void *, wait_result_t) {
         cx_gmu = o.cx_gmu; ahb = o.ahb;
     }
     gmuState(io, r, cx_gmu, ahb);
+    gpuMark("gmustate");
     if (gMode >= 7) gmuColdStart(r, native_gpu_clocks);
+    gpuMark("gmucold");
     { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-gmu"); }
     if (gMode >= 8 && gColdOk) gxOn();
     { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-gx"); }
+    gpuMark("gx");
     const bool cp = gMode >= 9 && native_gpu_gx.gx_on && gpuContext() && cpStart();
+    gpuMark("cp");
     { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-cp"); }
     const bool irq = gMode >= 10 && cp && leaveSecure() && gpuInterrupt();
+    gpuMark("irq");
     if (irq) regDump("init");
     /* The three rows a GPU round is judged by, repeated on the USB console. The persistent log
      * needs the board to come back to fastboot and a TWRP read; this needs neither, so a boot
