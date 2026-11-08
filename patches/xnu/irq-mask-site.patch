@@ -1,0 +1,54 @@
+--- a/osfmk/arm/machine_routines_common.c
++++ b/osfmk/arm/machine_routines_common.c
+@@ -1063,15 +1063,51 @@
+ 		}
+ #endif
+ 	}
+ 	return (state & DAIF_IRQF) == 0;
+ }
+ 
++/*
++ * sheng: what each CPU was doing the last time it masked interrupts.
++ *
++ * A core that never takes an interrupt again is one of two things, and the two need
++ * different fixes: it is sitting inside a masked section for good (site and count both
++ * frozen), or it keeps running masked code (count still climbing while no interrupt is
++ * taken). splhigh(), splsched() and splclock() are macros over this function, so
++ * `site` is the address of the code that asked for the mask, not a wrapper. `stamp` is
++ * in timebase ticks so a healthy core can report how long the victim has been masked.
++ * `masked` counts only calls that changed the state, so a thread that spams splx() on an
++ * already-enabled CPU does not move it.
++ *
++ * Indexed by CPU number, written by the owning CPU only, read by the board package. No
++ * kernel code reads it, so a wrong value here cannot change a decision.
++ */
++volatile uint64_t sheng_irq_mask_site[8];
++volatile uint64_t sheng_irq_mask_count[8];
++volatile uint64_t sheng_irq_unmask_count[8];
++volatile uint64_t sheng_irq_mask_thread[8];
++volatile uint64_t sheng_irq_mask_stamp[8];
++
+ boolean_t
+ ml_set_interrupts_enabled(boolean_t enable)
+ {
++	const uint32_t sheng_cpu = (uint32_t)cpu_number();
++	if (sheng_cpu < 8) {
++		const uint64_t sheng_daif = __builtin_arm_rsr("DAIF");
++		if (!enable && (sheng_daif & DAIF_IRQF) == 0) {
++			uint64_t sheng_now;
++			thread_t sheng_thread = current_thread();
++			__asm__ volatile ("isb; mrs %0, cntpct_el0" : "=r" (sheng_now));
++			sheng_irq_mask_site[sheng_cpu] = (uint64_t)(uintptr_t)__builtin_return_address(0);
++			sheng_irq_mask_count[sheng_cpu] = sheng_irq_mask_count[sheng_cpu] + 1;
++			sheng_irq_mask_thread[sheng_cpu] = sheng_thread ? (uint64_t)thread_tid(sheng_thread) : 0;
++			sheng_irq_mask_stamp[sheng_cpu] = sheng_now;
++		} else if (enable && (sheng_daif & DAIF_IRQF) != 0) {
++			sheng_irq_unmask_count[sheng_cpu] = sheng_irq_unmask_count[sheng_cpu] + 1;
++		}
++	}
+ 	return ml_set_interrupts_enabled_with_debug(enable, true);
+ }
+ 
+ boolean_t
+ ml_early_set_interrupts_enabled(boolean_t enable)
+ {

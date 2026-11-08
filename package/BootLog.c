@@ -300,6 +300,17 @@ extern volatile uint64_t armcpu_ipi_sent __attribute__((weak_import));
 extern volatile uint32_t armcpu_quiesce_calls __attribute__((weak_import));
 extern volatile uint32_t armcpu_halt_calls __attribute__((weak_import));
 extern volatile uint32_t armcpu_irq_phase __attribute__((weak_import));
+// Where each CPU last masked interrupts, how often, how long ago, and which thread did it. Filled by
+// patches/xnu/irq-mask-site.patch inside ml_set_interrupts_enabled, which splhigh() and splsched()
+// reach as macros, so the site is the function that asked for the mask. A deaf core whose site and
+// count are frozen for minutes is sitting inside one masked section; one whose count still climbs is
+// running masked code; one whose site never changed from 0 never masked at all, and then the core
+// is not masked and the interrupt is withheld below the kernel.
+extern volatile uint64_t sheng_irq_mask_site[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_mask_count[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_unmask_count[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_mask_thread[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_mask_stamp[8] __attribute__((weak_import));
 // boot-ui-trace's worker: how many times it was entered, how many captures it started, and whether one
 // is still in flight. Six "STK none" rows on 2026-11-06 could mean the worker never reached its 44th
 // call, or that a capture started and never finished; these four numbers separate them.
@@ -2771,6 +2782,29 @@ static void core_health_thread(void *arg, wait_result_t result)
           qn += snprintf(gq + qn, sizeof gq - (unsigned)qn, " c%u=%x/%x/%x", c, (unsigned)q[5], (unsigned)q[6], (unsigned)q[1]);
         }
         if (qn > 0 && (unsigned)qn < sizeof gq) {gq[qn++] = '\n'; qcom_usb_debug_write(gq, (size_t)qn < sizeof gq ? (size_t)qn : sizeof gq - 1);}
+      }
+      /* Every core's last interrupt-mask site, on one line, healthy cores included so the deaf one has a
+       * baseline: site/masks/unmasks/seconds-since-that-mask/last-masking-thread. The two readings that
+       * decide the question are whether the victim's site ever changed (0 = it never masked, so the
+       * interrupt is withheld below the kernel) and whether its counters still climb (it is running
+       * masked code, not sitting in one section). */
+      if (&sheng_irq_mask_site && &sheng_irq_mask_count) {
+        char gm[640];
+        uint64_t nowTick; __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(nowTick));
+        int gn = snprintf(gm, sizeof gm, "GICRM t=%us", elapsed);
+        for (unsigned c = 0; c < cores && gn > 0 && (unsigned)gn < sizeof gm - 64; ++c) {
+          const uint64_t site = __atomic_load_n(&sheng_irq_mask_site[c], __ATOMIC_RELAXED);
+          const uint64_t masks = __atomic_load_n(&sheng_irq_mask_count[c], __ATOMIC_RELAXED);
+          const uint64_t unmasks = sheng_irq_unmask_count ? __atomic_load_n(&sheng_irq_unmask_count[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t stamp = sheng_irq_mask_stamp ? __atomic_load_n(&sheng_irq_mask_stamp[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t who = sheng_irq_mask_thread ? __atomic_load_n(&sheng_irq_mask_thread[c], __ATOMIC_RELAXED) : 0ULL;
+          unsigned mage = 0;
+          if (stamp && f && nowTick > stamp) mage = (unsigned)((nowTick - stamp) / f);
+          gn += snprintf(gm + gn, sizeof gm - (unsigned)gn, " c%u=%llx/%llu/%llu/%us/%llx", c,
+                         (unsigned long long)site, (unsigned long long)masks, (unsigned long long)unmasks,
+                         mage, (unsigned long long)who);
+        }
+        if (gn > 0 && (unsigned)gn < sizeof gm) {gm[gn++] = '\n'; qcom_usb_debug_write(gm, (size_t)gn < sizeof gm ? (size_t)gn : sizeof gm - 1);}
       }
     }
   }
