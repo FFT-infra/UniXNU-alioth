@@ -1,0 +1,55 @@
+--- a/osfmk/vm/vm_object.c
++++ b/osfmk/vm/vm_object.c
+@@ -7195,15 +7195,40 @@
+ 
+ uint32_t scan_object_collision = 0;
+ 
++/*
++ * sheng: who holds the kernel object's lock.
++ *
++ * The kernel object backs every kernel allocation. A thread that stops inside one while holding
++ * it stops every other allocation in the system, which is what a boot that goes quiet while
++ * memory and the map lock are both free looks like. Recording the acquirer names the holder:
++ * while it is stuck nobody else can acquire, so the value stays its own.
++ *
++ * Written under the lock it describes; read by the board package as a snapshot.
++ */
++volatile uint64_t sheng_kobject_owner_tid;
++volatile uint64_t sheng_kobject_owner_thread;
++volatile uint64_t sheng_kobject_locks;
++volatile uint64_t sheng_kobject_wait_tid;
++
+ void
+ vm_object_lock(vm_object_t object)
+ {
++	boolean_t contended;
++
+ 	if (object == vm_pageout_scan_wants_object) {
+ 		scan_object_collision++;
+ 		mutex_pause(2);
+ 	}
+ 	DTRACE_VM(vm_object_lock_w);
+-	lck_rw_lock_exclusive(&object->Lock);
++	contended = lck_rw_lock_exclusive(&object->Lock);
++	if (object == kernel_object) {
++		sheng_kobject_owner_thread = (uint64_t)(uintptr_t)current_thread();
++		sheng_kobject_owner_tid = thread_tid(current_thread());
++		sheng_kobject_locks = sheng_kobject_locks + 1;
++		if (contended) {
++			sheng_kobject_wait_tid = thread_tid(current_thread());
++		}
++	}
+ }
+ 
+ boolean_t
+@@ -7321,6 +7346,10 @@
+ #if DEVELOPMENT || DEBUG
+ 	DTRACE_VM(vm_object_unlock);
+ #endif
++	if (object == kernel_object) {
++		sheng_kobject_owner_thread = 0;
++		sheng_kobject_owner_tid = 0;
++	}
+ 	lck_rw_done(&object->Lock);
+ }
+ 
