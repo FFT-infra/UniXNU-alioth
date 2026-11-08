@@ -1985,7 +1985,7 @@ static void gpuMark(const char *what) {
 /* Published so the boot log can report where the probe thread is parked when it stops: its
  * state, the event it is waiting on and the continuation it would resume at. A thread that is
  * asleep and one that is running look the same from the marks alone. */
-extern "C" volatile uint64_t sheng_gpu_probe_thread;
+extern "C" { volatile uint64_t sheng_gpu_probe_thread = 0; }
 
 void gpuThread(void *, wait_result_t) {
     sheng_gpu_probe_thread = (uint64_t)(uintptr_t)current_thread();
