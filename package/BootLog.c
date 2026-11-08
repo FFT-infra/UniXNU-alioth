@@ -2279,8 +2279,25 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                                  &sheng_kobject_locks ? (unsigned long long)__atomic_load_n(&sheng_kobject_locks, __ATOMIC_RELAXED) : 0ull,
                                  kst2, kcont2, knm2, kpc2);
         if (kbn > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(kb, (size_t)kbn < sizeof kb ? (size_t)kbn : sizeof kb - 1);
-        /* The holder is reported as TH_RUN, so it is not asleep: it is inside something that
-         * never lets go. Its own stack names that something. */
+        /* The holder is reported as TH_RUN, so it is not asleep. Two readings name where it is:
+         * the core it is on can be interrupted for its pc, and its own stack holds the return
+         * addresses. The pc is the one that works for a thread that is looping rather than
+         * parked, so both are printed. */
+        if (ko2) {
+          for (unsigned c = 0; c < 8; ++c) {
+            cpu_data_t *kd = cpu_datap((int)c);
+            if (!kd || kd->cpu_active_thread != (thread_t)(uintptr_t)ko2) continue;
+            if (&armcpu_ipi_probe_core && &boot_progress_core_pc_want) {
+              __atomic_store_n(&boot_progress_core_pc_want[c], 1u, __ATOMIC_RELAXED);
+              (void)armcpu_ipi_probe_core(c);
+            }
+            char kc[96];
+            const int kcn = snprintf(kc, sizeof kc, "KOCPU t=%us core=%u ic=%llx\n", elapsed, c,
+                                     &boot_progress_core_pc ? (unsigned long long)__atomic_load_n(&boot_progress_core_pc[c], __ATOMIC_RELAXED) : 0ull);
+            if (kcn > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(kc, (size_t)kcn < sizeof kc ? (size_t)kcn : sizeof kc - 1);
+            break;
+          }
+        }
         if (ko2) {
           thread_t kht = (thread_t)(uintptr_t)ko2;
           if (kht->machine.kstackptr) {
