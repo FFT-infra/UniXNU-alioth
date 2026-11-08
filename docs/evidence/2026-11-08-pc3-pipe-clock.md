@@ -31,6 +31,18 @@ desktop round (`wl1600071`) has `[addon] 1=5/0 2=5/0 3=5/0`, `WALLPAPER stage=5 
 `SUPER own=1`. The probe is what changes the boot outcome: `pcie=` is absent on the desktop
 rounds, and `alioth_pcie_init()` returns before touching the controller when it is absent.
 
+The `DATAMOUNT` row shows the chain:
+
+```
+good wl1600071: DATAMOUNT stage=4 status=0 ro=0 store=2
+pc3:            DATAMOUNT stage=0 status=-1 ro=-1 store=0
+```
+
+`native_owner_data_prepare()` never reached stage 4, so `native_gpu_addon_prepare()` was never
+called and all three addon mounts stayed at `0/-1`. The addon and wallpaper failures are
+downstream of the boot not reaching userland; they are not a separate wallpaper/widget bug in
+this round. The first DBI read is the event that precedes that stall.
+
 The TWRP reader (`read-sheng-logs/pc3-0000000025421ca8`) confirms the persistent side:
 `slots_written=2`, `uptime_s=2`, `rounds=2`. Its `msgbuf.txt` has the early vote at
 `pcie: 2` but no `PCIE 11` and no `about to read dbi`; the writer never reached the step 11
