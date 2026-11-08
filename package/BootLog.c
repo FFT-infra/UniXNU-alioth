@@ -2196,6 +2196,32 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                              &native_legacy_swap_req ? native_legacy_swap_req[2] : 0u,
                              &native_legacy_swap_req ? native_legacy_swap_req[3] : 0u);
       if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+      // The wallpaper host side, once, on the same 10-tick channel that survives an early
+      // boot. [wallpaper list] names PosterBoard's stored entries; [wallpaper db] reports the
+      // first page's printable runs (schema/table/provider names) and the read status. A
+      // black wallpaper with an empty store and a black wallpaper with a selected poster are
+      // different faults, so print both in the same diagnostic window.
+      {
+        static int wallpaper_host_console;
+        if (!wallpaper_host_console && &sheng_wallpaper_list_ran && sheng_wallpaper_list_ran &&
+            &qcom_usb_debug_write) {
+          wallpaper_host_console = 1;
+          if (&sheng_wallpaper_names && sheng_wallpaper_names[0]) {
+            char wl[300];
+            const int wn = snprintf(wl, sizeof wl, "[wallpaper list] %.270s\n", sheng_wallpaper_names);
+            if (wn > 0) qcom_usb_debug_write(wl, (size_t)wn < sizeof wl ? (size_t)wn : sizeof wl - 1);
+          }
+          if (&sheng_wallpaper_db_ran && sheng_wallpaper_db_ran) {
+            char wd[440];
+            const int wdn = snprintf(wd, sizeof wd, "[wallpaper db] c=%d r=%d n=%d %.370s\n",
+                                     &sheng_wallpaper_db_status ? (int)sheng_wallpaper_db_status[0] : -9,
+                                     &sheng_wallpaper_db_status ? (int)sheng_wallpaper_db_status[1] : -9,
+                                     &sheng_wallpaper_db_status ? (int)sheng_wallpaper_db_status[2] : -9,
+                                     &sheng_wallpaper_db ? sheng_wallpaper_db : "-");
+            if (wdn > 0) qcom_usb_debug_write(wd, (size_t)wdn < sizeof wd ? (size_t)wdn : sizeof wd - 1);
+          }
+        }
+      }
       if (&vm_page_free_count) {
         char vp[192];
         const int vn = snprintf(vp, sizeof vp, "VMPAGE t=%us free=%u target=%u reserve=%u active=%u inactive=%u spec=%u\n",

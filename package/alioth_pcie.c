@@ -5,7 +5,8 @@
  * qcom,pcie@1c00000 -- not the AHB radio (WCN6750) the rest of this tree's Wi-Fi driver was
  * written for (redwood_wifi.c). Everything below is this phone's: the device tree's node
  * qcom,pcie@1c00000 (reg-names parf, phy, dm_core, elbi, iatu, conf), the clock controller's
- * PCIe0 entries (gcc-sm8250.c) and the PCIe block's offsets (pcie-qcom.c).
+ * PCIe0 entries (gcc-kona.c) and the PCIe block's offsets (the vendor 4.19 tree's pci-msm.c,
+ * the driver this phone runs: msm_pcie_enable, msm_pcie_link_train).
  *
  * Addresses, from the phone's own device tree (read from it with `dtc -I dtb -O dts`):
  *   parf   0x01c00000 + 0x3000       phy   0x01c06000 + 0x1000
@@ -15,7 +16,7 @@
  *   memory 0x60300000 + 0x3d00000, i/o 0x60200000 + 0x100000 (both the same on the bus side)
  *   perst-gpio is TLMM 0x4f (79), wake-gpio 0x51 (81); root complex 0
  *
- * From the clock controller (gcc-sm8250.c; all of these are offsets from its 0x100000):
+ * From the clock controller (gcc-kona.c; all of these are offsets from its 0x100000):
  *   pcie_0_gdscr 0x6b004 (the controller's own power switch), the five clock votes in
  *   gcc_pcie_0_axi_clk_misc 0x52008 (bit 0 slv_axi, 1 mstr_axi, 2 cfg_ahb, 3 aux, 4 pipe, 5
  *   slv_q2a_axi), the phy's own two clocks at 0x6f004 and 0x6f02c, the bus clock at 0x9000c,
@@ -37,9 +38,9 @@
  *   9  writes  the vendor driver's init sequence into PARF
  *  10  drives  the endpoint's two pads: WLAN_EN (TLMM 20) high, then PERST# (TLMM 79) released,
  *              and reads the link state. This is the step that first powers the endpoint.
- *  11  writes  PARF_LTSSM bit 8 to start link training, then reads the link state
+ *  11  writes  the vendor's DBI training words and PARF_LTSSM bit 8, then polls ELBI/DLLLA/ID
  *  12  reads   what the command database says about the two PMIC rails (ldoa5, ldoa9)
- *  13  writes  the seven dm_core registers the vendor writes before it reads ELBI
+ *  13  repeats the seven dm_core writes as a separate, opt-in diagnostic
  *  14  reads   the link control block's status word (ELBI), the signal the vendor polls
  *  15  reads   the configuration space: the root complex's and the QCA6390's vendor and device
  *
@@ -522,30 +523,17 @@ step_phy_seq(void)
 	announce("write the PHY's own sequence, the pairs the device tree keeps (qcom,phy-sequence: register and value, all of "
 	    "them in the PHY's own 4 KB), then wait for its ready bit");
 	/*
-	 * A reset pulse of the PHY's own two blocks first (not the common one: releasing that one after the PHY's
-	 * own stopped the machine), and its auxiliary clock voted again once they are out -- a block reset takes
-	 * the clock branch with it.
+	 * The vendor pulses only pcie_0_phy_reset (0x6c01c) with the PHY clocks on, before writing
+	 * qcom,phy-sequence. Releasing pcie_phy_bcr (0x6f000) and then pcie_phy_com_bcr (0x6f010)
+	 * after the sequence is a different, later generation's order: here it wipes the register
+	 * pairs just written. Vote the two PHY clock branches again after the block reset.
 	 */
 	put(0, "pcie_0_phy_bcr (assert)", GCC_PCIE_0_PHY_BCR, 1);
-	put(0, "pcie_phy_bcr (assert)", GCC_PCIE_PHY_BCR, 1);
-	sleep_ms(2);
+	sleep_ms(1);
 	put(0, "pcie_0_phy_bcr (release)", GCC_PCIE_0_PHY_BCR, 0);
-	put(0, "pcie_phy_bcr (release)", GCC_PCIE_PHY_BCR, 0);
-	sleep_ms(20);
-	put(0, "pcie_phy_aux again", GCC_PCIE_PHY_AUX, rd(GCC(GCC_PCIE_PHY_AUX)) | 1u);
-	/* its reference generator at the rate the device tree gives it, before its own sequence is written */
-	put(0, "phy_refgen_src cfg (100 MHz)", 0x6f018, 0x501);
-	put(0, "phy_refgen_src root enable", 0x6f014, 0x2);
-	put(0, "pcie0_phy_refgen again", GCC_PCIE_0_PHY_REFGEN, rd(GCC(GCC_PCIE_0_PHY_REFGEN)) | 1u);
-	sleep_ms(100);          /* qcom_pcie_phy_power_on() waits before it touches the PHY again */
-	get(0, "pcie_phy_aux after the reset", GCC_PCIE_PHY_AUX);
-	get(0, "pcie_0_phy_bcr after", GCC_PCIE_0_PHY_BCR);
-	/*
-	 * The common PHY block's own reset, released only now: it was released before the PHY's own in the run
-	 * that ended the machine, so the order here is the other one -- the PHY's own out first, a wait, then this.
-	 */
-	put(0, "pcie_phy_com_bcr (release)", GCC_PCIE_PHY_COM_BCR, 0);
 	sleep_ms(10);
+	put(0, "pcie_phy_aux again", GCC_PCIE_PHY_AUX, rd(GCC(GCC_PCIE_PHY_AUX)) | 1u);
+	put(0, "pcie0_phy_refgen again", GCC_PCIE_0_PHY_REFGEN, rd(GCC(GCC_PCIE_0_PHY_REFGEN)) | 1u);
 	for (unsigned i = 0; i < sizeof(phy_sequence) / sizeof(phy_sequence[0]); i++) {
 		wr(reg(2, phy_sequence[i].reg), phy_sequence[i].value);
 	}
@@ -613,7 +601,7 @@ static bool
 step_aux_src(void)
 {
 	/*
-	 * The aux clock's source generator (gcc_sm8250.c: gcc_pcie_0_aux_clk_src, 0x6b038) was found all zeros, and
+	 * The aux clock's source generator (gcc-kona.c:399: gcc_pcie_0_aux_clk_src, 0x6b038) was found all zeros, and
 	 * its RCGR register is a command register: bit 0 updates the configuration, bit 1 switches the root on. Its
 	 * table (ftbl_gcc_pcie_0_aux_clk_src) is the crystal at 19.2 MHz through a divider of one -- source 0, and
 	 * the divider field holds the divider minus one.
@@ -683,11 +671,12 @@ step_parf_init(void)
 	get(1, "parf_device_type after", 0x1000);
 
 	/*
-	 * The PHY node in the device tree asks for this clock at 100 MHz (assigned-clock-rates with
-	 * GCC_PCIE0_PHY_REFGEN_CLK): source 1 is GPLL0's main output at 600 MHz through a divider of six,
-	 * the divider field holding the divider minus one (gcc-sm8250.c's ftbl_gcc_pcie_phy_refgen_clk_src).
+	 * The PHY node asks for 100 MHz (GCC_PCIE0_PHY_REFGEN_CLK): GPLL0 divided by six.
+	 * gcc-kona.c:462-465 selects parent 1 (gcc_parent_map_0) and clk-rcg2.c:36 puts
+	 * the source in bits 8..10, so CFG_RCGR is 5 | (1 << 8) = 0x105. The old 0x501
+	 * selected parent 5 with divider 1, neither of which this clock table defines.
 	 */
-	put(0, "phy_refgen_src cfg (source 1, divide by 6: 100 MHz)", 0x6f018, 0x501);
+	put(0, "phy_refgen_src cfg (source 1, divide by 6: 100 MHz)", 0x6f018, 0x105);
 	put(0, "phy_refgen_src root enable", 0x6f014, 0x2);
 	sleep_ms(2);
 	get(0, "phy_refgen_src rcgr after", 0x6f014);
@@ -696,25 +685,16 @@ step_parf_init(void)
 
 	value = get(1, "parf_phy_ctrl", 0x40);
 	put(1, "parf_phy_ctrl (bit 0 out)", 0x40, value & ~1u);
-	put(1, "parf_dbi_base (zero, v2 offset 0x168)", 0x168, 0);
-	/*
-	 * The v3 layout the vendor driver uses puts the same register at 0x350 (pci-msm.c:43).
-	 * Step 8 read 0x350 as 0, but that was BEFORE any write, so it says nothing about whether
-	 * this register accepts one. Writing it here is the single variable for this round: the
-	 * whole dm_core/elbi/iatu window (0x60000000..0x60002000) hangs on its first access, and
-	 * parf_dbi_base is what points that window at its base, so if this write does not stick
-	 * the window has never been given one.
-	 */
+	/* This SoC's 2.7.0 layout uses PCIE20_PARF_DBI_BASE_ADDR = 0x350 (pci-msm.c:43).
+	 * 0x168 is the older 2.3.2 offset and is a different live register here; writing it
+	 * corrupts the wrapper setup. */
 	put(1, "parf_dbi_base (zero, vendor offset 0x350)", 0x350, 0);
+	get(1, "parf_dbi_base_v1 (legacy offset, read only)", 0x168);
 	/*
-	 * Read both back, separately and before anything touches the window: if 0x350 does not
+	 * Read the live register back before anything touches the window: if 0x350 does not
 	 * hold its zero, the ELBI read in step 12 is not worth attempting and this round stops
 	 * with a readable answer instead of a hang.
 	 */
-	value = get(1, "parf_dbi_base 0x168 read back", 0x168);
-	if (value != 0) {
-		line("0x168 did not take the zero write (reads %#x)", value);
-	}
 	value = get(1, "parf_dbi_base 0x350 read back", 0x350);
 	/*
 	 * The value written was 0, so 0 is what a register that accepted it reads back. Anything
@@ -792,16 +772,13 @@ step_dbi(void)
 /*
  * Step 10: the endpoint's own enable sequence, which this file has never done.
  *
- * Until now every write went to the controller or to the PHY. The two pads that decide whether
- * the QCA6390 is powered and out of reset were never driven, so the link could not have trained
- * no matter what the controller was doing: PERST# (gpio 79) is active low and the vendor driver
- * writes its "assert" value, 0 (pci-msm.c:939), so the endpoint has been held in reset since the
- * bootloader let go; WLAN_EN (gpio 20) is cnss2's, active high, and nothing in this tree raises it.
- *
- * The order is the vendor's: cnss2/power.c:748-770 raises WLAN_EN and waits WLAN_ENABLE_DELAY;
- * pci-msm.c:4569-4583 waits ep_latency, releases PERST and waits perst_delay. The pads take the
- * device tree's own values: gpio 20 pull-up drive 16 output-high (kona-pinctrl.dtsi:1041-1052),
- * gpio 79 pull-down drive 2 (kona-pinctrl.dtsi:905-916).
+ * The endpoint's two pads are in the NORTH TLMM tile: WLAN_EN gpio 20 at 0x0f914000 and
+ * PERST# gpio 79 at 0x0f94f000 (pinctrl-kona.c:20-25, :1576; kona.dtsi:4894;
+ * kona-pcie.dtsi:36). PERST# is active low; WLAN_EN is active high. The vendor's
+ * cnss2/power.c raises WLAN_EN before the PCIe controller is powered, holds PERST asserted
+ * while its clocks and PHY come up, and releases it only after ep_latency
+ * (pci-msm.c:4567-4583). This step keeps the local diagnostic order but uses the same
+ * pad values: gpio 20 pull-up drive 16 output-high, gpio 79 pull-down drive 2.
  *
  * The TLMM is a different block from the controller, so a wrong value here cannot wedge the PCIe
  * bus the way a wrong address inside 0x1c00000 can. Every register is read before it is written
@@ -823,8 +800,11 @@ step_endpoint(void)
 	line("before: wlan-en io %#x (out %u), perst io %#x (out %u)", wlan,
 	    (wlan & TLMM_OUT) ? 1u : 0u, perst, (perst & TLMM_OUT) ? 1u : 0u);
 
-	/* WLAN_EN: function gpio, pull-up, drive 16 mA, output enabled, driven high. */
+	/* WLAN_EN: set the low level first, then make it a GPIO output, then drive high.
+	 * Configuring OE before the level can briefly drive the radio's enable low. */
 	cfg = TLMM_FUNC_GPIO | TLMM_PULL_UP | TLMM_DRIVE(16) | TLMM_OE;
+	put(7, "tlmm gpio20 io (low before output enable)", TLMM_IO(GPIO_WLAN_EN),
+	    rd(reg(7, TLMM_IO(GPIO_WLAN_EN))) & ~TLMM_OUT);
 	put(7, "tlmm gpio20 cfg (func gpio, pull-up, drive 16, output)", TLMM_CFG(GPIO_WLAN_EN), cfg);
 	put(7, "tlmm gpio20 io (drive high)", TLMM_IO(GPIO_WLAN_EN),
 	    rd(reg(7, TLMM_IO(GPIO_WLAN_EN))) | TLMM_OUT);
@@ -833,11 +813,11 @@ step_endpoint(void)
 	io = get(7, "tlmm gpio20 io after", TLMM_IO(GPIO_WLAN_EN));
 	line("WLAN_EN is %s (io %#x)", (io & TLMM_OUT) ? "HIGH" : "STILL LOW", io);
 
-	/* PERST#: function gpio, pull-down, drive 2 mA, output enabled, released (bit 1 set). */
+	/* PERST#: release means high. Set the level before making the pad an output. */
 	cfg = TLMM_FUNC_GPIO | TLMM_PULL_DOWN | TLMM_DRIVE(2) | TLMM_OE;
+	put(7, "tlmm gpio79 io (release level before output enable)", TLMM_IO(GPIO_PERST), TLMM_OUT);
 	put(7, "tlmm gpio79 cfg (func gpio, pull-down, drive 2, output)", TLMM_CFG(GPIO_PERST), cfg);
-	put(7, "tlmm gpio79 io (release the endpoint from reset)", TLMM_IO(GPIO_PERST),
-	    rd(reg(7, TLMM_IO(GPIO_PERST))) | TLMM_OUT);
+	get(7, "tlmm gpio79 io after release", TLMM_IO(GPIO_PERST));
 	sleep_ms(2);                    /* vendor waits perst_delay_us, 1000..1005 us */
 	get(7, "tlmm gpio79 cfg after", TLMM_CFG(GPIO_PERST));
 	io = get(7, "tlmm gpio79 io after", TLMM_IO(GPIO_PERST));
@@ -857,58 +837,51 @@ step_endpoint(void)
 
 
 /*
- * Step 11: start the link training, which nothing in this file has ever done.
- *
- * The vendor writes PARF_LTSSM bit 8 as the last thing before it polls for the link
- * (pci-msm.c:4409, inside msm_pcie_link_train: msm_pcie_write_mask(dev->parf + PCIE20_PARF_LTSSM,
- * 0, BIT(8)) -- clear_mask 0, set_mask BIT(8), so it is a read-modify-write that ORs the bit in).
- * Until it is set the LTSSM stays in DETECT_QUIET (0), which is exactly what steps 8, 9 and 10
- * have all read, so the endpoint being powered and out of reset is necessary but not sufficient.
- *
- * This step does that one write and nothing else. The vendor's link_train also rewrites several
- * GEN3 preset registers through the DBI window before this bit, and this file must not: that
- * window is the block step 12 hangs on, and mixing it in would cost the attribution this round
- * is for. If the link needs those presets, parf_ltssm below will still say so -- it will move
- * out of detect without reaching L0.
- *
- * The criterion: parf_ltssm was 0 (LTSSM_DETECT_QUIET) at steps 8, 9 and 10. Anything else means
- * the training engine started. 0x11 is L0, a trained link (pci-msm.c:433).
+ * Step 11: vendor link training. pci-msm.c:4374-4409 writes the DBI training words
+ * after PERST is released and before PARF_LTSSM bit 8; DBI accesses while PERST is
+ * asserted can hang the bus. Step 10 already released it, so this step follows the
+ * vendor order and then polls ELBI/DLLLA/ID together as pci-msm.c:4416-4424 does.
  */
 static bool
 step_train(void)
 {
-	uint32_t value;
+	announce("write the vendor's DBI training words, set PARF_LTSSM bit 8, and poll ELBI, DLLLA and "
+	    "the endpoint ID for up to 100 ms");
 
-	announce("set PARF_LTSSM bit 8, which is what the vendor writes to start link training, and then read "
-	    "the link state; this is the one write that starts the training engine");
+	/* 0x080c: field 0x1f00 = 1; 0x0890: clear bit 0; then bracket the Gen3 preset. */
+	uint32_t value = get(6, "dbi gen3_gen2_ctrl before", DWC_GEN3_GEN2_CTRL);
+	put(6, "dbi gen3_gen2_ctrl (0x1f00 = 1)", DWC_GEN3_GEN2_CTRL, (value & ~0x1f00u) | (1u << 8));
+	value = get(6, "dwc gen3_eq_control before", DWC_GEN3_EQ_CONTROL);
+	put(6, "dwc gen3_eq_control (bit 5 in)", DWC_GEN3_EQ_CONTROL, value | 0x20u);
+	value = get(6, "dwc gen3_related before", DWC_GEN3_RELATED);
+	put(6, "dwc gen3_related (bit 0 out)", DWC_GEN3_RELATED, value & ~1u);
+	value = get(6, "dwc gen3_misc_control before", DWC_GEN3_MISC_CONTROL);
+	put(6, "dwc gen3_misc_control (bit 0 in)", DWC_GEN3_MISC_CONTROL, value | 1u);
+	put(6, "dwc gen3_spcie_cap (0x55555555)", DWC_GEN3_SPCIE_CAP, DWC_CORE_PRESET);
+	put(6, "dwc gen3_misc_control (bit 0 out)", DWC_GEN3_MISC_CONTROL, value & ~1u);
+	value = get(6, "dwc device_control_status before", DWC_DEVICE_CONTROL_STTS);
+	put(6, "dwc device_control_status (0x7000 = 5)", DWC_DEVICE_CONTROL_STTS,
+	    (value & ~0x7000u) | (DWC_TLP_RD_SIZE << 12));
 
-	value = get(1, "parf_ltssm before (LTSSM_EN)", 0x1b0);
-	/*
-	 * The register's own bits (pci-msm.c:63-65): 0..5 the LTSSM state, 8 LTSSM_EN, 10
-	 * SW_CLR_FLUSH_MODE, 11 FLUSH_MODE. The vendor reads the state as val & 0x3f (pci-msm.c:7581),
-	 * so the write preserves everything else and only ORs the enable in -- the same
-	 * read-modify-write msm_pcie_write_mask does with clear_mask 0.
-	 */
-	put(1, "parf_ltssm (LTSSM_EN, bit 8 in)", 0x1b0, value | (1u << 8));
-	/*
-	 * The vendor polls ELBI for up to 100 ms after this (pci-msm.c:4416-4424). The ELBI window is
-	 * inside the DBI block this file has not accessed yet, so the poll here is time only and the
-	 * state comes from PARF, which is the block already proven readable.
-	 */
-	sleep_ms(100);
-	value = get(1, "parf_ltssm after LTSSM_EN", 0x1b0);
-	/*
-	 * The state is bits 0..5 only: this read also carries the LTSSM_EN bit just written, so the
-	 * state must be masked or a trained link would read 0x111 and look like an unknown value.
-	 */
-	{
-		const uint32_t state = value & 0x3fu;
-
-		line("the link state after LTSSM_EN is %#x (state %#x, %s)", value, state,
-		    state == 0 ? "LTSSM_DETECT_QUIET, the training engine did not move"
-		               : (state == 0x11 ? "LTSSM_L0, the link trained" : "not detect, see the enum"));
+	put(1, "parf_ltssm (LTSSM_EN, bit 8 in)", 0x1b0,
+	    get(1, "parf_ltssm", 0x1b0) | (1u << 8));
+	/* The vendor's three checks: ELBI XMLH_LINK_UP (bit 10), DBI DLLLA (bit 29 of 0x80)
+	 * and a real vendor/device word at DBI 0x00. One 100 ms bounded poll. */
+	for (uint32_t waited = 0; waited < 20; ++waited) {
+		const uint32_t stts = rd(reg(3, 0x08));
+		const uint32_t dll = rd(reg(6, 0x80));
+		const uint32_t id = rd(reg(6, 0x00));
+		line("the link after %u ms: elbi %#x dll %#x id %#x", waited * 5, stts, dll, id);
+		if ((stts & 0x400u) && (dll & (1u << 29)) && id != 0xffffffffu) {
+			line("THE LINK IS UP after %u ms (endpoint %#04x:%#04x)", waited * 5,
+			    id & 0xffffu, id >> 16);
+			get(1, "parf_ltssm after", 0x1b0);
+			return true;
+		}
+		sleep_ms(5);
 	}
-	return true;
+	line("THE LINK DID NOT COME UP in 100 ms");
+	return false;
 }
 
 /*

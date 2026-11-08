@@ -463,7 +463,11 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
   }
   int wdb=0;
   PE_parse_boot_argn("sheng-wallpaper-db",&wdb,sizeof(wdb));
-  if(wdb==1 && !sheng_wallpaper_db_ran) {
+  /* Run once at the same 200-exec cadence as the poster-store listing. A boot that
+   * stops before the desktop still has to say whether PosterBoard has ever stored a
+   * selection; leaving this behind an extra command-line argument loses that reading. */
+  static unsigned db_tick;
+  if((wdb==1 || (db_tick++ % 200)==0) && !sheng_wallpaper_db_ran) {
    sheng_wallpaper_db_ran=1;
    if(!sheng_wallpaper_container[0])
     sheng_wallpaper_db_status[0]=(int32_t)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
