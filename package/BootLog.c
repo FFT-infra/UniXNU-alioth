@@ -2279,6 +2279,24 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                                  &sheng_kobject_locks ? (unsigned long long)__atomic_load_n(&sheng_kobject_locks, __ATOMIC_RELAXED) : 0ull,
                                  kst2, kcont2, knm2, kpc2);
         if (kbn > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(kb, (size_t)kbn < sizeof kb ? (size_t)kbn : sizeof kb - 1);
+        /* The holder is reported as TH_RUN, so it is not asleep: it is inside something that
+         * never lets go. Its own stack names that something. */
+        if (ko2) {
+          thread_t kht = (thread_t)(uintptr_t)ko2;
+          if (kht->machine.kstackptr) {
+            const uint64_t *ktop = (const uint64_t *)(uintptr_t)kht->machine.kstackptr;
+            char ksk[400];
+            int ksn = snprintf(ksk, sizeof ksk, "KOSTK t=%us", elapsed);
+            int kshown = 0;
+            for (int i = 1; i <= 384 && kshown < 16 && ksn > 0 && (unsigned)ksn < sizeof ksk - 24; ++i) {
+              const uint64_t v = *(const uint64_t *)(ktop - i);
+              if (v < 0xfffffff007004000ULL || v >= 0xfffffff00c000000ULL) continue;
+              ksn += snprintf(ksk + ksn, sizeof ksk - (unsigned)ksn, " %d:%llx", i, (unsigned long long)v);
+              ++kshown;
+            }
+            if (ksn > 0 && (unsigned)ksn < sizeof ksk) {ksk[ksn++] = '\n'; qcom_usb_debug_write(ksk, (size_t)ksn < sizeof ksk ? (size_t)ksn : sizeof ksk - 1);}
+          }
+        }
       }
       /* Per-core interrupt health, next to the row it explains. On this board two different timed
        * waits stop about six seconds into the boot while the supervisor's own one keeps ticking:
