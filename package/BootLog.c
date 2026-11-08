@@ -311,6 +311,8 @@ extern volatile uint64_t sheng_irq_ring_caller[8][8] __attribute__((weak_import)
 extern volatile uint64_t sheng_irq_ring_thread[8][8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_mask_count[8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_unmask_count[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_ring_cntv_ctl[8] __attribute__((weak_import));
+extern volatile int64_t sheng_irq_ring_cntv_rem[8] __attribute__((weak_import));
 // The last waitq_wakeup64_all per CPU: the caller's return address, the waitq, the event, how many
 // calls that CPU made and how many of them returned. That call masks interrupts and takes the waitq
 // interlock, so it is the call the mask site above belongs to. A frozen caller with a frozen call
