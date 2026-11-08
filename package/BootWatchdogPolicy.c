@@ -526,20 +526,27 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
    sheng_wallpaper_list(p,scratch,"/Library/Wallpaper/Collections",'C');
    sheng_wallpaper_list(p,scratch,"/Library/Wallpaper/Collections/iPadOS_17~ipad.wallpaperCollection/Wallpapers",'W');
   }
-  if(wlist==1 && !sheng_wallpaper_list_ran) {
-   if(!sheng_wallpaper_container[0])
-    (void)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
-   if(sheng_wallpaper_container[0]) {
-    char root[256];
-    sheng_wallpaper_list_ran=1;
-    snprintf(root,sizeof root,"%s/Library/Application Support",sheng_wallpaper_container);
-    sheng_wallpaper_list(p,scratch,root,'A');
-    snprintf(root,sizeof root,"%s/Library/Application Support/PRBPosterExtensionDataStore",sheng_wallpaper_container);
-    sheng_wallpaper_list(p,scratch,root,'P');
-    snprintf(root,sizeof root,"%s/Library/Application Support/ArchivedDataStores",sheng_wallpaper_container);
-    sheng_wallpaper_list(p,scratch,root,'R');
-    snprintf(root,sizeof root,"%s/Library/Application Support/PRBPosterExtensionDataStore/61",sheng_wallpaper_container);
-    sheng_wallpaper_list(p,scratch,root,'S');
+  /* sheng-wp=1 lists the same directories on the first exec; without it the listing runs once at the
+   * scan's cadence instead, so a boot that shows no wallpaper can say whether a stored poster exists
+   * without spending 12 bytes of the command line on it. The tick is not advanced once the listing
+   * has run, and sheng_wallpaper_list_ran keeps it to one pass. */
+  {
+   static unsigned list_tick;
+   if(!sheng_wallpaper_list_ran && (wlist==1 || (list_tick++ % 200)==0)) {
+    if(!sheng_wallpaper_container[0])
+     (void)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
+    if(sheng_wallpaper_container[0]) {
+     char root[256];
+     sheng_wallpaper_list_ran=1;
+     snprintf(root,sizeof root,"%s/Library/Application Support",sheng_wallpaper_container);
+     sheng_wallpaper_list(p,scratch,root,'A');
+     snprintf(root,sizeof root,"%s/Library/Application Support/PRBPosterExtensionDataStore",sheng_wallpaper_container);
+     sheng_wallpaper_list(p,scratch,root,'P');
+     snprintf(root,sizeof root,"%s/Library/Application Support/ArchivedDataStores",sheng_wallpaper_container);
+     sheng_wallpaper_list(p,scratch,root,'R');
+     snprintf(root,sizeof root,"%s/Library/Application Support/PRBPosterExtensionDataStore/61",sheng_wallpaper_container);
+     sheng_wallpaper_list(p,scratch,root,'S');
+    }
    }
   }
   int wprobe=0;

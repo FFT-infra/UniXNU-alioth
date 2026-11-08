@@ -2623,6 +2623,17 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                                   native_adreno_metal_starter[2]);
           if (pn > 0) qcom_usb_debug_write(p, (size_t)pn < sizeof p ? (size_t)pn : sizeof p - 1);
         }
+        // The poster store's own listing, once, on the console as well as in the export: a boot that
+        // shows no wallpaper has to say whether PosterBoard holds a stored poster at all, and the
+        // export slot is the one channel a boot without a desktop never writes.
+        static int wallpaper_list_console;
+        if (!wallpaper_list_console && &sheng_wallpaper_list_ran && sheng_wallpaper_list_ran &&
+            &sheng_wallpaper_names && &qcom_usb_debug_write) {
+          wallpaper_list_console = 1;
+          char wl[300];
+          const int wn = snprintf(wl, sizeof wl, "[wallpaper list] %.270s\n", sheng_wallpaper_names);
+          if (wn > 0) qcom_usb_debug_write(wl, (size_t)wn < sizeof wl ? (size_t)wn : sizeof wl - 1);
+        }
       }
       // The first GPU hang of the boot, once: what the CP was executing and where its pointers were. A steady state of one hang
       // per submission says less than the hang that started it.
