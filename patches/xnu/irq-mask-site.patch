@@ -1,6 +1,6 @@
 --- a/osfmk/arm/machine_routines_common.c
 +++ b/osfmk/arm/machine_routines_common.c
-@@ -1063,15 +1063,100 @@
+@@ -1063,15 +1063,95 @@
  		}
  #endif
  	}
@@ -8,40 +8,44 @@
  }
  
 +/*
-+ * sheng: the masked section each CPU is inside, and where it was entered.
++ * sheng: the mask sites each CPU passed through, newest last.
 + *
-+ * A core that never takes an interrupt again is either sitting inside one masked section for
-+ * good, running masked code in a loop, or not masked at all with the interrupt withheld below
-+ * the kernel. The innermost mask site cannot answer that: a core nests dozens of masks per
-+ * second, and the call still outstanding is the outermost one. So this records the *outermost*
-+ * mask, the call that took the CPU from unmasked to masked, and clears it only when the CPU is
-+ * unmasked again. That address is the function whose masked section never ended.
++ * A core that never takes an interrupt again left the CPU masked at one site, and the only
++ * record of it is the call chain it walked to get there. A ring of the last eight sites per
++ * CPU survives the freeze: the counter stops advancing, so the ring holds exactly the path
++ * that ended in it. splhigh(), splsched() and splclock() are macros over this function, so
++ * each entry names the code that asked for the mask rather than a wrapper, and the two
++ * callers walked from the frame pointer name the chain when the site is a shared helper.
 + *
-+ * splhigh(), splsched() and splclock() are macros over this function, so `site` names the code
-+ * that asked for the mask rather than a wrapper. Two more return addresses are walked from the
-+ * frame pointer at that moment, so the chain still names a caller when the site is a shared
-+ * helper. `depth` counts the masks still outstanding, `stamp` is in timebase ticks so a healthy
-+ * core can report how long the victim has been inside the section, and the four system
-+ * registers are the ones only the core itself can read: with ICC_IGRPEN1 clear the CPU interface
-+ * forwards nothing, with ICC_PMR below the timer's 0x80 nothing is signalled, and ICC_HPPIR1
-+ * holding 27 means the timer reached the interface and is being withheld.
++ * The four system registers beside it are the ones only that core can read: with ICC_IGRPEN1
++ * clear the CPU interface forwards nothing, with ICC_PMR below the timer's 0x80 nothing is
++ * signalled, and ICC_HPPIR1 holding 27 means the timer reached the interface and is withheld.
 + *
 + * Indexed by CPU number, written by the owning CPU only, read by the board package. No kernel
 + * code reads it, so a wrong value here cannot change a decision.
 + */
++enum { SHENG_MASK_RING = 8 };
++volatile uint64_t sheng_irq_ring_site[8][SHENG_MASK_RING];
++volatile uint64_t sheng_irq_ring_caller[8][SHENG_MASK_RING];
++volatile uint64_t sheng_irq_ring_thread[8][SHENG_MASK_RING];
++volatile uint64_t sheng_irq_mask_count[8];
++volatile uint64_t sheng_irq_unmask_count[8];
 +volatile uint64_t sheng_irq_outer_site[8];
-+volatile uint64_t sheng_irq_outer_caller[8];
-+volatile uint64_t sheng_irq_outer_caller2[8];
 +volatile uint64_t sheng_irq_outer_thread[8];
 +volatile uint64_t sheng_irq_outer_stamp[8];
-+volatile uint64_t sheng_irq_outer_depth[8];
 +volatile uint64_t sheng_irq_outer_igrpen1[8];
 +volatile uint64_t sheng_irq_outer_pmr[8];
 +volatile uint64_t sheng_irq_outer_hppir1[8];
 +volatile uint64_t sheng_irq_outer_cntv_ctl[8];
 +volatile int64_t  sheng_irq_outer_cntv_rem[8];
-+volatile uint64_t sheng_irq_mask_count[8];
-+volatile uint64_t sheng_irq_unmask_count[8];
++
++/* True when every mask this CPU has taken has been undone, so the call about to be made is
++ * the outermost one. Counters only, so it costs nothing on the masked path. */
++static inline bool
++sheng_unmask_count_matches(uint32_t cpu, uint64_t masks)
++{
++	return sheng_irq_unmask_count[cpu] >= masks;
++}
 +
  boolean_t
  ml_set_interrupts_enabled(boolean_t enable)
@@ -50,37 +54,29 @@
 +	if (sheng_cpu < 8) {
 +		const uint64_t sheng_daif = __builtin_arm_rsr("DAIF");
 +		if (!enable && (sheng_daif & DAIF_IRQF) == 0) {
-+			const uint64_t sheng_depth = sheng_irq_outer_depth[sheng_cpu] + 1;
-+			sheng_irq_mask_count[sheng_cpu] = sheng_irq_mask_count[sheng_cpu] + 1;
-+			sheng_irq_outer_depth[sheng_cpu] = sheng_depth;
-+			if (sheng_depth == 1) {
-+				/* Outermost: this CPU was taking interrupts and now is not. Walk the frame
-+				 * pointer for two callers, enough to name the chain when the site itself is
-+				 * a shared helper. A frame record is {next, return address}; it is used only
-+				 * while it points into this thread's own kernel stack, so a corrupt frame
-+				 * cannot send this read anywhere. */
-+				uint64_t sheng_cval, sheng_now, sheng_fp;
-+				thread_t sheng_thread = current_thread();
-+				__asm__ volatile ("isb; mrs %0, cntpct_el0" : "=r" (sheng_now));
-+				__asm__ volatile ("mov %0, x29" : "=r" (sheng_fp));
-+				sheng_irq_outer_site[sheng_cpu] = (uint64_t)(uintptr_t)__builtin_return_address(0);
-+				sheng_irq_outer_caller[sheng_cpu] = 0;
-+				sheng_irq_outer_caller2[sheng_cpu] = 0;
-+				if (sheng_thread && sheng_thread->kernel_stack) {
-+					const uint64_t sheng_low = (uint64_t)sheng_thread->kernel_stack;
-+					const uint64_t sheng_high = sheng_low + (uint64_t)kernel_stack_size;
-+					uint64_t sheng_at = sheng_fp;
-+					for (unsigned sheng_i = 0; sheng_i < 2; ++sheng_i) {
-+						if (sheng_at < sheng_low || sheng_at + 16 > sheng_high || (sheng_at & 15)) break;
-+						const uint64_t sheng_next = *(const uint64_t *)sheng_at;
-+						const uint64_t sheng_ret = *(const uint64_t *)(sheng_at + 8);
-+						if (!sheng_ret) break;
-+						if (sheng_i == 0) sheng_irq_outer_caller[sheng_cpu] = sheng_ret;
-+						else sheng_irq_outer_caller2[sheng_cpu] = sheng_ret;
-+						if (sheng_next <= sheng_at) break;
-+						sheng_at = sheng_next;
-+					}
++			uint64_t sheng_cval, sheng_now, sheng_fp;
++			thread_t sheng_thread = current_thread();
++			const uint64_t sheng_n = sheng_irq_mask_count[sheng_cpu];
++			const uint32_t sheng_slot = (uint32_t)(sheng_n & (SHENG_MASK_RING - 1));
++			__asm__ volatile ("isb; mrs %0, cntpct_el0" : "=r" (sheng_now));
++			__asm__ volatile ("mov %0, x29" : "=r" (sheng_fp));
++			sheng_irq_mask_count[sheng_cpu] = sheng_n + 1;
++			sheng_irq_ring_site[sheng_cpu][sheng_slot] = (uint64_t)(uintptr_t)__builtin_return_address(0);
++			sheng_irq_ring_caller[sheng_cpu][sheng_slot] = 0;
++			sheng_irq_ring_thread[sheng_cpu][sheng_slot] = sheng_thread ? (uint64_t)thread_tid(sheng_thread) : 0;
++			/* A frame record is {next, return address}; it is used only while it points into
++			 * this thread's own kernel stack, so a corrupt frame cannot send this read anywhere. */
++			if (sheng_thread && sheng_thread->kernel_stack) {
++				const uint64_t sheng_low = (uint64_t)sheng_thread->kernel_stack;
++				const uint64_t sheng_high = sheng_low + (uint64_t)kernel_stack_size;
++				if (sheng_fp >= sheng_low && sheng_fp + 16 <= sheng_high && !(sheng_fp & 15)) {
++					sheng_irq_ring_caller[sheng_cpu][sheng_slot] = *(const uint64_t *)(sheng_fp + 8);
 +				}
++			}
++			/* The outermost mask is the one still outstanding, so its site and the interrupt
++			 * path at that moment are kept apart from the ring. */
++			if (sheng_unmask_count_matches(sheng_cpu, sheng_n)) {
++				sheng_irq_outer_site[sheng_cpu] = (uint64_t)(uintptr_t)__builtin_return_address(0);
 +				sheng_irq_outer_thread[sheng_cpu] = sheng_thread ? (uint64_t)thread_tid(sheng_thread) : 0;
 +				sheng_irq_outer_stamp[sheng_cpu] = sheng_now;
 +				__asm__ volatile ("mrs %0, icc_igrpen1_el1" : "=r" (sheng_irq_outer_igrpen1[sheng_cpu]));
@@ -92,7 +88,6 @@
 +			}
 +		} else if (enable && (sheng_daif & DAIF_IRQF) != 0) {
 +			sheng_irq_unmask_count[sheng_cpu] = sheng_irq_unmask_count[sheng_cpu] + 1;
-+			if (sheng_irq_outer_depth[sheng_cpu] > 0) sheng_irq_outer_depth[sheng_cpu] = sheng_irq_outer_depth[sheng_cpu] - 1;
 +		}
 +	}
  	return ml_set_interrupts_enabled_with_debug(enable, true);

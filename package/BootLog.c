@@ -300,24 +300,15 @@ extern volatile uint64_t armcpu_ipi_sent __attribute__((weak_import));
 extern volatile uint32_t armcpu_quiesce_calls __attribute__((weak_import));
 extern volatile uint32_t armcpu_halt_calls __attribute__((weak_import));
 extern volatile uint32_t armcpu_irq_phase __attribute__((weak_import));
-// The masked section each CPU is inside and where it was entered, filled by
-// patches/xnu/irq-mask-site.patch inside ml_set_interrupts_enabled, which splhigh() and
-// splsched() reach as macros. The *outermost* mask is the one that is still outstanding, so its
-// site is the function whose masked section never ended; `depth` is how many are nested inside.
-// A frozen depth with a frozen site for minutes is a core parked in one section; a depth that
-// climbs is masked code running in a loop; depth 0 with a frozen site means the core is not
-// masked and the interrupt is withheld below the kernel.
-extern volatile uint64_t sheng_irq_outer_site[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_outer_caller[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_outer_caller2[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_outer_thread[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_outer_stamp[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_outer_depth[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_outer_igrpen1[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_outer_pmr[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_outer_hppir1[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_outer_cntv_ctl[8] __attribute__((weak_import));
-extern volatile int64_t sheng_irq_outer_cntv_rem[8] __attribute__((weak_import));
+// The mask sites each CPU passed through, newest last, filled by patches/xnu/irq-mask-site.patch
+// inside ml_set_interrupts_enabled, which splhigh() and splsched() reach as macros. A core that
+// stops taking interrupts stops advancing this counter, so its ring is exactly the path that
+// ended in the freeze; healthy cores show their ordinary steady state beside it. `commission`
+// is the number of masks taken, so a frozen ring with a frozen count is a parked core and a ring
+// that keeps turning is masked code running in a loop.
+extern volatile uint64_t sheng_irq_ring_site[8][8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_ring_caller[8][8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_ring_thread[8][8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_mask_count[8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_unmask_count[8] __attribute__((weak_import));
 // The last waitq_wakeup64_all per CPU: the caller's return address, the waitq, the event, how many
@@ -2801,41 +2792,30 @@ static void core_health_thread(void *arg, wait_result_t result)
         }
         if (qn > 0 && (unsigned)qn < sizeof gq) {gq[qn++] = '\n'; qcom_usb_debug_write(gq, (size_t)qn < sizeof gq ? (size_t)qn : sizeof gq - 1);}
       }
-      /* Every core's last interrupt-mask site, on one line, healthy cores included so the deaf one has a
-       * baseline: site/masks/unmasks/seconds-since-that-mask/last-masking-thread. The two readings that
-       * decide the question are whether the victim's site ever changed (0 = it never masked, so the
-       * interrupt is withheld below the kernel) and whether its counters still climb (it is running
-       * masked code, not sitting in one section). */
-      if (&sheng_irq_outer_site && &sheng_irq_mask_count) {
-        char gm[1280];
-        uint64_t nowTick; __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(nowTick));
-        int gn = snprintf(gm, sizeof gm, "GICRM t=%us", elapsed);
-        for (unsigned c = 0; c < cores && gn > 0 && (unsigned)gn < sizeof gm - 128; ++c) {
-          const uint64_t site = __atomic_load_n(&sheng_irq_outer_site[c], __ATOMIC_RELAXED);
-          const uint64_t caller = sheng_irq_outer_caller ? __atomic_load_n(&sheng_irq_outer_caller[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t caller2 = sheng_irq_outer_caller2 ? __atomic_load_n(&sheng_irq_outer_caller2[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t masks = __atomic_load_n(&sheng_irq_mask_count[c], __ATOMIC_RELAXED);
-          const uint64_t unmasks = sheng_irq_unmask_count ? __atomic_load_n(&sheng_irq_unmask_count[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t depth = sheng_irq_outer_depth ? __atomic_load_n(&sheng_irq_outer_depth[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t stamp = sheng_irq_outer_stamp ? __atomic_load_n(&sheng_irq_outer_stamp[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t who = sheng_irq_outer_thread ? __atomic_load_n(&sheng_irq_outer_thread[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t igrpen1 = sheng_irq_outer_igrpen1 ? __atomic_load_n(&sheng_irq_outer_igrpen1[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t pmr = sheng_irq_outer_pmr ? __atomic_load_n(&sheng_irq_outer_pmr[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t hppir1 = sheng_irq_outer_hppir1 ? __atomic_load_n(&sheng_irq_outer_hppir1[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t ctl = sheng_irq_outer_cntv_ctl ? __atomic_load_n(&sheng_irq_outer_cntv_ctl[c], __ATOMIC_RELAXED) : 0ULL;
-          const int64_t rem = sheng_irq_outer_cntv_rem ? __atomic_load_n(&sheng_irq_outer_cntv_rem[c], __ATOMIC_RELAXED) : 0;
-          unsigned mage = 0;
-          if (stamp && f && nowTick > stamp) mage = (unsigned)((nowTick - stamp) / f);
-          const long long remms = f ? (long long)((rem / (int64_t)f) * 1000 + ((rem % (int64_t)f) * 1000) / (int64_t)f) : 0;
-          gn += snprintf(gm + gn, sizeof gm - (unsigned)gn,
-                         " c%u=%llx/%llx/%llx d%llu %llu/%llu %us/%llx g%llx/%llx/%llx/%llx/%lld", c,
-                         (unsigned long long)site, (unsigned long long)caller, (unsigned long long)caller2,
-                         (unsigned long long)depth, (unsigned long long)masks, (unsigned long long)unmasks,
-                         mage, (unsigned long long)who,
-                         (unsigned long long)igrpen1, (unsigned long long)pmr,
-                         (unsigned long long)hppir1, (unsigned long long)ctl, remms);
+      /* Only the cores whose mask counter stopped: their last six mask sites, newest first, each
+       * as site<caller/thread. The counter stopped, so the newest entry is the function the core
+       * entered when it stopped taking interrupts, and the five behind it are the descent that led
+       * there. Healthy cores are left out: their sites are the ordinary idle path and only lengthen
+       * the line. */
+      if (&sheng_irq_ring_site && &sheng_irq_mask_count) {
+        char gm[512];
+        for (unsigned c = 0; c < cores; ++c) {
+          if (!((deaf >> c) & 1u)) continue;
+          const uint64_t n = __atomic_load_n(&sheng_irq_mask_count[c], __ATOMIC_RELAXED);
+          const uint64_t u = sheng_irq_unmask_count ? __atomic_load_n(&sheng_irq_unmask_count[c], __ATOMIC_RELAXED) : 0ULL;
+          int gn = snprintf(gm, sizeof gm, "GICRM t=%us c%u n=%llu/%llu", elapsed, c,
+                            (unsigned long long)n, (unsigned long long)u);
+          /* The newest six sites, newest first, each with its caller and the thread that took it. */
+          for (unsigned k = 1; k <= 6 && n >= k && gn > 0 && (unsigned)gn < sizeof gm - 44; ++k) {
+            const uint32_t slot = (uint32_t)((n - k) & 7u);
+            const uint64_t site = __atomic_load_n(&sheng_irq_ring_site[c][slot], __ATOMIC_RELAXED);
+            const uint64_t caller = sheng_irq_ring_caller ? __atomic_load_n(&sheng_irq_ring_caller[c][slot], __ATOMIC_RELAXED) : 0ULL;
+            const uint64_t who = sheng_irq_ring_thread ? __atomic_load_n(&sheng_irq_ring_thread[c][slot], __ATOMIC_RELAXED) : 0ULL;
+            gn += snprintf(gm + gn, sizeof gm - (unsigned)gn, " %llx<%llx/%llx", (unsigned long long)site,
+                           (unsigned long long)caller, (unsigned long long)who);
+          }
+          if (gn > 0 && (unsigned)gn < sizeof gm) {gm[gn++] = '\n'; qcom_usb_debug_write(gm, (size_t)gn < sizeof gm ? (size_t)gn : sizeof gm - 1);}
         }
-        if (gn > 0 && (unsigned)gn < sizeof gm) {gm[gn++] = '\n'; qcom_usb_debug_write(gm, (size_t)gn < sizeof gm ? (size_t)gn : sizeof gm - 1);}
       }
       /* The same cores from the wakeup side: the caller of their last waitq_wakeup64_all, the waitq
        * and event it carried, and how many of those calls returned. A core that entered one and never
