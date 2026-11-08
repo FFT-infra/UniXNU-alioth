@@ -330,6 +330,9 @@ extern volatile uint64_t sheng_kmap_owner_thread __attribute__((weak_import));
 extern volatile uint64_t sheng_kmap_owner_tid __attribute__((weak_import));
 extern volatile uint64_t sheng_kmap_owner_ctid __attribute__((weak_import));
 extern volatile uint64_t sheng_kmap_lock_word __attribute__((weak_import));
+/* The GPU probe thread's own parked state: the marks say how far it got, this says whether it is
+ * asleep on an event and which one, or running. */
+extern volatile uint64_t sheng_gpu_probe_thread __attribute__((weak_import));
 // The last waitq_wakeup64_all per CPU: the caller's return address, the waitq, the event, how many
 // calls that CPU made and how many of them returned. That call masks interrupts and takes the waitq
 // interlock, so it is the call the mask site above belongs to. A frozen caller with a frozen call
@@ -2218,6 +2221,22 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                                 &sheng_kmap_owner_tid ? (unsigned long long)__atomic_load_n(&sheng_kmap_owner_tid, __ATOMIC_RELAXED) : 0ull,
                                 kst, kcont, kpri, knm, kpc);
         if (kn > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(km, (size_t)kn < sizeof km ? (size_t)kn : sizeof km - 1);
+      }
+      if (&sheng_gpu_probe_thread) {
+        const uint64_t gp = __atomic_load_n(&sheng_gpu_probe_thread, __ATOMIC_RELAXED);
+        if (gp) {
+          thread_t pt = (thread_t)(uintptr_t)gp;
+          char gp_row[224];
+          char pnm[24] = "-";
+          if (&thread_get_thread_name) thread_get_thread_name(pt, pnm);
+          const int pn = snprintf(gp_row, sizeof gp_row, "GPUTH t=%us st=%llx ev=%llx cont=%llx wq=%llx pri=%u nm=%s\n",
+                                  elapsed, (unsigned long long)pt->state,
+                                  (unsigned long long)pt->wait_event,
+                                  (unsigned long long)(uintptr_t)pt->continuation,
+                                  (unsigned long long)(uintptr_t)pt->waitq,
+                                  (unsigned)pt->sched_pri, pnm);
+          if (pn > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(gp_row, (size_t)pn < sizeof gp_row ? (size_t)pn : sizeof gp_row - 1);
+        }
       }
       /* Per-core interrupt health, next to the row it explains. On this board two different timed
        * waits stop about six seconds into the boot while the supervisor's own one keeps ticking:

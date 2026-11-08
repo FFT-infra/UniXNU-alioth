@@ -1968,7 +1968,13 @@ static void gpuMark(const char *what) {
     if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
 }
 
+/* Published so the boot log can report where the probe thread is parked when it stops: its
+ * state, the event it is waiting on and the continuation it would resume at. A thread that is
+ * asleep and one that is running look the same from the marks alone. */
+extern "C" volatile uint64_t sheng_gpu_probe_thread;
+
 void gpuThread(void *, wait_result_t) {
+    sheng_gpu_probe_thread = (uint64_t)(uintptr_t)current_thread();
     /* The GICR row names the thread a stopped core was running; without this name every unnamed
      * kernel thread reads the same. */
     thread_set_thread_name(current_thread(), "gpu_probe");
