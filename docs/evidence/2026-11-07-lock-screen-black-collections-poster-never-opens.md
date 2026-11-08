@@ -77,6 +77,12 @@ mountfail=1/e00002d5/2
 一次 GPU 窗口挂载被特权拒绝。这条属于 GPU 侧，尚未确定是否与壁纸有关，
 但它是这一轮唯一一个非零的错误码。
 
+**更正（2026-11-08）**：`0x2d5` 不是 `kIOReturnNotPrivileged`。`IOReturn.h:146` 是
+`kIOReturnNotPrivileged iokit_common_err(0x2c1)`，`:168` 是 `kIOReturnBusy iokit_common_err(0x2d5)`。
+所以这条是 `kIOReturnBusy`，而且它是 `GpuProbe.cpp:1507-1511` 自检**故意**开的第二个 kernel
+client 要的返回值：`[0]=1`（还没有地址空间）+ `[1]=Busy` + `count=2` 与自检完全一致。
+它不是一次被拒绝的挂载，和壁纸无关。
+
 ## 6. 统一日志确实在跑
 
 `logdata.statistics.0.txt` 记 `total : 8482217`，`logd.0.log` 227 KiB。
