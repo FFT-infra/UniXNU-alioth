@@ -758,6 +758,17 @@ step_parf_init(void)
 
 	value = get(1, "parf_phy_ctrl", 0x40);
 	put(1, "parf_phy_ctrl (bit 0 out)", 0x40, value & ~1u);
+	/*
+	 * The external same-board success clears PARF_PHY_REFCLK bit 12 (the pad reference)
+	 * and PARF_PM_CTRL bit 5 (REQ_NOT_ENTR_L1) before it releases PERST. The vendor's
+	 * msm_pcie_enable does the PM_CTRL write at pci-msm.c:4521-4523; the refclk write is
+	 * in the successful same-board sequence. Both are reads first so the log says what
+	 * the bootloader left, not what this file assumed.
+	 */
+	value = get(1, "parf_phy_refclk", 0x4c);
+	put(1, "parf_phy_refclk (pad reference off)", 0x4c, value & ~(1u << 12));
+	value = get(1, "parf_pm_ctrl", 0x20);
+	put(1, "parf_pm_ctrl (L1 entry allowed)", 0x20, value & ~(1u << 5));
 	/* This SoC's 2.7.0 layout uses PCIE20_PARF_DBI_BASE_ADDR = 0x350 (pci-msm.c:43).
 	 * 0x168 is the older 2.3.2 offset and is a different live register here; writing it
 	 * corrupts the wrapper setup. */
