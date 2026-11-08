@@ -174,7 +174,21 @@ static void gpuMarkStep(const char *what, unsigned step) {
     if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
 }
 
+/* Window 6 (RSCC) is read for two status bits only. Mapping it is what stopped every boot after
+ * 2026-11-08 06:55: windows 0..5 complete in about 200 us each, then the map() call for window 6
+ * never returns, and the boot stops with it. It is skipped unless pipa-gpu-rscc=1 asks for it, so
+ * the probe reaches the firmware load and the rest of the boot continues. */
+static bool rsccWanted() {
+    static int wanted = -1;
+    if (wanted < 0) {
+        unsigned p = 0;
+        wanted = (PE_parse_boot_argn("pipa-gpu-rscc", &p, sizeof p) && p) ? 1 : 0;
+    }
+    return wanted != 0;
+}
+
 bool mapWindow(unsigned w) {
+    if (w == 6 && !rsccWanted()) { gpuMarkStep("skip", w); return false; }
     gpuMarkStep("range", w);
     IODeviceMemory *memory = IODeviceMemory::withRange(kPhys[w], kLen[w]);
     if (!memory) return false;
