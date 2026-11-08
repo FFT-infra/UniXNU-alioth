@@ -73,6 +73,9 @@ extern void thread_terminate(thread_t thread);
  * reference used (loader_return.c), which this tree does not have.
  */
 extern int sweet_log_flush(void);
+/* The persistent log's writer owns the UFS window. This waits for its next round, so a line
+ * already in the kernel message buffer is on the medium before the caller continues. */
+extern int boot_log_flush_wait(void) __attribute__((weak_import));
 /* This board's console. printf() does not reach it (a DEVELOPMENT kernel leaves
  * disable_kprintf_output set); this is the channel that does. */
 extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
@@ -82,6 +85,7 @@ static uint32_t pcie_skip_steps;
 
 static void run_steps(void);
 static void pcie_steps_thread(void *argument, wait_result_t wait_result);
+static bool early_power_vote(void);
 
 static void
 sleep_ms(uint32_t ms)
@@ -188,11 +192,49 @@ line(const char *fmt, ...)
 	}
 }
 
+/* Print, wait for the persistent-log writer's next round, then use the USB console. The wait is
+ * before the USB write on purpose: if the USB path is the thing that does not return, the line is
+ * already on the medium. */
+static void
+line_persist(const char *fmt, ...)
+{
+	char body[192], out[224];
+	__builtin_va_list ap;
+
+	__builtin_va_start(ap, fmt);
+	vsnprintf(body, sizeof body, fmt, ap);
+	__builtin_va_end(ap);
+	printf("pcie: %u: %s\n", pcie_step, body);
+	if (&boot_log_flush_wait) {
+		(void)boot_log_flush_wait();
+	}
+	if (&qcom_usb_debug_write) {
+		const int m = snprintf(out, sizeof out, "PCIE %u: %s\n", pcie_step, body);
+		if (m > 0) {
+			qcom_usb_debug_write(out, (size_t)m < sizeof(out) ? (size_t)m : sizeof(out) - 1);
+		}
+	}
+}
+
 /* Put the ring on the medium now: the access that follows may never return. */
 static void
 risky(void)
 {
 	(void)sweet_log_flush();
+}
+
+static uint32_t persisted_access_step;
+
+/* The last step is the one whose first access is allowed to be fatal. Print its "about to"
+ * line with the persistent wait, once; later accesses in the same step keep the normal path. */
+static bool
+persist_access(void)
+{
+	if (pcie_step != pcie_last_step || persisted_access_step == pcie_step) {
+		return false;
+	}
+	persisted_access_step = pcie_step;
+	return true;
 }
 
 static void
@@ -201,7 +243,7 @@ announce(const char *what)
 	if (pcie_step != pcie_last_step) {
 		return;
 	}
-	line("%s", what);
+	line_persist("%s", what);
 }
 
 static uint32_t
@@ -210,7 +252,11 @@ get(int which, const char *name, uint32_t offset)
 	uint64_t address = reg(which, offset);
 	uint32_t value;
 
-	line("about to read %s %s at %#llx", blocks[which].name, name, address);
+	if (persist_access()) {
+		line_persist("about to read %s %s at %#llx", blocks[which].name, name, address);
+	} else {
+		line("about to read %s %s at %#llx", blocks[which].name, name, address);
+	}
 	risky();
 	value = rd(address);
 	line("%s %s (%#llx) = %#x", blocks[which].name, name, address, value);
@@ -222,7 +268,11 @@ put(int which, const char *name, uint32_t offset, uint32_t value)
 {
 	uint64_t address = reg(which, offset);
 
-	line("about to write %s %s at %#llx: %#x", blocks[which].name, name, address, value);
+	if (persist_access()) {
+		line_persist("about to write %s %s at %#llx: %#x", blocks[which].name, name, address, value);
+	} else {
+		line("about to write %s %s at %#llx: %#x", blocks[which].name, name, address, value);
+	}
 	risky();
 	wr(address, value);
 }
@@ -312,10 +362,13 @@ map_all(void)
 #define RSC_DRV_IRQ_STATUS      0x04
 #define RSC_DRV_IRQ_ENABLE      0x00
 #define RSC_DRV_IRQ_CLEAR       0x08
+#define RSC_TCS_IRQ_STATUS      RSC_DRV_IRQ_STATUS
 #define RSC_DRV_CONFIG          0x0c            /* DRV_PRNT_CHLD_CONFIG */
 #define RSC_TCS_CONTROL         0x14            /* v2 */
 #define RSC_TCS_STATUS          0x18
+#define RSC_TCS_CMD_WAIT        0x10            /* CMD_WAIT_FOR_CMPL, vendor rpmh-rsc.c:47 */
 #define RSC_TCS_CMD_ENABLE      0x1c            /* v2 */
+#define RSC_TCS_IRQ_CLEAR       0x08
 #define RSC_CMD_MSGID           0x30
 #define RSC_CMD_ADDR            0x34
 #define RSC_CMD_DATA            0x38
@@ -335,6 +388,8 @@ map_all(void)
 #define RAIL_VRM_MODE           8               /* +8 */
 #define RAIL_LDOA5_MV           880             /* DT pm8150_l5, min = max = 880000 uV */
 #define RAIL_LDOA9_MV           1200            /* DT pm8150_l9, min = max = 1200000 uV */
+#define RAIL_CX_NAME            "cx.lvl"        /* kona-pcie.dtsi:49, kona-regulators.dtsi:51 */
+#define RAIL_CX_LEVEL           256             /* RPMH_REGULATOR_LEVEL_NOM, kona-pcie.dtsi:52-53 */
 #define RAIL_ENABLE_ON          1
 #define RAIL_MODE_PMIC5_LDO_HPM 7               /* rpmh-regulator.c:281; NOT the enum HPM = 4 */
 
@@ -415,6 +470,15 @@ step_gdsc(void)
 
 	announce("switch the controller's own power on: the software collapse bit out of its power switch, then wait for its "
 	    "power-on bit");
+	/*
+	 * The vendor's pci-msm.c:930-935 gets vreg-1p8, vreg-0p9 and vreg-cx before it
+	 * powers the controller. The external same-board success vote is at its step 2 for
+	 * the same reason. This is gated by pcie_power so a normal boot and a probe round
+	 * without the switch never touch a PMIC rail.
+	 */
+	if (!early_power_vote()) {
+		return false;
+	}
 	gdscr = get(0, "pcie_0_gdscr", GCC_PCIE_0_GDSCR);
 	put(0, "pcie_0_gdscr", GCC_PCIE_0_GDSCR, gdscr & ~GDSC_SW_COLLAPSE);
 	for (waited = 0; waited < 100; waited++) {
@@ -1026,6 +1090,237 @@ step_dm_core(void)
 	return true;
 }
 
+/* The command database, copied once. step_rails reads it, and the early vote needs the
+ * cx.lvl address from it; neither maps the 128 KiB window twice. */
+static uint8_t rail_cmd_db[GPB_CMD_DB_BYTES] __attribute__((aligned(8)));
+static bool rail_cmd_db_loaded;
+
+static bool
+cmd_db_copy(void)
+{
+	vm_offset_t va;
+
+	if (rail_cmd_db_loaded) {
+		return true;
+	}
+	va = ml_io_map(GPB_CMD_DB_BASE, GPB_CMD_DB_BYTES);
+	if (!va) {
+		return false;
+	}
+	for (uint32_t i = 0; i < GPB_CMD_DB_BYTES / 4; i++) {
+		const uint32_t v = ((volatile uint32_t *)va)[i];
+
+		__builtin_memcpy(rail_cmd_db + 4 * i, &v, 4);
+	}
+	rail_cmd_db_loaded = gpb_le32(rail_cmd_db + 4) == GPB_CMD_DB_MAGIC;
+	return rail_cmd_db_loaded;
+}
+
+static bool
+rail_address(const char *name, uint32_t *address)
+{
+	struct gpb_cmd_db_entry e;
+
+	if (!cmd_db_copy()) {
+		return false;
+	}
+	__builtin_memset(&e, 0, sizeof e);
+	if (gpb_cmd_db_find(rail_cmd_db, sizeof rail_cmd_db, name, &e) != 0) {
+		return false;
+	}
+	*address = e.address;
+	return true;
+}
+
+struct rail_cmd {
+	uint32_t addr;
+	uint32_t data;
+	const char *what;
+};
+
+/*
+ * Write one RPMh request with the vendor's TCS sequence (rpmh-rsc.c:324-359, :221-244):
+ * command words, CMD_WAIT_FOR_CMPL, CMD_ENABLE, clear AMC, enable AMC, trigger. The
+ * completion judge is every command's ISSUED|COMPL bits, the same bits the vendor ISR
+ * checks at :283-290. The IRQ status is printed too, but it is not the judge.
+ */
+static bool
+rpmh_write_commands(const struct rail_cmd *cmds, unsigned count, const char *label)
+{
+	uint32_t config, tcs_count, per_tcs, id, polls, status = 0, irq;
+	volatile uint32_t *drv;
+	bool complete = false;
+
+	if (count == 0 || count > 16) {
+		line("%s: bad command count %u", label, count);
+		return false;
+	}
+	drv = (volatile uint32_t *)(uintptr_t)ml_io_map(RSC_DRV2_BASE, 0x10000);
+	if (!drv) {
+		line("%s: no memory to map the RSC DRV 2 at %#x", label, RSC_DRV2_BASE);
+		return false;
+	}
+	config = drv[RSC_DRV_CONFIG / 4];
+	tcs_count = (config >> 12) & 0x3f;
+	per_tcs = (config >> 27) & 0x1f;
+	line("%s: the RSC DRV 2 config reads %#x: %u TCS, %u commands each", label, config, tcs_count, per_tcs);
+	if (tcs_count < 2 || per_tcs < count) {
+		line("%s: the DRV has too few TCS or command slots; no vote", label);
+		return false;
+	}
+	for (id = 0; id < 2; id++) {
+		if (drv[(RSC_TCS_OFFSET + RSC_TCS_STRIDE * id + RSC_TCS_STATUS) / 4]) {
+			break;
+		}
+	}
+	if (id == 2) {
+		line("%s: no idle TCS among the first two; no vote", label);
+		return false;
+	}
+	line("%s: using TCS %u (status %#x)", label, id,
+	    drv[(RSC_TCS_OFFSET + RSC_TCS_STRIDE * id + RSC_TCS_STATUS) / 4]);
+
+#define RSC_W(off, val) do { drv[(off) / 4] = (val); __asm__ volatile("dsb sy" ::: "memory"); } while (0)
+#define TCS(reg) (RSC_TCS_OFFSET + RSC_TCS_STRIDE * id + (reg))
+
+	for (polls = 0; polls < 2000; polls++) {
+		if (drv[TCS(RSC_TCS_STATUS) / 4]) {
+			break;
+		}
+		delay_for_interval(100, NSEC_PER_USEC);
+	}
+	if (polls == 2000) {
+		line("%s: TCS %u stayed busy; no vote", label, id);
+		return false;
+	}
+	RSC_W(TCS(RSC_TCS_CMD_ENABLE), 0);
+	RSC_W(TCS(RSC_TCS_CMD_WAIT), 0);
+	RSC_W(TCS(RSC_TCS_CONTROL), drv[TCS(RSC_TCS_CONTROL) / 4] &
+	    ~(RSC_CONTROL_TRIGGER | RSC_CONTROL_AMC_ON));
+	RSC_W(TCS(RSC_TCS_IRQ_CLEAR), 1);
+	for (unsigned i = 0; i < count; i++) {
+		const uint32_t cmd = TCS(RSC_CMD_MSGID) + RSC_CMD_STRIDE * i;
+
+		RSC_W(cmd, RSC_CMD_MSGID_WRITE_RESPONSE);
+		RSC_W(cmd + (RSC_CMD_ADDR - RSC_CMD_MSGID), cmds[i].addr);
+		RSC_W(cmd + (RSC_CMD_DATA - RSC_CMD_MSGID), cmds[i].data);
+	}
+	RSC_W(TCS(RSC_TCS_CMD_WAIT), (1u << count) - 1u);
+	RSC_W(TCS(RSC_TCS_CMD_ENABLE), (1u << count) - 1u);
+	{
+		uint32_t control = drv[TCS(RSC_TCS_CONTROL) / 4];
+
+		control &= ~RSC_CONTROL_TRIGGER;
+		RSC_W(TCS(RSC_TCS_CONTROL), control);
+		control &= ~RSC_CONTROL_AMC_ON;
+		RSC_W(TCS(RSC_TCS_CONTROL), control);
+		RSC_W(TCS(RSC_TCS_CONTROL), RSC_CONTROL_AMC_ON);
+		RSC_W(TCS(RSC_TCS_CONTROL), RSC_CONTROL_AMC_ON | RSC_CONTROL_TRIGGER);
+	}
+	for (polls = 0; polls < 100000; polls++) {
+		complete = true;
+		for (unsigned i = 0; i < count; i++) {
+			const uint32_t v = drv[(TCS(RSC_CMD_STATUS) + RSC_CMD_STRIDE * i) / 4];
+
+			if (i == 0) {
+				status = v;
+			}
+			complete = complete && v != 0xffffffffu && (v & 0x10100u) == 0x10100u;
+		}
+		if (complete) {
+			break;
+		}
+		delay_for_interval(1, NSEC_PER_USEC);
+	}
+	irq = drv[TCS(RSC_TCS_IRQ_STATUS) / 4];
+	RSC_W(TCS(RSC_TCS_CMD_WAIT), 0);
+	RSC_W(TCS(RSC_TCS_CMD_ENABLE), 0);
+	RSC_W(TCS(RSC_TCS_CONTROL), drv[TCS(RSC_TCS_CONTROL) / 4] &
+	    ~(RSC_CONTROL_TRIGGER | RSC_CONTROL_AMC_ON));
+	RSC_W(TCS(RSC_TCS_IRQ_CLEAR), 1);
+#undef TCS
+#undef RSC_W
+
+	line("%s: the vote %s after %u polls; command status %#x, irq %#x", label,
+	    complete ? "completed" : "DID NOT COMPLETE", polls, status, irq);
+	return complete;
+}
+
+/*
+ * pcie_power=1: vote the three rails the controller node names, before step 2 powers the
+ * controller. pcie_power=2 prints the same sequence and writes nothing. No pcie_power means
+ * no PMIC write. Values are from kona-pcie.dtsi:47-53 and the vendor rpmh-regulator map:
+ * ldoa9 1.2 V, ldoa5 0.88 V, cx.lvl at NOM (256). The external same-board success does this
+ * at its step 2; the local diagnostic vote is step 14 and is too late for the controller.
+ */
+static bool
+early_power_vote(void)
+{
+	struct rail_cmd cmds[7];
+	uint32_t mode = 0, cx = 0;
+	unsigned n = 0;
+
+	PE_parse_boot_argn("pcie_power", &mode, sizeof mode);
+	if (mode == 0) {
+		/* The command line has a 1023-byte limit; pp is the short form for one round. */
+		PE_parse_boot_argn("pp", &mode, sizeof mode);
+	}
+	if (mode == 0) {
+		return true;
+	}
+	if (mode > 2) {
+		line("pcie_power=%u: use 1 to vote or 2 to print the sequence; no write", mode);
+		return false;
+	}
+	if (!rail_address(RAIL_CX_NAME, &cx)) {
+		line("%s is not in the command database; no early vote", RAIL_CX_NAME);
+		return false;
+	}
+
+	cmds[n].addr = RAIL_LDOA9_ADDR + RAIL_VRM_VOLTAGE;
+	cmds[n].data = RAIL_LDOA9_MV;
+	cmds[n].what = "ldoa9 voltage 1200 mV";
+	n++;
+	cmds[n].addr = RAIL_LDOA9_ADDR + RAIL_VRM_ENABLE;
+	cmds[n].data = RAIL_ENABLE_ON;
+	cmds[n].what = "ldoa9 enable 1";
+	n++;
+	cmds[n].addr = RAIL_LDOA9_ADDR + RAIL_VRM_MODE;
+	cmds[n].data = RAIL_MODE_PMIC5_LDO_HPM;
+	cmds[n].what = "ldoa9 mode 7 (pmic5-ldo HPM)";
+	n++;
+	cmds[n].addr = RAIL_LDOA5_ADDR + RAIL_VRM_VOLTAGE;
+	cmds[n].data = RAIL_LDOA5_MV;
+	cmds[n].what = "ldoa5 voltage 880 mV";
+	n++;
+	cmds[n].addr = RAIL_LDOA5_ADDR + RAIL_VRM_ENABLE;
+	cmds[n].data = RAIL_ENABLE_ON;
+	cmds[n].what = "ldoa5 enable 1";
+	n++;
+	cmds[n].addr = RAIL_LDOA5_ADDR + RAIL_VRM_MODE;
+	cmds[n].data = RAIL_MODE_PMIC5_LDO_HPM;
+	cmds[n].what = "ldoa5 mode 7 (pmic5-ldo HPM)";
+	n++;
+	cmds[n].addr = cx;
+	cmds[n].data = RAIL_CX_LEVEL;
+	cmds[n].what = "cx.lvl level 256 (NOM)";
+	n++;
+
+	line("early power vote before the controller: %u commands for %s, ldoa9 and ldoa5", n, RAIL_CX_NAME);
+	for (unsigned i = 0; i < n; i++) {
+		line("early command %u: address %#x, data %u (%s)", i + 1, cmds[i].addr, cmds[i].data, cmds[i].what);
+	}
+	if (mode == 2) {
+		line("pcie_power=2: dry run, no write made; pcie_power=1 makes these %u", n);
+		return true;
+	}
+	if (!rpmh_write_commands(cmds, n, "early_power")) {
+		return false;
+	}
+	sleep_ms(10);
+	return true;
+}
+
 /*
  * Step 13: what the command database says about the two rails the vendor turns on.
  *
@@ -1052,34 +1347,26 @@ step_dm_core(void)
 static bool
 step_rails(void)
 {
-	static uint8_t db[GPB_CMD_DB_BYTES] __attribute__((aligned(8)));
 	static const char *const rails[] = { "ldoa5", "ldoa9" };
 	struct gpb_cmd_db_entry e;
-	vm_offset_t va;
 
 	announce("ask the command database about ldoa5 and ldoa9, the two rails the vendor turns on before it "
 	    "touches dm_core; APSS cannot read whether they are on, but it can read whether RPMh knows them");
 
-	va = ml_io_map(GPB_CMD_DB_BASE, GPB_CMD_DB_BYTES);
-	if (!va) {
-		line("no memory to map the command database at %#llx", (unsigned long long)GPB_CMD_DB_BASE);
+	if (!cmd_db_copy()) {
+		line("no command database or bad magic at %#llx", (unsigned long long)GPB_CMD_DB_BASE);
 		return false;
 	}
 	/*
-	 * Copy with 32-bit reads: the database is mapped as device memory and byte accesses to it are
-	 * not what GpuProbe uses either (GpuProbe.cpp:198-202).
+	 * The copy uses 32-bit reads: the database is mapped as device memory and byte accesses to it
+	 * are not what GpuProbe uses either (GpuProbe.cpp:198-202).
 	 */
-	for (uint32_t i = 0; i < GPB_CMD_DB_BYTES / 4; i++) {
-		uint32_t v = ((volatile uint32_t *)va)[i];
-
-		__builtin_memcpy(db + 4 * i, &v, 4);
-	}
 	line("the command database at %#llx: version %#x magic %#x (expected magic %#x)",
-	    (unsigned long long)GPB_CMD_DB_BASE, gpb_le32(db), gpb_le32(db + 4), GPB_CMD_DB_MAGIC);
+	    (unsigned long long)GPB_CMD_DB_BASE, gpb_le32(rail_cmd_db), gpb_le32(rail_cmd_db + 4), GPB_CMD_DB_MAGIC);
 
 	for (unsigned i = 0; i < sizeof(rails) / sizeof(rails[0]); i++) {
 		__builtin_memset(&e, 0, sizeof e);
-		if (gpb_cmd_db_find(db, sizeof db, rails[i], &e) != 0) {
+		if (gpb_cmd_db_find(rail_cmd_db, sizeof rail_cmd_db, rails[i], &e) != 0) {
 			line("%s: NOT IN THE COMMAND DATABASE -- RPMh does not know this rail by that name", rails[i]);
 			continue;
 		}
@@ -1147,12 +1434,8 @@ step_rails(void)
 static bool
 step_rail_vote(void)
 {
-	uint32_t mode = 0, config, tcs_count, per_tcs, id, polls, status;
-	volatile uint32_t *drv;
-	struct {
-		uint32_t addr, data;
-		const char *what;
-	} cmds[3];
+	uint32_t mode = 0;
+	struct rail_cmd cmds[3];
 
 	PE_parse_boot_argn("pcie_rail", &mode, sizeof(mode));
 	if (mode == 0) {
@@ -1181,86 +1464,9 @@ step_rail_vote(void)
 		line("pcie_rail=%u: dry run, no write made; pcie_rail=2 makes these three", mode);
 		return true;
 	}
-
-	drv = (volatile uint32_t *)(uintptr_t)ml_io_map(RSC_DRV2_BASE, 0x10000);
-	if (!drv) {
-		line("no memory to map the RSC DRV 2 at %#x; no vote", RSC_DRV2_BASE);
+	if (!rpmh_write_commands(cmds, 3, "rail2")) {
 		return false;
 	}
-	config = drv[RSC_DRV_CONFIG / 4];
-	tcs_count = (config >> 12) & 0x3f;
-	per_tcs = (config >> 27) & 0x1f;
-	line("the RSC DRV 2 config reads %#x: %u TCS, %u commands each", config, tcs_count, per_tcs);
-	if (tcs_count < 2 || per_tcs < 3) {
-		line("the DRV has too few TCS or command slots for this request; no vote");
-		return false;
-	}
-
-	/* The TCS to use is the first one whose status reads non-zero (idle), as GpuProbe does. */
-	for (id = 0; id < 2; id++) {
-		if (drv[(RSC_TCS_OFFSET + RSC_TCS_STRIDE * id + RSC_TCS_STATUS) / 4]) {
-			break;
-		}
-	}
-	if (id == 2) {
-		line("no idle TCS among the first two; no vote");
-		return false;
-	}
-	line("using TCS %u (status %#x)", id,
-	    drv[(RSC_TCS_OFFSET + RSC_TCS_STRIDE * id + RSC_TCS_STATUS) / 4]);
-
-#define RSC_W(off, val) do { drv[(off) / 4] = (val); __asm__ volatile("dsb sy" ::: "memory"); } while (0)
-#define TCS(reg) (RSC_TCS_OFFSET + RSC_TCS_STRIDE * id + (reg))
-
-	RSC_W(TCS(RSC_TCS_CMD_ENABLE), 0);
-	for (unsigned i = 0; i < 3; i++) {
-		const uint32_t cmd = TCS(RSC_CMD_MSGID) + RSC_CMD_STRIDE * i;
-
-		RSC_W(cmd, RSC_CMD_MSGID_WRITE_RESPONSE);
-		RSC_W(cmd + (RSC_CMD_ADDR - RSC_CMD_MSGID), cmds[i].addr);
-		RSC_W(cmd + (RSC_CMD_DATA - RSC_CMD_MSGID), cmds[i].data);
-	}
-	RSC_W(TCS(RSC_TCS_CMD_ENABLE), (1u << 3) - 1u);
-	{
-		uint32_t control = drv[TCS(RSC_TCS_CONTROL) / 4];
-
-		control &= ~RSC_CONTROL_TRIGGER; RSC_W(TCS(RSC_TCS_CONTROL), control);
-		control &= ~RSC_CONTROL_AMC_ON;  RSC_W(TCS(RSC_TCS_CONTROL), control);
-		RSC_W(TCS(RSC_TCS_CONTROL), RSC_CONTROL_AMC_ON);
-		RSC_W(TCS(RSC_TCS_CONTROL), RSC_CONTROL_AMC_ON | RSC_CONTROL_TRIGGER);
-	}
-	/* The completion judge is the three commands' CMD_STATUS, the vendor's ISR criterion
-	 * (rpmh-rsc.c:283-290: ISSUED | COMPL). The IRQ registers live in the TCS block
-	 * (tcs_base = drv + 0xd00), not at the DRV base, and this judgement needs no IRQ, so the
-	 * DRV-base IRQ_ENABLE/CLEAR writes are gone. A stale CMD_STATUS left by an earlier request
-	 * is excluded by the progress guard: at least one poll must see the TCS busy or a command
-	 * status incomplete before all three read ISSUED|COMPL. */
-	{
-		bool progress = false;
-
-		status = 0;
-		for (polls = 0; polls < 100000; polls++) {
-			bool complete = true;
-
-			for (unsigned i = 0; i < 3; i++) {
-				const uint32_t v = drv[(TCS(RSC_CMD_STATUS) + RSC_CMD_STRIDE * i) / 4];
-
-				if (i == 0) status = v;
-				complete = complete && v != 0xffffffffu && (v & 0x10100u) == 0x10100u;
-			}
-			progress = progress || !complete || drv[TCS(RSC_TCS_STATUS) / 4] == 0;
-			if (complete && progress) break;
-			delay_for_interval(1, NSEC_PER_USEC);   /* 1 us; 100000 polls = 100 ms */
-		}
-	}
-	RSC_W(TCS(RSC_TCS_CMD_ENABLE), 0);
-#undef TCS
-#undef RSC_W
-
-	line("the vote %s after %u polls; command status %#x",
-	    (drv[(RSC_TCS_OFFSET + RSC_TCS_STRIDE * id + RSC_CMD_STATUS) / 4] & 0x10100u) == 0x10100u
-	        ? "completed" : "DID NOT COMPLETE",
-	    polls, status);
 
 	/*
 	 * The criterion. This file has never made a dm_core access that returned, in any state it
@@ -1352,6 +1558,9 @@ alioth_pcie_init(void)
 		 * processor the same access takes the whole log with it.
 		 */
 		PE_parse_boot_argn("pcie_thread", &threaded, sizeof(threaded));
+		if (threaded == 0) {
+			PE_parse_boot_argn("pt", &threaded, sizeof(threaded));
+		}
 		if (threaded) {
 			kern_return_t started = kernel_thread_start(pcie_steps_thread, NULL, &thread);
 

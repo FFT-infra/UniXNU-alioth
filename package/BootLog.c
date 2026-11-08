@@ -449,6 +449,7 @@ extern void boot_reset_pet(void) __attribute__((weak_import));
 // data symbol is a -Wpointer-bool-conversion error under -Werror. [0] armed, [1] pets so far.
 extern volatile int32_t boot_reset_wdt_stats[4];
 void boot_log_tick(unsigned now);
+int boot_log_flush_wait(void);
 extern volatile uint64_t native_adreno_import_diag[10] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_import_stage __attribute__((weak_import));
 extern volatile uint64_t native_adreno_import_live[3 + 8 * 4] __attribute__((weak_import));
@@ -521,6 +522,33 @@ static volatile uint32_t boot_log_skips;
 volatile uint32_t boot_log_slots_hint;   // the writer's slots_written, for the console heartbeat
 volatile uint64_t boot_log_first_lba;
 static int boot_log_started;
+
+/*
+ * Wait until the writer has completed one more round. A line that has already reached the kernel
+ * message buffer is then in that round's copy on the medium, including a line printed just before
+ * a register access that does not return. The writer sleeps LogPeriodMs (2 s) between rounds, so
+ * the bound is three seconds; a stopped writer (state 3/4) returns at once. This does not touch the
+ * writer's buffer or counters, so it cannot race a round in progress.
+ */
+int
+boot_log_flush_wait(void)
+{
+  const uint32_t before = boot_log_rounds;
+
+  if (boot_log_state == 3 || boot_log_state == 4) return 0;
+  /*
+   * Two completed rounds, not one: a round may already have copied the message buffer when
+   * this is called and only then increment its counter, so one increment can name a copy that
+   * predates the line. The second round is the first one that certainly copied it. The writer's
+   * period is 2 s, so the bound is six seconds.
+   */
+  for (uint32_t waited = 0; waited < 6000; waited++) {
+    if (boot_log_state == 2 && (uint32_t)(boot_log_rounds - before) >= 2) return 1;
+    if (boot_log_state == 3 || boot_log_state == 4) return 0;
+    delay_for_interval(1, NSEC_PER_MSEC);
+  }
+  return 0;
+}
 // The timed return is the board's, not the writer's. The writer can block in a UFS write --
 // measured on boot 43ba9162: rounds 3, uptime 4 s, write_errors 0, state 2 -- and while the
 // deadline lived in its loop nothing restarted that board, so an unattended round never came
