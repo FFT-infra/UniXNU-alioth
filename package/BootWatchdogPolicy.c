@@ -467,11 +467,18 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
    * stops before the desktop still has to say whether PosterBoard has ever stored a
    * selection; leaving this behind an extra command-line argument loses that reading. */
   static unsigned db_tick;
-  if((wdb==1 || (db_tick++ % 200)==0) && !sheng_wallpaper_db_ran) {
+  /* A container that does not exist yet is not a zero-row store. More important, this probe
+   * must not run on launchd's first exec: it walks the Data container and reads a SQLite page
+   * there, and norm1 measured that boot with addon 5/0 then no userland. Run it only after 200
+   * execs, or when sheng-wallpaper-db=1 asks for it explicitly, and keep retrying until a
+   * container and a non-empty database page were actually read. */
+  const int db_ok = sheng_wallpaper_db_ran && sheng_wallpaper_db_status[0] > 0 && sheng_wallpaper_db_status[2] > 0;
+  const int db_due = (wdb == 1) || (db_tick++ > 200 && (db_tick % 200) == 0);
+  if(db_due && !db_ok) {
    sheng_wallpaper_db_ran=1;
    if(!sheng_wallpaper_container[0])
     sheng_wallpaper_db_status[0]=(int32_t)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
-   else sheng_wallpaper_db_status[0]=-1;   /* carried over from an earlier probe */
+   else sheng_wallpaper_db_status[0]=1;   /* the container was found by an earlier attempt */
    if(sheng_wallpaper_container[0]) {
     char path[320], head[2048];
     snprintf(path,sizeof path,"%s/Library/Application Support/PRBPosterExtensionDataStore/61/PBFPosterExtensionDataStoreSQLiteDatabase.sqlite3",sheng_wallpaper_container);
@@ -536,7 +543,9 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
    * has run, and sheng_wallpaper_list_ran keeps it to one pass. */
   {
    static unsigned list_tick;
-   if(!sheng_wallpaper_list_ran && (wlist==1 || (list_tick++ % 200)==0)) {
+   /* Same rule as the database probe: never on launchd's first exec. */
+   const int list_due = (wlist == 1) || (list_tick++ > 200 && (list_tick % 200) == 0);
+   if(!sheng_wallpaper_list_ran && list_due) {
     if(!sheng_wallpaper_container[0])
      (void)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Data/Application");
     if(sheng_wallpaper_container[0]) {
