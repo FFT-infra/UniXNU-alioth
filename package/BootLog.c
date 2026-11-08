@@ -300,26 +300,26 @@ extern volatile uint64_t armcpu_ipi_sent __attribute__((weak_import));
 extern volatile uint32_t armcpu_quiesce_calls __attribute__((weak_import));
 extern volatile uint32_t armcpu_halt_calls __attribute__((weak_import));
 extern volatile uint32_t armcpu_irq_phase __attribute__((weak_import));
-// Where each CPU last masked interrupts, how often, how long ago, and which thread did it. Filled by
-// patches/xnu/irq-mask-site.patch inside ml_set_interrupts_enabled, which splhigh() and splsched()
-// reach as macros, so the site is the function that asked for the mask. A deaf core whose site and
-// count are frozen for minutes is sitting inside one masked section; one whose count still climbs is
-// running masked code; one whose site never changed from 0 never masked at all, and then the core
-// is not masked and the interrupt is withheld below the kernel.
-extern volatile uint64_t sheng_irq_mask_site[8] __attribute__((weak_import));
+// The masked section each CPU is inside and where it was entered, filled by
+// patches/xnu/irq-mask-site.patch inside ml_set_interrupts_enabled, which splhigh() and
+// splsched() reach as macros. The *outermost* mask is the one that is still outstanding, so its
+// site is the function whose masked section never ended; `depth` is how many are nested inside.
+// A frozen depth with a frozen site for minutes is a core parked in one section; a depth that
+// climbs is masked code running in a loop; depth 0 with a frozen site means the core is not
+// masked and the interrupt is withheld below the kernel.
+extern volatile uint64_t sheng_irq_outer_site[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_outer_caller[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_outer_caller2[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_outer_thread[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_outer_stamp[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_outer_depth[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_outer_igrpen1[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_outer_pmr[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_outer_hppir1[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_outer_cntv_ctl[8] __attribute__((weak_import));
+extern volatile int64_t sheng_irq_outer_cntv_rem[8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_mask_count[8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_unmask_count[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_mask_thread[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_mask_stamp[8] __attribute__((weak_import));
-// What that core's own interrupt path read at that moment. Only the core can read these, so a
-// frozen row is the last time it was able to: igrpen1 0 means the CPU interface forwards nothing,
-// pmr below the timer's 0x80 means nothing is signalled, hppir1 27 means the interface is holding
-// the timer, cntv_ctl bit 0 clear means no wakeup is armed and the remaining ticks then say nothing.
-extern volatile uint64_t sheng_irq_igrpen1[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_pmr[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_hppir1[8] __attribute__((weak_import));
-extern volatile uint64_t sheng_irq_cntv_ctl[8] __attribute__((weak_import));
-extern volatile int64_t sheng_irq_cntv_rem[8] __attribute__((weak_import));
 // The last waitq_wakeup64_all per CPU: the caller's return address, the waitq, the event, how many
 // calls that CPU made and how many of them returned. That call masks interrupts and takes the waitq
 // interlock, so it is the call the mask site above belongs to. A frozen caller with a frozen call
@@ -2806,26 +2806,31 @@ static void core_health_thread(void *arg, wait_result_t result)
        * decide the question are whether the victim's site ever changed (0 = it never masked, so the
        * interrupt is withheld below the kernel) and whether its counters still climb (it is running
        * masked code, not sitting in one section). */
-      if (&sheng_irq_mask_site && &sheng_irq_mask_count) {
+      if (&sheng_irq_outer_site && &sheng_irq_mask_count) {
         char gm[1280];
         uint64_t nowTick; __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(nowTick));
         int gn = snprintf(gm, sizeof gm, "GICRM t=%us", elapsed);
-        for (unsigned c = 0; c < cores && gn > 0 && (unsigned)gn < sizeof gm - 96; ++c) {
-          const uint64_t site = __atomic_load_n(&sheng_irq_mask_site[c], __ATOMIC_RELAXED);
+        for (unsigned c = 0; c < cores && gn > 0 && (unsigned)gn < sizeof gm - 128; ++c) {
+          const uint64_t site = __atomic_load_n(&sheng_irq_outer_site[c], __ATOMIC_RELAXED);
+          const uint64_t caller = sheng_irq_outer_caller ? __atomic_load_n(&sheng_irq_outer_caller[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t caller2 = sheng_irq_outer_caller2 ? __atomic_load_n(&sheng_irq_outer_caller2[c], __ATOMIC_RELAXED) : 0ULL;
           const uint64_t masks = __atomic_load_n(&sheng_irq_mask_count[c], __ATOMIC_RELAXED);
           const uint64_t unmasks = sheng_irq_unmask_count ? __atomic_load_n(&sheng_irq_unmask_count[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t stamp = sheng_irq_mask_stamp ? __atomic_load_n(&sheng_irq_mask_stamp[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t who = sheng_irq_mask_thread ? __atomic_load_n(&sheng_irq_mask_thread[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t igrpen1 = sheng_irq_igrpen1 ? __atomic_load_n(&sheng_irq_igrpen1[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t pmr = sheng_irq_pmr ? __atomic_load_n(&sheng_irq_pmr[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t hppir1 = sheng_irq_hppir1 ? __atomic_load_n(&sheng_irq_hppir1[c], __ATOMIC_RELAXED) : 0ULL;
-          const uint64_t ctl = sheng_irq_cntv_ctl ? __atomic_load_n(&sheng_irq_cntv_ctl[c], __ATOMIC_RELAXED) : 0ULL;
-          const int64_t rem = sheng_irq_cntv_rem ? __atomic_load_n(&sheng_irq_cntv_rem[c], __ATOMIC_RELAXED) : 0;
+          const uint64_t depth = sheng_irq_outer_depth ? __atomic_load_n(&sheng_irq_outer_depth[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t stamp = sheng_irq_outer_stamp ? __atomic_load_n(&sheng_irq_outer_stamp[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t who = sheng_irq_outer_thread ? __atomic_load_n(&sheng_irq_outer_thread[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t igrpen1 = sheng_irq_outer_igrpen1 ? __atomic_load_n(&sheng_irq_outer_igrpen1[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t pmr = sheng_irq_outer_pmr ? __atomic_load_n(&sheng_irq_outer_pmr[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t hppir1 = sheng_irq_outer_hppir1 ? __atomic_load_n(&sheng_irq_outer_hppir1[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t ctl = sheng_irq_outer_cntv_ctl ? __atomic_load_n(&sheng_irq_outer_cntv_ctl[c], __ATOMIC_RELAXED) : 0ULL;
+          const int64_t rem = sheng_irq_outer_cntv_rem ? __atomic_load_n(&sheng_irq_outer_cntv_rem[c], __ATOMIC_RELAXED) : 0;
           unsigned mage = 0;
           if (stamp && f && nowTick > stamp) mage = (unsigned)((nowTick - stamp) / f);
           const long long remms = f ? (long long)((rem / (int64_t)f) * 1000 + ((rem % (int64_t)f) * 1000) / (int64_t)f) : 0;
-          gn += snprintf(gm + gn, sizeof gm - (unsigned)gn, " c%u=%llx/%llu/%llu/%us/%llx g%llx/%llx/%llx/%llx/%lld", c,
-                         (unsigned long long)site, (unsigned long long)masks, (unsigned long long)unmasks,
+          gn += snprintf(gm + gn, sizeof gm - (unsigned)gn,
+                         " c%u=%llx/%llx/%llx d%llu %llu/%llu %us/%llx g%llx/%llx/%llx/%llx/%lld", c,
+                         (unsigned long long)site, (unsigned long long)caller, (unsigned long long)caller2,
+                         (unsigned long long)depth, (unsigned long long)masks, (unsigned long long)unmasks,
                          mage, (unsigned long long)who,
                          (unsigned long long)igrpen1, (unsigned long long)pmr,
                          (unsigned long long)hppir1, (unsigned long long)ctl, remms);
