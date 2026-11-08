@@ -1521,6 +1521,129 @@ step_rail_vote(void)
 	return true;
 }
 
+/* ---- step 17: the endpoint's configuration space through the address translator ------------- */
+
+/*
+ * The vendor's driver reaches the endpoint's configuration space through the core's address
+ * translator, not through the link block this file has used so far. Two layouts exist for it and
+ * this SoC has both blocks mapped: the unrolled one the device tree calls "iatu" (0x60001000, one
+ * 0x200 region per index, no viewport) and the viewport one inside the core's own 4 KB (0x900).
+ * The vendor's dw_pcie_iatu_unroll_enabled() reads the viewport register and treats 0xffffffff as
+ * "unrolled", so the read below says which layout this core answers, and the step programs the
+ * unrolled regions first, then falls back to the viewport layout if the configuration read comes
+ * back 0xffffffff (PCIE_LINK_DOWN, the vendor's own "not accessible" value).
+ *
+ * Read-only beyond the translator itself: no BAR is written and no command register is touched,
+ * so a wrong guess here cannot leave the endpoint in a state a later round has to undo.
+ */
+#define PCIE_ATU_VIEWPORT        0x900
+#define PCIE_ATU_CR1             0x904
+#define PCIE_ATU_CR2             0x908
+#define PCIE_ATU_LOWER_BASE      0x90c
+#define PCIE_ATU_UPPER_BASE      0x910
+#define PCIE_ATU_LIMIT           0x914
+#define PCIE_ATU_LOWER_TARGET    0x918
+#define PCIE_ATU_UPPER_TARGET    0x91c
+#define PCIE_ATU_TYPE_CFG0       0x4
+#define PCIE_ATU_TYPE_CFG1       0x5
+#define PCIE_ATU_ENABLE          0x80000000u
+/* the unrolled block: region n starts at n * 0x200, same register order minus the viewport */
+#define PCIE_IATU_CTRL1(n)       ((n) * 0x200 + 0x00)
+#define PCIE_IATU_CTRL2(n)       ((n) * 0x200 + 0x04)
+#define PCIE_IATU_LBAR(n)        ((n) * 0x200 + 0x08)
+#define PCIE_IATU_UBAR(n)        ((n) * 0x200 + 0x0c)
+#define PCIE_IATU_LAR(n)         ((n) * 0x200 + 0x10)
+#define PCIE_IATU_LTAR(n)        ((n) * 0x200 + 0x14)
+#define PCIE_IATU_UTAR(n)        ((n) * 0x200 + 0x18)
+#define PCIE_CONF_CPU_BASE       0x60100000u
+#define PCIE_CONF_CPU_SIZE       0x00100000u
+
+static void
+atu_program_unrolled(uint32_t index, uint32_t type, uint32_t target)
+{
+	put(4, "iatu ctrl1 (type)", PCIE_IATU_CTRL1(index), type);
+	put(4, "iatu lower base", PCIE_IATU_LBAR(index), PCIE_CONF_CPU_BASE);
+	put(4, "iatu upper base", PCIE_IATU_UBAR(index), 0);
+	put(4, "iatu limit", PCIE_IATU_LAR(index), PCIE_CONF_CPU_BASE + PCIE_CONF_CPU_SIZE - 1);
+	put(4, "iatu lower target", PCIE_IATU_LTAR(index), target);
+	put(4, "iatu upper target", PCIE_IATU_UTAR(index), 0);
+	put(4, "iatu ctrl2 (enable)", PCIE_IATU_CTRL2(index), PCIE_ATU_ENABLE);
+}
+
+static void
+atu_program_viewport(uint32_t index, uint32_t type, uint32_t target)
+{
+	put(6, "atu viewport (outbound index)", PCIE_ATU_VIEWPORT, index);
+	put(6, "atu ctrl1 (type)", PCIE_ATU_CR1, type);
+	put(6, "atu lower base", PCIE_ATU_LOWER_BASE, PCIE_CONF_CPU_BASE);
+	put(6, "atu upper base", PCIE_ATU_UPPER_BASE, 0);
+	put(6, "atu limit", PCIE_ATU_LIMIT, PCIE_CONF_CPU_BASE + PCIE_CONF_CPU_SIZE - 1);
+	put(6, "atu lower target", PCIE_ATU_LOWER_TARGET, target);
+	put(6, "atu upper target", PCIE_ATU_UPPER_TARGET, 0);
+	put(6, "atu ctrl2 (enable)", PCIE_ATU_CR2, PCIE_ATU_ENABLE);
+}
+
+static bool
+step_config(void)
+{
+	uint32_t bus = 1, id, v;
+
+	PE_parse_boot_argn("pcie_bus", &bus, sizeof(bus));
+
+	/* Which translator layout this core answers: the vendor's own test (pcie-designware-host.c:651). */
+	get(6, "atu viewport (layout probe)", PCIE_ATU_VIEWPORT);
+
+	/*
+	 * The root complex's own configuration header, as the vendor's dw_pcie_setup_rc sets it
+	 * (pcie-designware-host.c:668-706): the bus numbers say a device lives behind it, and the
+	 * command register lets the root complex forward memory and I/O TLPs. Without those two the
+	 * address translator has nothing to translate and the window reads 0xffffffff however it is
+	 * programmed. The 0x8bc bit is the DBI's write-enable for these read-only registers.
+	 */
+	announce("set the root complex's own header (bus numbers and command register), the two words the vendor writes before any window can work");
+	v = get(6, "rc command/status before", 0x04);
+	put(6, "dbi misc_control (register writes enabled)", 0x8bc, get(6, "dbi misc_control before", 0x8bc) | 1u);
+	put(6, "rc command (io|mem|master|serr)", 0x04, (v & 0xffff0000u) | 0x0007u);
+	v = get(6, "rc bus numbers before", 0x18);
+	put(6, "rc primary/secondary/subordinate (0/1/ff)", 0x18, (v & 0xff000000u) | 0x00ff0100u);
+	put(6, "dbi misc_control (register writes disabled)", 0x8bc, get(6, "dbi misc_control again", 0x8bc) & ~1u);
+
+	announce("program the address translator for the endpoint's configuration space; the link is up and "
+	    "the window the vendor enumerates through has never been set by this file");
+	atu_program_unrolled(1, PCIE_ATU_TYPE_CFG1, bus << 24);
+	risky();
+	id = get(5, "conf vendor/device, unrolled CFG1", 0x00);
+	line("unrolled CFG1 bus %u returned %#x (vendor %#x device %#x)", bus, id, id & 0xffffu, id >> 16);
+
+	if (id == 0xffffffffu || id == 0) {
+		line("the unrolled layout did not answer; trying the viewport layout in the core's own 4 KB");
+		atu_program_viewport(1, PCIE_ATU_TYPE_CFG1, bus << 24);
+		risky();
+		id = get(5, "conf vendor/device, viewport CFG1", 0x00);
+		line("viewport CFG1 bus %u returned %#x (vendor %#x device %#x)", bus, id, id & 0xffffu, id >> 16);
+	}
+	if (id == 0xffffffffu || id == 0) {
+		/* CFG0 reaches the root complex's own header through the translator: if that answers, the
+		 * window works and only the bus number is wrong. */
+		line("CFG1 did not answer; reading the root complex's own header through CFG0 instead");
+		atu_program_viewport(1, PCIE_ATU_TYPE_CFG0, 0);
+		risky();
+		id = get(5, "conf vendor/device, viewport CFG0", 0x00);
+		line("viewport CFG0 returned %#x (vendor %#x device %#x)", id, id & 0xffffu, id >> 16);
+	}
+	if (id == 0xffffffffu || id == 0) {
+		line("no window answered; the next step is the rest of the vendor's root-complex setup (link width, "
+		    "DBI mode, outbound MEM region), not another guess at this one");
+		return true;
+	}
+	get(5, "conf command/status", 0x04);
+	get(5, "conf class/revision", 0x08);
+	get(5, "conf header type", 0x0c);
+	get(5, "conf bar0", 0x10);
+	get(5, "conf bar1", 0x14);
+	return true;
+}
+
 /* ---- what runs ------------------------------------------------------------------------------ */
 
 static bool (*const steps[])(void) = {
@@ -1540,6 +1663,7 @@ static bool (*const steps[])(void) = {
 	step_dm_core,
 	step_elbi,
 	step_dbi,
+	step_config,
 };
 
 void

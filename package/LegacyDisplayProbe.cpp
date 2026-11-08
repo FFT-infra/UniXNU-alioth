@@ -409,6 +409,11 @@ extern "C" void flush_dcache64(uint64_t addr, unsigned count, int phys);
 // 6.5 MiB, so this walks the whole picture without costing a frame. The caller owns the descriptor.
 // The most saturated sample it found on the way, which SURFACEL prints.
 static unsigned bestPixelR, bestPixelG, bestPixelB, bestPixelSpread;
+// A coarse picture of the same frame the row numbers come from: 12 rows by 24 columns of luma
+// levels, so the console shows the screen's shape (a status bar, a row of icons, a wall band)
+// instead of one average. Written by surfaceMeasure, printed by surfaceGridPrint.
+static unsigned char surfaceGridChars[12][24];
+
 static bool surfaceMeasure(IOMemoryDescriptor *memory, uint64_t stride, uint64_t height, unsigned *rows,
                            unsigned *litOut, unsigned *lumaOut, unsigned *hashOut) {
 	IOMemoryMap *map = memory->map(kIOMapAnywhere | kIOMapReadOnly | kIOMapCopybackCache);
@@ -438,6 +443,21 @@ static bool surfaceMeasure(IOMemoryDescriptor *memory, uint64_t stride, uint64_t
 		samples = samples + 1;
 	}
 	bestPixelR = bestR; bestPixelG = bestG; bestPixelB = bestB; bestPixelSpread = bestSpread;
+	// The coarse picture: one sample per cell, taken from the same flushed mapping.
+	{
+		const uint64_t pixelsPerRow = stride / 4;
+		for (unsigned gy = 0; gy < 12; ++gy) {
+			const uint64_t y = (height * (2 * gy + 1)) / 24;
+			for (unsigned gx = 0; gx < 24; ++gx) {
+				const uint64_t x = (pixelsPerRow * (2 * gx + 1)) / 48;
+				const uint64_t idx = y * pixelsPerRow + x;
+				const uint32_t pixel = idx < dwords ? base[idx] : 0;
+				const unsigned b = pixel & 0xff, g = (pixel >> 8) & 0xff, r = (pixel >> 16) & 0xff;
+				const unsigned l = (r * 299 + g * 587 + b * 114) / 1000;
+				surfaceGridChars[gy][gx] = (unsigned char)(l / 26 > 9 ? 9 : l / 26);
+			}
+		}
+	}
 	OSSafeReleaseNULL(map);
 	if (!samples) return false;
 	*rows = (*rows) + 1;
@@ -469,6 +489,26 @@ void surfaceSampleObserved(bool accepted, const void *surfaceObject) {
 	                      surfaceRows, accepted ? 1u : 0u, surfaceLit, surfaceLuma, surfaceSum,
 	                      (unsigned long long)stride, (unsigned long long)height);
 	if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+	/* Once every thirty seconds, the same frame as characters: twelve rows of twenty-four luma
+	 * levels. A row of '#' at the top and a bright band at the bottom reads as a status bar over a
+	 * wallpaper; twelve blank rows read as a black screen, which no average can tell apart from a
+	 * dark one. */
+	{
+		static uint64_t lastGridAt;
+		if (!lastGridAt || now - lastGridAt >= 30000000) {
+			static const char ramp[] = " .:-=+*#%@";
+			lastGridAt = now;
+			for (unsigned gy = 0; gy < 12; ++gy) {
+				char grid[48];
+				int gn = snprintf(grid, sizeof grid, "SURFACEG %02u |", gy);
+				for (unsigned gx = 0; gx < 24 && gn > 0 && gn < (int)sizeof grid - 3; ++gx)
+					grid[gn++] = ramp[surfaceGridChars[gy][gx] > 9 ? 9 : surfaceGridChars[gy][gx]];
+				grid[gn++] = '|';
+				grid[gn++] = '\n';
+				qcom_usb_debug_write(grid, (size_t)gn);
+			}
+		}
+	}
 }
 
 // The same reading, taken after the GPU copy finished. SURFACE reads the frame before anything writes it and
