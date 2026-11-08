@@ -311,6 +311,15 @@ extern volatile uint64_t sheng_irq_mask_count[8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_unmask_count[8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_mask_thread[8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_mask_stamp[8] __attribute__((weak_import));
+// What that core's own interrupt path read at that moment. Only the core can read these, so a
+// frozen row is the last time it was able to: igrpen1 0 means the CPU interface forwards nothing,
+// pmr below the timer's 0x80 means nothing is signalled, hppir1 27 means the interface is holding
+// the timer, cntv_ctl bit 0 clear means no wakeup is armed and the remaining ticks then say nothing.
+extern volatile uint64_t sheng_irq_igrpen1[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_pmr[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_hppir1[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_irq_cntv_ctl[8] __attribute__((weak_import));
+extern volatile int64_t sheng_irq_cntv_rem[8] __attribute__((weak_import));
 // boot-ui-trace's worker: how many times it was entered, how many captures it started, and whether one
 // is still in flight. Six "STK none" rows on 2026-11-06 could mean the worker never reached its 44th
 // call, or that a capture started and never finished; these four numbers separate them.
@@ -2789,20 +2798,28 @@ static void core_health_thread(void *arg, wait_result_t result)
        * interrupt is withheld below the kernel) and whether its counters still climb (it is running
        * masked code, not sitting in one section). */
       if (&sheng_irq_mask_site && &sheng_irq_mask_count) {
-        char gm[640];
+        char gm[1280];
         uint64_t nowTick; __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(nowTick));
         int gn = snprintf(gm, sizeof gm, "GICRM t=%us", elapsed);
-        for (unsigned c = 0; c < cores && gn > 0 && (unsigned)gn < sizeof gm - 64; ++c) {
+        for (unsigned c = 0; c < cores && gn > 0 && (unsigned)gn < sizeof gm - 96; ++c) {
           const uint64_t site = __atomic_load_n(&sheng_irq_mask_site[c], __ATOMIC_RELAXED);
           const uint64_t masks = __atomic_load_n(&sheng_irq_mask_count[c], __ATOMIC_RELAXED);
           const uint64_t unmasks = sheng_irq_unmask_count ? __atomic_load_n(&sheng_irq_unmask_count[c], __ATOMIC_RELAXED) : 0ULL;
           const uint64_t stamp = sheng_irq_mask_stamp ? __atomic_load_n(&sheng_irq_mask_stamp[c], __ATOMIC_RELAXED) : 0ULL;
           const uint64_t who = sheng_irq_mask_thread ? __atomic_load_n(&sheng_irq_mask_thread[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t igrpen1 = sheng_irq_igrpen1 ? __atomic_load_n(&sheng_irq_igrpen1[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t pmr = sheng_irq_pmr ? __atomic_load_n(&sheng_irq_pmr[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t hppir1 = sheng_irq_hppir1 ? __atomic_load_n(&sheng_irq_hppir1[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t ctl = sheng_irq_cntv_ctl ? __atomic_load_n(&sheng_irq_cntv_ctl[c], __ATOMIC_RELAXED) : 0ULL;
+          const int64_t rem = sheng_irq_cntv_rem ? __atomic_load_n(&sheng_irq_cntv_rem[c], __ATOMIC_RELAXED) : 0;
           unsigned mage = 0;
           if (stamp && f && nowTick > stamp) mage = (unsigned)((nowTick - stamp) / f);
-          gn += snprintf(gm + gn, sizeof gm - (unsigned)gn, " c%u=%llx/%llu/%llu/%us/%llx", c,
+          const long long remms = f ? (long long)((rem / (int64_t)f) * 1000 + ((rem % (int64_t)f) * 1000) / (int64_t)f) : 0;
+          gn += snprintf(gm + gn, sizeof gm - (unsigned)gn, " c%u=%llx/%llu/%llu/%us/%llx g%llx/%llx/%llx/%llx/%lld", c,
                          (unsigned long long)site, (unsigned long long)masks, (unsigned long long)unmasks,
-                         mage, (unsigned long long)who);
+                         mage, (unsigned long long)who,
+                         (unsigned long long)igrpen1, (unsigned long long)pmr,
+                         (unsigned long long)hppir1, (unsigned long long)ctl, remms);
         }
         if (gn > 0 && (unsigned)gn < sizeof gm) {gm[gn++] = '\n'; qcom_usb_debug_write(gm, (size_t)gn < sizeof gm ? (size_t)gn : sizeof gm - 1);}
       }
