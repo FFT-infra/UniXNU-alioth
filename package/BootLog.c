@@ -320,6 +320,15 @@ extern volatile uint64_t sheng_irq_pmr[8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_hppir1[8] __attribute__((weak_import));
 extern volatile uint64_t sheng_irq_cntv_ctl[8] __attribute__((weak_import));
 extern volatile int64_t sheng_irq_cntv_rem[8] __attribute__((weak_import));
+// The last waitq_wakeup64_all per CPU: the caller's return address, the waitq, the event, how many
+// calls that CPU made and how many of them returned. That call masks interrupts and takes the waitq
+// interlock, so it is the call the mask site above belongs to. A frozen caller with a frozen call
+// count is the wakeup the core never came back from, and its caller names the subsystem.
+extern volatile uint64_t sheng_wakeq_caller[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_wakeq_waitq[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_wakeq_event[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_wakeq_calls[8] __attribute__((weak_import));
+extern volatile uint64_t sheng_wakeq_returned[8] __attribute__((weak_import));
 // boot-ui-trace's worker: how many times it was entered, how many captures it started, and whether one
 // is still in flight. Six "STK none" rows on 2026-11-06 could mean the worker never reached its 44th
 // call, or that a capture started and never finished; these four numbers separate them.
@@ -2822,6 +2831,25 @@ static void core_health_thread(void *arg, wait_result_t result)
                          (unsigned long long)hppir1, (unsigned long long)ctl, remms);
         }
         if (gn > 0 && (unsigned)gn < sizeof gm) {gm[gn++] = '\n'; qcom_usb_debug_write(gm, (size_t)gn < sizeof gm ? (size_t)gn : sizeof gm - 1);}
+      }
+      /* The same cores from the wakeup side: the caller of their last waitq_wakeup64_all, the waitq
+       * and event it carried, and how many of those calls returned. A core that entered one and never
+       * returned has calls one ahead of returned, and the caller's address names the kernel function
+       * that asked for the wakeup, which the console cannot otherwise show. */
+      if (&sheng_wakeq_caller && &sheng_wakeq_calls) {
+        char gw[900];
+        int wn = snprintf(gw, sizeof gw, "GICW t=%us", elapsed);
+        for (unsigned c = 0; c < cores && wn > 0 && (unsigned)wn < sizeof gw - 96; ++c) {
+          const uint64_t caller = __atomic_load_n(&sheng_wakeq_caller[c], __ATOMIC_RELAXED);
+          const uint64_t waitq = sheng_wakeq_waitq ? __atomic_load_n(&sheng_wakeq_waitq[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t event = sheng_wakeq_event ? __atomic_load_n(&sheng_wakeq_event[c], __ATOMIC_RELAXED) : 0ULL;
+          const uint64_t calls = __atomic_load_n(&sheng_wakeq_calls[c], __ATOMIC_RELAXED);
+          const uint64_t rets = sheng_wakeq_returned ? __atomic_load_n(&sheng_wakeq_returned[c], __ATOMIC_RELAXED) : 0ULL;
+          wn += snprintf(gw + wn, sizeof gw - (unsigned)wn, " c%u=%llx/%llx/%llx/%llu/%llu", c,
+                         (unsigned long long)caller, (unsigned long long)waitq, (unsigned long long)event,
+                         (unsigned long long)calls, (unsigned long long)rets);
+        }
+        if (wn > 0 && (unsigned)wn < sizeof gw) {gw[wn++] = '\n'; qcom_usb_debug_write(gw, (size_t)wn < sizeof gw ? (size_t)wn : sizeof gw - 1);}
       }
     }
   }

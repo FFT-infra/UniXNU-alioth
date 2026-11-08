@@ -1,0 +1,66 @@
+--- a/osfmk/kern/waitq.c
++++ b/osfmk/kern/waitq.c
+@@ -2372,32 +2372,62 @@
+ 
+ 	/* waitq is unlocked upon return, splx is handled */
+ 	return waitq_wakeup64_one_locked(waitq, wake_event, result,
+ 	           flags | waitq_flags_splx(spl) | WAITQ_UNLOCK);
+ }
+ 
++/*
++ * sheng: who called waitq_wakeup64_all on each CPU, and on which waitq.
++ *
++ * A core that stops executing keeps its last call in these four fields, so a healthy core can
++ * report the exact caller of the wakeup the lost core never came back from. waitq_wakeup64_all
++ * masks interrupts through splsched() and then takes the waitq interlock, so this is also the
++ * call that owns the mask the mask-site instrument sees. `calls` counts the callers, so a frozen
++ * `caller` with a frozen `calls` is the last call, not a later one on the same core.
++ *
++ * Indexed by CPU number, written by the owning CPU only, read by the board package. No kernel
++ * code reads it.
++ */
++volatile uint64_t sheng_wakeq_caller[8];
++volatile uint64_t sheng_wakeq_caller2[8];
++volatile uint64_t sheng_wakeq_waitq[8];
++volatile uint64_t sheng_wakeq_event[8];
++volatile uint64_t sheng_wakeq_calls[8];
++volatile uint64_t sheng_wakeq_returned[8];
++
+ kern_return_t
+ waitq_wakeup64_all(
+ 	waitq_t                 waitq,
+ 	event64_t               wake_event,
+ 	wait_result_t           result,
+ 	waitq_wakeup_flags_t    flags)
+ {
++	const uint32_t sheng_cpu = (uint32_t)cpu_number();
++	if (sheng_cpu < 8) {
++		sheng_wakeq_caller[sheng_cpu] = (uint64_t)(uintptr_t)__builtin_return_address(0);
++		sheng_wakeq_waitq[sheng_cpu] = (uint64_t)(uintptr_t)waitq;
++		sheng_wakeq_event[sheng_cpu] = (uint64_t)wake_event;
++		sheng_wakeq_calls[sheng_cpu] = sheng_wakeq_calls[sheng_cpu] + 1;
++	}
+ 	__waitq_validate(waitq);
+ 
+ 	spl_t spl = 0;
+ 
+ 	if (waitq_irq_safe(waitq)) {
+ 		spl = splsched();
+ 	}
+ 
+ 	waitq_lock(waitq);
+ 
+ 	/* waitq is unlocked upon return, splx is handled */
+-	return waitq_wakeup64_all_locked(waitq, wake_event, result,
++	kern_return_t sheng_kr = waitq_wakeup64_all_locked(waitq, wake_event, result,
+ 	           flags | waitq_flags_splx(spl) | WAITQ_UNLOCK);
++	if (sheng_cpu < 8) {
++		sheng_wakeq_returned[sheng_cpu] = sheng_wakeq_returned[sheng_cpu] + 1;
++	}
++	return sheng_kr;
+ }
+ 
+ kern_return_t
+ waitq_wakeup64_thread(
+ 	struct waitq           *waitq,
+ 	event64_t               event,

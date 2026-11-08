@@ -1,3 +1,4 @@
 # Board patch paths, one per line in application order.
 thread-creation-trail.patch
 irq-mask-site.patch
+waitq-wakeup-trail.patch
