@@ -320,11 +320,11 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # StaticTrustCache entries and is absent from the 76-entry SystemTrustCache.
 # Since the Metal staging it is the three-module owner bundle that
 # scripts/make-owner-trust-bundle.py builds: one owner module carrying the Adreno Metal
-# plugin, probe-daemon and Turnip CDHashes (2026-11-07 build: 8db4e5fb, 0c420de1, a9c5a07a)
+# plugin, probe-daemon and Turnip CDHashes (2026-11-08 build: cddc5705, 3bdcdfff, a9c5a07a)
 # plus the same two original modules byte for byte, which the script verifies against
 # build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "ef184e81cdf1e9e8f20814827f588be0f3254c7d0fd26da0cb394f185988f56b",
+  "c2b71ada8e5c476d8895f02625d80c43699cc697b8ca48ed9f6f80473eab481e",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes

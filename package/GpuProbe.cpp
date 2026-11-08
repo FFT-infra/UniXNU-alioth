@@ -1734,13 +1734,21 @@ bool metal() {
     if (!accelerator) return stop(kIOReturnNoMemory);
     if (!accelerator->init()) {accelerator->release(); return stop(kIOReturnError);}
     accelerator->setProperty("MetalPluginName", "NativeAdrenoMetal");
-    // The wallpaper runs in PosterBoard's extensions, not in PosterBoard itself: without these two names the sandbox refuses their
+    // The wallpaper runs in PosterBoard's extensions, not in PosterBoard itself: without these names the sandbox refuses their
     // user client and they abort-loop. u276 showed the picture appears with CollectionsPoster reaching the GPU and no AegirPoster
     // at all (GPUFB nonblack 1000/1000 luma 253), so CollectionsPoster is the one that matters. The names are the process names
     // proc_selfname reports, which is what native_sandbox_grant compares (patches/xnu/zzw-native-adreno-sandbox-grant.patch).
+    // UnityPosterExtension and MobileSlideShow are here for a measured reason (2026-11-08): a process the list does not name still
+    // opens the user client, because the driver grants its own open, but the sandbox's IOKit filter policy is installed on that
+    // connection and admits none of the selectors tu_knl_darwin.cc scans (dw_probe_selector, 0..255 with the tunnel magic), so
+    // Turnip answers VK_ERROR_INITIALIZATION_FAILED and closes the connection again: opens 1 closes 1, no device. Both reported
+    // exactly that (MobileSlideShow's plugin row: "no-device L+2X0X1E device: Vulkan(VkResultCode(-3))"), and
+    // UnityPosterExtension is the poster renderer that decodes the wallpaper's own image (its 2026-11-07 crash was inside
+    // ImageIO's DecodeRow -> Write_BGRA8_vec after the same refusal).
     accelerator->setProperty("NativeSandboxGrantProcess",
         "backboardd,iconservicesagent,Preferences,CollectionsPoster,AegirPoster,KaleidoscopePoster,"
-        "PhotosPosterProvider,PosterBoard,WidgetRenderer_Default,mediaserverd,SpringBoard");
+        "PhotosPosterProvider,PosterBoard,WidgetRenderer_Default,mediaserverd,SpringBoard,"
+        "UnityPosterExtension,MobileSlideShow");
     accelerator->setProperty("MetalPluginClassName", "NativeAdrenoMetalDevice");
     // Turnip's options for this board. The plugin sets TU_DEBUG=nocb for every process (NativeAdrenoMetalPlugin.mm); "nocb" is a
     // no-op on the A650, which has no concurrent binning, and keeps the variable non-empty. The system-memory path that
