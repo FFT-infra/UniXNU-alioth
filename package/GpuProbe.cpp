@@ -209,7 +209,10 @@ bool mapWindow(unsigned w) {
  * core's own counters (CPUT c4) did not move by one. Spin on the timebase instead: it needs no
  * interrupt, and every wait this probe asks for is short. */
 extern "C" void nanoseconds_to_absolutetime(uint64_t nanoseconds, uint64_t *result);
-void delayUs(void *, unsigned us) {
+/* Every wait in the GPU bring-up goes through here, not only the io.delayUs callback: IODelay is
+ * called directly in gmuWait, in the RSC and SMMU polls and in the SCM retry, and one of those is
+ * what the stalled boot is parked in. */
+void spinUs(unsigned us) {
     static uint64_t ticksPerUs;
     if (!ticksPerUs) {
         uint64_t oneUs = 0;
@@ -221,6 +224,7 @@ void delayUs(void *, unsigned us) {
     const uint64_t deadline = mach_absolute_time() + (uint64_t)us * ticksPerUs;
     while (mach_absolute_time() < deadline) __asm__ volatile("yield" ::: "memory");
 }
+void delayUs(void *, unsigned us) {spinUs(us);}
 int rd(void *, unsigned w, uint32_t off, uint32_t *out) {
     if (w >= GPB_WINDOWS || !gVa[w] || off >= kLen[w] || (off & 3)) return -1;
     *out = *reinterpret_cast<volatile uint32_t *>(gVa[w] + off);
@@ -357,7 +361,7 @@ int gmuNow(void *, uint64_t *us) {
     *us = ns / 1000;
     return 0;
 }
-int gmuWait(void *, unsigned us) {IODelay(us); return 0;}
+int gmuWait(void *, unsigned us) {spinUs(us); return 0;}
 void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
     char *ctx = native_gpu_rows[kRowContext], *load = native_gpu_rows[kRowLoad];
     const size_t cap = sizeof native_gpu_rows[0];
@@ -633,7 +637,7 @@ void rpmhVoteDdr() {
     w(tcs(id, 0x14), 1u << 16);
     w(tcs(id, 0x14), (1u << 16) | (1u << 24));
     unsigned polls = 0;
-    for (; polls < 2000 && !(r(kTcsBase + 0x04) & (1u << id)); ++polls) IODelay(5);   // RSC_DRV_IRQ_STATUS
+    for (; polls < 2000 && !(r(kTcsBase + 0x04) & (1u << id)); ++polls) spinUs(5);   // RSC_DRV_IRQ_STATUS
     uint32_t status[3];
     for (unsigned c = 0; c < 3; ++c) status[c] = r(tcs(id, 0x3C) + kCmdStride * c);
     w(kTcsBase + 0x08, 1u << id);                                        // RSC_DRV_IRQ_CLEAR
@@ -815,7 +819,7 @@ int naIdle(void *) {
         thread_block(THREAD_CONTINUE_NULL);
         native_gpu_idle_sleeps = native_gpu_idle_sleeps + 1;
     } else {
-        IODelay(20);
+        spinUs(20);
         native_gpu_idle_spins = native_gpu_idle_spins + 1;
     }
     return 0;
@@ -881,7 +885,7 @@ bool gpuContext() {
         smmuWrite(bank0 + 0x4, actlr & ~2u);
         smmuWrite(bank0 + 0x618, 0);
         smmuWrite(bank0 + 0x7f0, 0);
-        for (unsigned i = 0; i < 1000 && (smmuRead(bank0 + 0x7f4) & 1); ++i) IODelay(1);
+        for (unsigned i = 0; i < 1000 && (smmuRead(bank0 + 0x7f4) & 1); ++i) spinUs(1);
     }
     snprintf(row, cap, "GPUCTX step %u status %x kit %u/%u routes %u program %u/%u/%u ttbr0 %llx smr %08x s2cr %08x actlr %x",
              g.step, static_cast<unsigned>(ctx), g.program_status, g.route_status, g.routes_verified, g.program_phase,
@@ -1185,7 +1189,7 @@ ScmRes scmCall(uint64_t fn, uint64_t arginfo, uint64_t p0, uint64_t p1, uint64_t
         asm volatile("smc #0" : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6), "+r"(x7)
                      :: "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
         if (x0 == 1) {first = 1; a6 = x6; ++resume; continue;}
-        if (int64_t(x0) == -12 && busy++ < 20) {first = fn; a6 = 0; IODelay(30000); continue;}
+        if (int64_t(x0) == -12 && busy++ < 20) {first = fn; a6 = 0; spinUs(30000); continue;}
         out = ScmRes{int64_t(x0), x1};
         break;
     }
@@ -1427,12 +1431,12 @@ bool gpuInterrupt() {
     uint64_t router = ~0ull;
     const IOReturn attached = armcpu_spi_attach(32 + 300, false, gpuIrq, nullptr, &readback, &router);
     gIrqAttached = attached == kIOReturnSuccess;
-    IOSleep(20);
+    spinUs(20000);
     const uint32_t first = gIrqCount;
     uint32_t nop = 0, fence = 0, seen = 0;
     const bool fenced = AdrenoPM4Type7(0x10, 0, &nop) == AdrenoPM4Success && !gRing->submit(&nop, 1, &fence) &&
                         !gRing->wait(fence, &gClock, 200000, &seen);
-    IOSleep(20);
+    spinUs(20000);
     snprintf(native_gpu_rows[kRowIrq], sizeof native_gpu_rows[0],
              "IRQ attach %x readback %x router %llx count %u>%u nop fence %u seen %08x status now %08x masked %u",
              static_cast<unsigned>(attached), readback, static_cast<unsigned long long>(router), first, gIrqCount, fenced, gIrqSeen,
