@@ -201,7 +201,26 @@ bool mapWindow(unsigned w) {
     gpuMarkStep("done", w);
     return gVa[w] != 0;
 }
-void delayUs(void *, unsigned us) {IODelay(us);}
+/* IODelay blocks: delay_for_interval() asserts a deadline wait on the CURRENT core's timer queue
+ * (osfmk/kern/clock.c:1605 -> assert_wait_deadline((event_t)clock_delay_until, THREAD_UNINT, ...)).
+ * A core that has stopped taking its timer interrupt therefore never wakes it, and the whole
+ * bring-up stops inside gpb_run: on 2026-11-08 every stalled boot read
+ * `GPUTH st=9 ev=fffffff00b893f24` (= clock_delay_until, cont=0) from t=10s to t=830s while that
+ * core's own counters (CPUT c4) did not move by one. Spin on the timebase instead: it needs no
+ * interrupt, and every wait this probe asks for is short. */
+extern "C" void nanoseconds_to_absolutetime(uint64_t nanoseconds, uint64_t *result);
+void delayUs(void *, unsigned us) {
+    static uint64_t ticksPerUs;
+    if (!ticksPerUs) {
+        uint64_t oneUs = 0;
+        nanoseconds_to_absolutetime(1000, &oneUs);
+        ticksPerUs = oneUs ? oneUs : 1;
+    }
+    static bool marked;
+    if (!marked) {marked = true; gpuMarkStep("delay", 0xFF);}
+    const uint64_t deadline = mach_absolute_time() + (uint64_t)us * ticksPerUs;
+    while (mach_absolute_time() < deadline) __asm__ volatile("yield" ::: "memory");
+}
 int rd(void *, unsigned w, uint32_t off, uint32_t *out) {
     if (w >= GPB_WINDOWS || !gVa[w] || off >= kLen[w] || (off & 3)) return -1;
     *out = *reinterpret_cast<volatile uint32_t *>(gVa[w] + off);
