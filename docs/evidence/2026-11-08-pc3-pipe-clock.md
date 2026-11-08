@@ -67,8 +67,8 @@ did not. The vendor also enables the pipe clock in `msm_pcie_pipe_clk_init()`
 
 - `CLOCK_VOTES` changed from `0x2f` to `0x3f`.
 - `step_endpoint()` now waits the DT's 10 ms endpoint latency before releasing PERST.
-- Source revision `73a0080` (`wifi: vote the pipe clock and wait the endpoint latency`).
+- Source revisions `73a0080` (`wifi: vote the pipe clock and wait the endpoint latency`) and `c93f12f` (`wifi: align the PARF writes with the same-board sequence`).
 - Image `tmp/boot-pc4.img`, sha256
-  `928b000749d0d689f97565217696e9ccc49701528b63a942f2e781f2205d485b`; no board run yet.
+  `900494a914f16b1d76072fb5bb5dd82161a1692f8486d7de9bede63e657c7db7`; no board run yet.
 
 No link, no Wi-Fi and no desktop outcome is claimed for pc4 until its one round returns.
