@@ -1241,6 +1241,12 @@ void native_legacy_display_late_probe(void) {
 	// "the kernel stopped earlier", which the panel otherwise cannot tell apart, because both
 	// leave the DarwinBoot frame in place.
 	native_legacy_paint_reached_band();
+	// sheng-ls-reset=1: empty the LaunchServices store before userland starts (BootDiagExport.c).
+	// pkd rejects every /Applications plugin because the containing app has no LS record, and its
+	// own message names 'mobile_install rebuild system user' as the remedy; there is no shell on
+	// this board, so the store is invalidated instead and lsd builds a new one.
+	extern void boot_diag_ls_reset(void) __attribute__((weak_import));
+	if (&boot_diag_ls_reset) boot_diag_ls_reset();
 	// The HID publisher. It is an IOHIDDevice compiled into this kernel, so IOKit has no
 	// personality for it and nothing would start it: the board starts it explicitly, which the
 	// driver adaption guide names as the second of the two start paths and places in this

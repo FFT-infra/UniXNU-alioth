@@ -14,6 +14,7 @@
 #include <sys/systm.h>
 #include <sys/proc.h>
 #include <sys/vnode.h>
+#include <sys/mount_internal.h>
 #include <sys/uio.h>
 #include <sys/dirent.h>
 #include <sys/fcntl.h>
@@ -153,6 +154,372 @@ static int worth(const void *a, const void *b) {
   if (rx != ry) return rx < ry ? -1 : 1;
   if (x->root != y->root) return x->root < y->root ? -1 : 1;
   return -strcmp(x->path, y->path);
+}
+
+// sheng-ls-reset=1: empty the LaunchServices store before userland starts.
+//
+// 2026-11-09: the home screen's three widget slots are blank because pkd rejects every
+// /Applications/<App>.app/PlugIns/*.appex with "plug-ins outside containing apps must be in
+// /System", and the rest of that message names the remedy: "Maybe run 'mobile_install rebuild
+// system user' to register the app containing your plugin with LS?". This board has no shell, so
+// the store is emptied instead of rebuilt on request: lsd cannot use an invalid store and builds
+// a new one. One-shot on the argument, and every path it touches is printed, so a run that does
+// not change the home screen is as visible as one that does.
+extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
+volatile uint32_t boot_ls_reset_files, boot_ls_reset_errors;
+static uint32_t ls_reset_logged;
+
+static void ls_reset_note(const char *path, int error) {
+  if (!&qcom_usb_debug_write) return;
+  char line[160];
+  int n = snprintf(line, sizeof line, "LSRESET %s rc=%d\n", path, error);
+  if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+}
+
+// Report mode (the default) reads a store file and prints its size and mtime: whether lsd rebuilt
+// the store since the last boot is the whole question a poking round leaves behind. Only
+// sheng-ls-reset=1 empties what it finds; the late tick must not touch the store it measures.
+static int ls_reset_poke;
+static int ls_reset_one(const char *path, vfs_context_t ctx) {
+  vnode_t vp = NULLVP;
+  int error = vnode_lookup(path, 0, &vp, ctx);
+  if (error) return error;
+  struct vnode_attr va;
+  VATTR_INIT(&va);
+  if (!ls_reset_poke) {
+    VATTR_WANTED(&va, va_data_size);
+    VATTR_WANTED(&va, va_modify_time);
+    error = vnode_getattr(vp, &va, ctx);
+    vnode_put(vp);
+    if (error) return error;
+    char line[192];
+    int n = snprintf(line, sizeof line, "LSSTORE %s size=%lld mtime=%ld\n",
+                     path, (long long)va.va_data_size, (long)va.va_modify_time.tv_sec);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+    return 0;
+  }
+  VATTR_SET(&va, va_data_size, (off_t)0);
+  error = vnode_setattr(vp, &va, ctx);
+  vnode_put(vp);
+  return error;
+}
+
+// com.apple.LaunchServices-<n>-v2.csstore, the form lsd names its store with (the number is the
+// user id class: 5028 in the InternalDaemon container, 501 for the mobile user).
+static int ls_reset_match(const char *name) {
+  const size_t n = strlen(name);
+  return n > 33 && !strncmp(name, "com.apple.LaunchServices-", 25) && !strcmp(name + n - 8, ".csstore");
+}
+
+static void ls_reset_walk(const char *path, unsigned depth, vfs_context_t ctx) {
+  vnode_t dir = NULLVP;
+  unsigned walked = 0;
+  int lookup = vnode_lookup(path, 0, &dir, ctx);
+  if (lookup) {ls_reset_note(path, lookup); return;}
+  if (vnode_vtype(dir) != VDIR) {vnode_put(dir); return;}
+  char *buffer = IOMallocData(8192);
+  char *child = IOMallocData(DiagPath);
+  if (!buffer || !child) {vnode_put(dir); if (buffer) IOFreeData(buffer, 8192); if (child) IOFreeData(child, DiagPath); return;}
+  off_t offset = 0;
+  for (int eof = 0; !eof;) {
+    uio_t uio = uio_create(1, offset, UIO_SYSSPACE, UIO_READ);
+    if (!uio) break;
+    uio_addiov(uio, CAST_USER_ADDR_T(buffer), 8192);
+    int count = 0;
+    int error = VNOP_READDIR(dir, uio, 0, &eof, &count, ctx);
+    const size_t got = 8192 - (size_t)uio_resid(uio);
+    offset = uio_offset(uio);
+    uio_free(uio);
+    if (error || !got) break;
+    for (size_t at = 0; at + offsetof(struct dirent, d_name) <= got;) {
+      const struct dirent *d = (const struct dirent *)(buffer + at);
+      if (!d->d_reclen) {eof = 1; break;}
+      at += d->d_reclen;
+      if (!d->d_ino || (d->d_namlen == 1 && d->d_name[0] == '.') || (d->d_namlen == 2 && d->d_name[0] == '.' && d->d_name[1] == '.')) continue;
+      if ((size_t)snprintf(child, DiagPath, "%s/%.*s", path, (int)d->d_namlen, d->d_name) >= DiagPath) continue;
+      ++walked;
+      if (d->d_type == DT_DIR) {
+        if (depth < 4) ls_reset_walk(child, depth + 1, ctx);
+        continue;
+      }
+      if (d->d_type != DT_REG || !ls_reset_match(d->d_name)) continue;
+      if (!ls_reset_poke) continue;   // report mode reads fixed paths, never a walked match
+      int rc = ls_reset_one(child, ctx);
+      if (rc) ++boot_ls_reset_errors; else ++boot_ls_reset_files;
+      ls_reset_note(child, rc);
+    }
+  }
+  if (depth <= 2) ls_reset_note(path, -(int)walked);   // negative: entries seen, not an error
+  IOFreeData(child, DiagPath);
+  IOFreeData(buffer, 8192);
+  vnode_put(dir);
+}
+
+// Runs from the display late probe, which is before launchd starts userland: a store emptied any
+// later would already be open in lsd and mapped.
+void boot_diag_ls_reset(void) {
+  unsigned on = 0;
+  if (ls_reset_logged) return;
+  if (!PE_parse_boot_argn("sheng-ls-reset", &on, sizeof on) || on != 1) return;
+  ls_reset_logged = 1;
+  ls_reset_poke = 1;
+  vfs_context_t ctx = vfs_context_kernel();
+  ls_reset_walk("/private/var/mobile/Containers/Data/InternalDaemon", 0, ctx);
+  ls_reset_walk("/private/var/mobile/Library/Caches", 0, ctx);
+  if (&qcom_usb_debug_write) {
+    char line[80];
+    int n = snprintf(line, sizeof line, "LSRESET done files=%u errors=%u\n", boot_ls_reset_files, boot_ls_reset_errors);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
+}
+
+// sheng-ls-late=<seconds>: report the LaunchServices store once the Data volume exists. The early
+// call above runs before userland and finds nothing (hdp6: vnode_lookup rc=2 for both roots).
+//
+// Report by fixed path, never by walking: hdp9 walked the whole InternalDaemon tree from this same
+// tick thread at t=80 and the thread never came back (mon froze at 80, the exec log stopped, the
+// desktop never started). lsd maps and rewrites that tree at exactly this time, so the walk is one
+// more reader of the files it is rebuilding. One lookup and one getattr on the store this device
+// actually uses (the UUID is the one the hdp7 walk printed) answers the same question with no
+// directory reads at all.
+static const char *const ls_store_paths[] = {
+  "/private/var/mobile/Containers/Data/InternalDaemon/2E637D83-1834-4994-8755-84173239AA65/Library/Caches/com.apple.LaunchServices-5028-v2.csstore",
+  "/private/var/mobile/Library/Caches/com.apple.LaunchServices-501-v2.csstore",
+};
+static void ls_store_report(vfs_context_t ctx) {
+  for (unsigned i = 0; i < sizeof(ls_store_paths) / sizeof(ls_store_paths[0]); ++i) {
+    vnode_t vp = NULLVP;
+    int error = vnode_lookup(ls_store_paths[i], 0, &vp, ctx);
+    if (error) {ls_reset_note(ls_store_paths[i], error); continue;}
+    struct vnode_attr va;
+    VATTR_INIT(&va);
+    VATTR_WANTED(&va, va_data_size);
+    VATTR_WANTED(&va, va_modify_time);
+    error = vnode_getattr(vp, &va, ctx);
+    vnode_put(vp);
+    if (error) {ls_reset_note(ls_store_paths[i], error); continue;}
+    char line[224];
+    int n = snprintf(line, sizeof line, "LSSTORE %s size=%lld mtime=%ld\n", ls_store_paths[i],
+                     (long long)va.va_data_size, (long)va.va_modify_time.tv_sec);
+    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
+}
+// sheng-ls-report=<seconds>: the store's size and the root mount's read-only bit, run from the
+// touch loop instead of the boot monitor. hdp9 (a directory walk at t=80) and hdp10 (one lookup at
+// t=240) both stopped the monitor thread for the rest of the boot while lsd was rewriting the
+// store; the touch loop is a thread whose stall costs touch and nothing else. One directory level
+// only: the InternalDaemon container UUID changed when the Data volume was reset in hdp11, so the
+// baked-in path reads ENOENT now.
+static void ls_stat_store(const char *path, vfs_context_t ctx) {
+  vnode_t vp = NULLVP;
+  int error = vnode_lookup(path, 0, &vp, ctx);
+  if (error) {ls_reset_note(path, error); return;}
+  struct vnode_attr va;
+  VATTR_INIT(&va);
+  VATTR_WANTED(&va, va_data_size);
+  VATTR_WANTED(&va, va_modify_time);
+  error = vnode_getattr(vp, &va, ctx);
+  vnode_put(vp);
+  if (error) {ls_reset_note(path, error); return;}
+  char line[224];
+  int n = snprintf(line, sizeof line, "LSSTORE %s size=%lld mtime=%ld\n", path,
+                   (long long)va.va_data_size, (long)va.va_modify_time.tv_sec);
+  if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+}
+
+// Every candidate store path: one level of InternalDaemon containers plus the mobile user's own
+// cache. The container UUID changes when the Data volume is reset (hdp11), so the path is read,
+// not baked in.
+static unsigned ls_store_candidates(char (*paths)[DiagPath], unsigned max, vfs_context_t ctx) {
+  static const char *const root = "/private/var/mobile/Containers/Data/InternalDaemon";
+  unsigned count = 0;
+  vnode_t dir = NULLVP;
+  int lookup = vnode_lookup(root, 0, &dir, ctx);
+  if (lookup) {
+    ls_reset_note(root, lookup);
+  } else if (vnode_vtype(dir) != VDIR) {
+    vnode_put(dir);
+  } else {
+    char *buffer = IOMallocData(4096);
+    if (buffer) {
+      uio_t uio = uio_create(1, 0, UIO_SYSSPACE, UIO_READ);
+      if (uio) {
+        uio_addiov(uio, CAST_USER_ADDR_T(buffer), 4096);
+        int eof = 0, n = 0;
+        int error = VNOP_READDIR(dir, uio, 0, &eof, &n, ctx);
+        const size_t got = 4096 - (size_t)uio_resid(uio);
+        uio_free(uio);
+        if (error) {
+          ls_reset_note(root, error);
+        } else {
+          for (size_t at = 0; at + offsetof(struct dirent, d_name) <= got && count < max;) {
+            const struct dirent *d = (const struct dirent *)(buffer + at);
+            if (!d->d_reclen) break;
+            at += d->d_reclen;
+            if (d->d_type != DT_DIR || d->d_namlen < 2 || d->d_name[0] == '.') continue;
+            snprintf(paths[count], DiagPath, "%s/%.*s/Library/Caches/com.apple.LaunchServices-5028-v2.csstore",
+                     root, (int)d->d_namlen, d->d_name);
+            ++count;
+          }
+        }
+      }
+      IOFreeData(buffer, 4096);
+    }
+    vnode_put(dir);
+  }
+  if (count < max) {
+    strlcpy(paths[count], "/private/var/mobile/Library/Caches/com.apple.LaunchServices-501-v2.csstore", DiagPath);
+    ++count;
+  }
+  return count;
+}
+
+static uint32_t ls_report_at, ls_report_done, ls_report_first_ms;
+void boot_diag_ls_report_ms(unsigned now_ms) {
+  if (ls_report_done) return;
+  if (!ls_report_at && (!PE_parse_boot_argn("sheng-ls-report", &ls_report_at, sizeof ls_report_at) || !ls_report_at)) {
+    ls_report_done = 1;
+    return;
+  }
+  if (!ls_report_first_ms) {ls_report_first_ms = now_ms ? now_ms : 1; return;}
+  if ((now_ms - ls_report_first_ms) / 1000u < ls_report_at) return;
+  ls_report_done = 1;
+  vfs_context_t ctx = vfs_context_kernel();
+  {
+    vnode_t root_vnode = vfs_rootvnode();
+    mount_t mount = root_vnode ? vnode_mount(root_vnode) : NULL;
+    const unsigned long flag = mount ? (unsigned long)mount->mnt_flag : 0;
+    if (root_vnode) vnode_put(root_vnode);
+    if (&qcom_usb_debug_write) {
+      char line[80];
+      int n = snprintf(line, sizeof line, "ROOTFS rdonly=%u flag=%lx\n", (flag & MNT_RDONLY) ? 1u : 0u, flag);
+      if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+    }
+  }
+  {
+    char paths[8][DiagPath];
+    const unsigned count = ls_store_candidates(paths, 8, ctx);
+    for (unsigned i = 0; i < count; ++i) ls_stat_store(paths[i], ctx);
+  }
+}
+
+// sheng-ls-dump=<seconds>: print the printable strings of the store itself, so what the database
+// holds is readable on the host without a shell. Same thread as the report, bounded to the first
+// 8 MiB read and 96 KiB printed. A 6,295,552-byte store (hdp13) answered "is it fresh or empty";
+// only its strings can say which applications and plugins it carries, and the first round of this
+// (hdp14) printed 167 runs of index-table noise because every eight printable bytes qualified.
+// A run worth printing: at least ten characters, one of them a dot or a slash, and nothing
+// outside what an identifier or a path uses. The store's index tables are full of eight-character
+// runs of printable bytes (" ,(0(4(8(<(@(") and those filled the budget before any identifier did.
+static int ls_texty(const char *s, size_t n) {
+  if (n < 10) return 0;
+  int mark = 0;
+  for (size_t i = 0; i < n; ++i) {
+    const char c = s[i];
+    if (c == '.' || c == '/') {mark = 1; continue;}
+    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+          c == '_' || c == '-' || c == '+' || c == ':' || c == ' ')) return 0;
+  }
+  return mark;
+}
+
+static void ls_dump_run(char *runbuf, size_t *run, unsigned *runs, size_t *used) {
+  if (!ls_texty(runbuf, *run)) {*run = 0; return;}
+  runbuf[*run] = 0;
+  if (&qcom_usb_debug_write && *runs < 1200 && *used < 96 * 1024) {
+    char line[160];
+    int n = snprintf(line, sizeof line, "LSTR %s\n", runbuf);
+    if (n > 0) {
+      qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+      *used += (size_t)n;
+      ++*runs;
+    }
+  }
+  *run = 0;
+}
+
+static void ls_dump_file(const char *path, vfs_context_t ctx) {
+  vnode_t vp = NULLVP;
+  int error = vnode_open(path, FREAD, 0, 0, &vp, ctx);
+  if (error) {ls_reset_note(path, error); return;}
+  char *buf = IOMallocData(4096);
+  if (!buf) {vnode_close(vp, FREAD, ctx); return;}
+  if (&qcom_usb_debug_write) {
+    char line[192];
+    int n = snprintf(line, sizeof line, "LSDMP %s\n", path);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
+  off_t off = 0;
+  size_t used = 0, run = 0;
+  unsigned runs = 0;
+  char runbuf[128];
+  while (off < (off_t)(8 * 1024 * 1024) && used < 96 * 1024 && runs < 1200) {
+    uio_t uio = uio_create(1, off, UIO_SYSSPACE, UIO_READ);
+    if (!uio) break;
+    uio_addiov(uio, CAST_USER_ADDR_T(buf), 4096);
+    int read_error = VNOP_READ(vp, uio, 0, ctx);
+    const size_t got = 4096 - (size_t)uio_resid(uio);
+    uio_free(uio);
+    if (read_error || !got) break;
+    for (size_t i = 0; i < got;) {
+      const unsigned char c = (unsigned char)buf[i];
+      /* CSStore keeps some of its text as UTF-16LE: one printable byte followed by a zero.
+       * Reading that as plain bytes would break every run at length one, so a printable byte
+       * with a zero after it counts as one wide character and is consumed two bytes at a time. */
+      const int wide = (i + 1 < got) && (unsigned char)buf[i + 1] == 0;
+      if (c >= 32 && c < 127) {
+        if (run < sizeof runbuf - 1) runbuf[run++] = (char)c;
+        else ls_dump_run(runbuf, &run, &runs, &used);
+        i += wide ? 2 : 1;
+      } else {
+        ls_dump_run(runbuf, &run, &runs, &used);
+        ++i;
+      }
+    }
+    off += (off_t)got;
+  }
+  ls_dump_run(runbuf, &run, &runs, &used);
+  IOFreeData(buf, 4096);
+  vnode_close(vp, FREAD, ctx);
+  if (&qcom_usb_debug_write) {
+    char line[96];
+    int n = snprintf(line, sizeof line, "LSDMP done bytes=%lld runs=%u\n", (long long)off, runs);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
+}
+
+static uint32_t ls_dump_at, ls_dump_done, ls_dump_first_ms;
+void boot_diag_ls_dump_ms(unsigned now_ms) {
+  if (ls_dump_done) return;
+  if (!ls_dump_at && (!PE_parse_boot_argn("sheng-ls-dump", &ls_dump_at, sizeof ls_dump_at) || !ls_dump_at)) {
+    ls_dump_done = 1;
+    return;
+  }
+  if (!ls_dump_first_ms) {ls_dump_first_ms = now_ms ? now_ms : 1; return;}
+  if ((now_ms - ls_dump_first_ms) / 1000u < ls_dump_at) return;
+  ls_dump_done = 1;
+  vfs_context_t ctx = vfs_context_kernel();
+  char paths[8][DiagPath];
+  const unsigned count = ls_store_candidates(paths, 8, ctx);
+  for (unsigned i = 0; i < count; ++i) ls_dump_file(paths[i], ctx);
+}
+
+
+static uint32_t ls_late_at, ls_late_done;
+void boot_diag_ls_reset_tick(unsigned now) {
+  if (ls_late_done) return;
+  if (!ls_late_at && (!PE_parse_boot_argn("sheng-ls-late", &ls_late_at, sizeof ls_late_at) || !ls_late_at)) {
+    ls_late_done = 1;
+    return;
+  }
+  if (now < ls_late_at) return;
+  ls_late_done = 1;
+  ls_store_report(vfs_context_kernel());
+  if (&qcom_usb_debug_write) {
+    char line[96];
+    int n = snprintf(line, sizeof line, "LSRESET late t=%us files=%u errors=%u\n", now, boot_ls_reset_files, boot_ls_reset_errors);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
 }
 
 // The stream's length (without the 16-byte blob header) for at most budget bytes, after scanning the roots; 0 when nothing could be read.

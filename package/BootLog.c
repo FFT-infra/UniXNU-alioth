@@ -3195,6 +3195,12 @@ void boot_log_tick(unsigned now) {
   boot_log_tick_ctr = cur_ticks;
   boot_log_tick_calls = boot_log_tick_calls + 1;
   boot_log_tick_step = 1;
+  /* sheng-ls-late=<s>: BootDiagExport's LaunchServices reset, which has to run after the Data
+   * volume exists; the kernel's late display probe runs before that. */
+  {
+    extern void boot_diag_ls_reset_tick(unsigned) __attribute__((weak_import));
+    if (&boot_diag_ls_reset_tick) boot_diag_ls_reset_tick(now);
+  }
   if (!boot_log_started) {
     boot_log_started = 1;
     tick_start_cntpct = cur_ticks;

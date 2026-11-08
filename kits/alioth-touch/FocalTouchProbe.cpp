@@ -316,6 +316,12 @@ void panelStage(void *ctx, const char *name, unsigned value, int result) {
 // Also declared below for the register dump; a weak_import keeps a build without the USB console
 // linking, and the &-test is what decides whether the row can be written.
 extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
+/* sheng-ls-report=<s>: the LaunchServices store readout runs on this thread, not the boot monitor's.
+ * A lookup that blocks here costs touch; the same block on the monitor thread ended two boots
+ * (hdp9, hdp10). Weak, so a build without that package still links. */
+extern "C" void boot_diag_ls_report_ms(unsigned) __attribute__((weak_import));
+/* sheng-ls-dump=<s>: the same readout plus the store's own strings, on the same thread. */
+extern "C" void boot_diag_ls_dump_ms(unsigned) __attribute__((weak_import));
 
 /* Synthetic tap, for unattended rounds. The compositor draws when something asks it to, so a
  * boot nobody touches publishes a handful of frames and then stops (of6: prep=12 sw=12, one
@@ -398,6 +404,8 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
         absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
         const unsigned nowMs = (unsigned)(ns / 1000000);
         synthTap(nowMs);
+        if (&boot_diag_ls_report_ms) boot_diag_ls_report_ms(nowMs);
+        if (&boot_diag_ls_dump_ms) boot_diag_ls_dump_ms(nowMs);
         if (synthState == 1) {
             memset(&synthContact, 0, sizeof synthContact);
             synthContact.id = 0;
