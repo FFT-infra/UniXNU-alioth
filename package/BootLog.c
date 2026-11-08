@@ -323,6 +323,13 @@ extern unsigned int vm_page_free_reserved __attribute__((weak_import));
 extern unsigned int vm_page_active_count __attribute__((weak_import));
 extern unsigned int vm_page_inactive_count __attribute__((weak_import));
 extern unsigned int vm_page_speculative_count __attribute__((weak_import));
+/* Who holds the kernel map's lock, sampled once per row. The page allocator is nearly full of
+ * free pages while every kernel allocation stops, so the lock is the thing to look at. */
+extern void sheng_kmap_sample(void) __attribute__((weak_import));
+extern volatile uint64_t sheng_kmap_owner_thread __attribute__((weak_import));
+extern volatile uint64_t sheng_kmap_owner_tid __attribute__((weak_import));
+extern volatile uint64_t sheng_kmap_owner_ctid __attribute__((weak_import));
+extern volatile uint64_t sheng_kmap_lock_word __attribute__((weak_import));
 // The last waitq_wakeup64_all per CPU: the caller's return address, the waitq, the event, how many
 // calls that CPU made and how many of them returned. That call masks interrupts and takes the waitq
 // interlock, so it is the call the mask site above belongs to. A frozen caller with a frozen call
@@ -2189,6 +2196,28 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                                 &vm_page_inactive_count ? (unsigned)__atomic_load_n(&vm_page_inactive_count, __ATOMIC_RELAXED) : 0u,
                                 &vm_page_speculative_count ? (unsigned)__atomic_load_n(&vm_page_speculative_count, __ATOMIC_RELAXED) : 0u);
         if (vn > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(vp, (size_t)vn < sizeof vp ? (size_t)vn : sizeof vp - 1);
+      }
+      if (&sheng_kmap_sample && &sheng_kmap_owner_thread) {
+        char km[288];
+        sheng_kmap_sample();
+        thread_t ko = (thread_t)(uintptr_t)__atomic_load_n(&sheng_kmap_owner_thread, __ATOMIC_RELAXED);
+        unsigned long long kst = 0, kcont = 0, kpc = 0;
+        unsigned kpri = 0;
+        char knm[24] = "-";
+        if (ko) {
+          kst = (unsigned long long)ko->state;
+          kcont = (unsigned long long)(uintptr_t)ko->continuation;
+          kpri = (unsigned)ko->sched_pri;
+          if (&thread_get_thread_name) thread_get_thread_name(ko, knm);
+          if (ko->machine.upcb) kpc = (unsigned long long)get_saved_state_pc(ko->machine.upcb);
+        }
+        const int kn = snprintf(km, sizeof km, "KMAP t=%us word=%llx ctid=%llx tid=%llx st=%llx cont=%llx pri=%u nm=%s pc=%llx\n",
+                                elapsed,
+                                &sheng_kmap_lock_word ? (unsigned long long)__atomic_load_n(&sheng_kmap_lock_word, __ATOMIC_RELAXED) : 0ull,
+                                &sheng_kmap_owner_ctid ? (unsigned long long)__atomic_load_n(&sheng_kmap_owner_ctid, __ATOMIC_RELAXED) : 0ull,
+                                &sheng_kmap_owner_tid ? (unsigned long long)__atomic_load_n(&sheng_kmap_owner_tid, __ATOMIC_RELAXED) : 0ull,
+                                kst, kcont, kpri, knm, kpc);
+        if (kn > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(km, (size_t)kn < sizeof km ? (size_t)kn : sizeof km - 1);
       }
       /* Per-core interrupt health, next to the row it explains. On this board two different timed
        * waits stop about six seconds into the boot while the supervisor's own one keeps ticking:

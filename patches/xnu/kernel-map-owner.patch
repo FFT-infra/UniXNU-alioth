@@ -1,0 +1,50 @@
+--- a/osfmk/vm/vm_map.c
++++ b/osfmk/vm/vm_map.c
+@@ -597,6 +597,47 @@
+ 		return TRUE;
+ 	}
+ 	return FALSE;
++}
++
++/*
++ * sheng: who is holding the kernel map's lock right now.
++ *
++ * A boot that stops making progress stops in its first kernel allocation while the page
++ * allocator still reports almost all of memory free, so the question is not memory but who
++ * holds kernel_map's lock. lck_rw_t keeps the exclusive holder's compact thread id, and one
++ * snapshot of it is enough to name the holder and to see where it is parked: its state, its
++ * continuation and the pc it trapped from. The lock word says whether the lock is free, held
++ * for write, or has a writer waiting on it.
++ *
++ * Read without the lock, so the value is a snapshot and may be one instant stale. Written only
++ * by the caller of sheng_kmap_sample; no kernel code reads any of these, so a wrong value here
++ * cannot change a decision.
++ */
++volatile uint64_t sheng_kmap_owner_ctid;
++volatile uint64_t sheng_kmap_owner_tid;
++volatile uint64_t sheng_kmap_owner_thread;
++volatile uint64_t sheng_kmap_lock_word;
++volatile uint64_t sheng_kmap_samples;
++
++void
++sheng_kmap_sample(void)
++{
++	vm_map_t map = kernel_map;
++	thread_t owner = THREAD_NULL;
++	ctid_t   ctid  = 0;
++
++	if (map == VM_MAP_NULL) {
++		return;
++	}
++	ctid = (ctid_t)map->lock.lck_rw_owner;
++	if (ctid != 0) {
++		owner = ctid_get_thread_unsafe(ctid);
++	}
++	sheng_kmap_owner_ctid   = (uint64_t)(uint32_t)ctid;
++	sheng_kmap_owner_thread = (uint64_t)(uintptr_t)owner;
++	sheng_kmap_owner_tid    = (owner != THREAD_NULL) ? (uint64_t)thread_tid(owner) : 0;
++	sheng_kmap_lock_word    = (uint64_t)map->lock.lck_rw.data;
++	sheng_kmap_samples      = sheng_kmap_samples + 1;
+ }
+ 
+ /*!

@@ -2,3 +2,4 @@
 thread-creation-trail.patch
 irq-mask-site.patch
 waitq-wakeup-trail.patch
+kernel-map-owner.patch
