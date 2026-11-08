@@ -22,7 +22,7 @@
 #include <pexpert/pexpert.h>
 
 enum {DiagMaxFiles = 6144, DiagPath = 192, DiagDepth = 6, DiagChunk = 256 * 1024, DiagNote = 32768};
-struct diag_file {char path[DiagPath]; uint64_t size, mtime; uint32_t mode, uid, gid, root, keep;};
+struct diag_file {char path[DiagPath]; uint64_t size; uint32_t mode, uid, gid, root, keep;};
 static struct diag_file *diag_files;
 static uint32_t diag_count, diag_skipped_count;
 static char *diag_note;   // diag-skipped.txt
@@ -78,7 +78,6 @@ static void add(const char *path, uint32_t root, vfs_context_t ctx) {
   VATTR_WANTED(&va, va_mode);
   VATTR_WANTED(&va, va_uid);
   VATTR_WANTED(&va, va_gid);
-  VATTR_WANTED(&va, va_modify_time);
   error = vnode_getattr(file, &va, ctx);
   vnode_put(file);
   if (error) {note("getattr", path, error); ++boot_diag_errors; return;}
@@ -86,7 +85,6 @@ static void add(const char *path, uint32_t root, vfs_context_t ctx) {
   struct diag_file *f = &diag_files[diag_count++];
   strlcpy(f->path, path, sizeof f->path);
   f->size = va.va_data_size; f->mode = va.va_mode; f->uid = va.va_uid; f->gid = va.va_gid; f->root = root; f->keep = 0;
-  f->mtime = va.va_modify_time.tv_sec > 0 ? (uint64_t)va.va_modify_time.tv_sec : 0;
 }
 
 static void scan(const char *path, unsigned depth, uint32_t root, vfs_context_t ctx) {
@@ -137,8 +135,10 @@ static void scan(const char *path, unsigned depth, uint32_t root, vfs_context_t 
 //    unified log and not this file, so SpringBoard's and backboardd's own lines were unreadable.
 //    It is picked as the largest dsc entry the scan listed rather than by its UUID, which changes
 //    with the OS build.
-// 1. The persisted unified log's own files. logd numbers them in a rotation, so the name does not
-//    say which is newest: they are ordered by modification time, newest first.
+// 1. The persisted unified log's own files, the later name first: logd writes the live boot into
+//    the highest-numbered Persist file (unlock1 2026-11-09 listed 0001..0009 and the live one was
+//    0009). Ordering them by modification time picked an older, already-flushed file and the live
+//    one whose chunks were not final yet, and the latter decoded to zero events.
 // 2. Everything else in root order; inside a root the later name first (log files are numbered
 //    upward, so the newest comes first).
 static uint64_t diag_dsc_max;
@@ -151,7 +151,6 @@ static int worth(const void *a, const void *b) {
   const struct diag_file *x = a, *y = b;
   const int rx = diag_rank(x), ry = diag_rank(y);
   if (rx != ry) return rx < ry ? -1 : 1;
-  if (rx == 1 && x->mtime != y->mtime) return x->mtime > y->mtime ? -1 : 1;
   if (x->root != y->root) return x->root < y->root ? -1 : 1;
   return -strcmp(x->path, y->path);
 }
