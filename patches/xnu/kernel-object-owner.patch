@@ -25,7 +25,7 @@
  	}
  	DTRACE_VM(vm_object_lock_w);
  	lck_rw_lock_exclusive(&object->Lock);
-+	if (object == kernel_object) {
++	if (is_kernel_object(object)) {
 +		sheng_kobject_owner_thread = (uint64_t)(uintptr_t)current_thread();
 +		sheng_kobject_owner_tid = thread_tid(current_thread());
 +		sheng_kobject_locks = sheng_kobject_locks + 1;
@@ -37,7 +37,7 @@
  #if DEVELOPMENT || DEBUG
  	DTRACE_VM(vm_object_unlock);
  #endif
-+	if (object == kernel_object) {
++	if (is_kernel_object(object)) {
 +		sheng_kobject_owner_thread = 0;
 +		sheng_kobject_owner_tid = 0;
 +	}
