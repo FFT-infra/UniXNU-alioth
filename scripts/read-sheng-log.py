@@ -222,7 +222,7 @@ def main():
     ap.add_argument('--count', type=int, default=DEFAULT_COUNT)
     ap.add_argument('--tag', default='alioth', help='directory prefix when the header has none')
     ap.add_argument('--diag', action='store_true',
-                    help='also read the diagnostic export named by the header and unpack it')
+                    help='also read the diagnostic export (named by the header, or found by its own magic) and unpack it')
     ap.add_argument('--diag-blob', help='unpack an export blob already copied off the device')
     args = ap.parse_args()
     # None means the option was not given; '' means adb with no serial, which is what the
@@ -297,16 +297,45 @@ def main():
 
     # The diagnostic export: the unified log, the crash reports and the panel's scanout, written
     # by the kernel itself, so they survive a boot whose userspace never answers. The header
-    # names it only when BootDiagExport.c ran; diag_bytes 0 means the boot did not ask for it.
+    # names it when the log writer carried diag_bytes to the medium; diag_bytes 0 with a blob in
+    # the region is a boot whose writer never ran, and the blob's own magic still finds it.
     if args.diag or args.diag_blob:
         blob_path = os.path.join(dest, 'diag.bin')
         if args.diag_blob:
             with open(args.diag_blob, 'rb') as src, open(blob_path, 'wb') as dst:
                 dst.write(src.read())
         elif not h['diag_bytes']:
-            print('read-sheng-log: the header carries no diagnostic export (diag_bytes 0); '
-                  'the boot did not pass sheng-diag-export', file=sys.stderr)
-            return 5
+            # diag_bytes reaches the medium only through the log writer, which copies it into the
+            # header on every round. A boot whose writer never got a round through leaves uptime 0
+            # and diag_bytes 0 even when the export thread finished (wp1, 2026-11-09: BLPHASE
+            # round=0 slots=0 on every beat, and no header update after the first block). The blob
+            # carries its own length, so look for its magic in both halves of the region.
+            export_skip = args.skip - EXPORT_BELOW_LOG_BLOCKS
+            found = None
+            for offset in (0, EXPORT_BELOW_LOG_BLOCKS // 2):
+                head_path = os.path.join(dest, 'diag-head.bin')
+                if not read_diag_via_adb(args.port, export_skip + offset, 1, head_path):
+                    print('read-sheng-log: could not read the export region at block %d'
+                          % (export_skip + offset), file=sys.stderr)
+                    return 2
+                with open(head_path, 'rb') as f:
+                    probe = f.read(16)
+                os.unlink(head_path)
+                if len(probe) >= 12 and probe[0:8] == DIAG_MAGIC:
+                    found = (export_skip + offset, struct.unpack_from('<I', probe, 8)[0])
+                    break
+            if not found:
+                print('read-sheng-log: the header carries no diagnostic export (diag_bytes 0) and '
+                      'neither half of the region starts with %s; the boot did not finish one'
+                      % DIAG_MAGIC.decode(), file=sys.stderr)
+                return 5
+            blocks = (16 + found[1] + BLOCK - 1) // BLOCK
+            print('read-sheng-log: header diag_bytes 0, the region holds a blob at block %d '
+                  '(%d bytes); read it by its own header' % (found[0], 16 + found[1]))
+            if not read_diag_via_adb(args.port, found[0], blocks, blob_path):
+                print('read-sheng-log: could not read the diagnostic export at block %d' % found[0],
+                      file=sys.stderr)
+                return 2
         else:
             blocks = (h['diag_bytes'] + BLOCK - 1) // BLOCK
             export_skip = args.skip - EXPORT_BELOW_LOG_BLOCKS + h['diag_first']
