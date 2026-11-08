@@ -1748,7 +1748,7 @@ bool metal() {
     accelerator->setProperty("NativeSandboxGrantProcess",
         "backboardd,iconservicesagent,Preferences,CollectionsPoster,AegirPoster,KaleidoscopePoster,"
         "PhotosPosterProvider,PosterBoard,WidgetRenderer_Default,mediaserverd,SpringBoard,"
-        "UnityPosterExtension,MobileSlideShow");
+        "UnityPosterExtension,MobileSlideShow,GradientPosterExtension,EmojiPosterExtension");
     accelerator->setProperty("MetalPluginClassName", "NativeAdrenoMetalDevice");
     // Turnip's options for this board. The plugin sets TU_DEBUG=nocb for every process (NativeAdrenoMetalPlugin.mm); "nocb" is a
     // no-op on the A650, which has no concurrent binning, and keeps the variable non-empty. The system-memory path that
