@@ -2243,11 +2243,14 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
             const uint64_t *top = (const uint64_t *)(uintptr_t)pt->machine.kstackptr;
             char sk[400];
             int sn2 = snprintf(sk, sizeof sk, "GPSTK t=%us", elapsed);
+            /* The top of a blocked thread's stack is the context switch itself; the call that
+             * blocked is deeper. Each value keeps its depth, so a run of close depths is the
+             * chain and an isolated one is a data word that happens to look like code. */
             int shown = 0;
-            for (int i = 1; i <= 96 && shown < 12 && sn2 > 0 && (unsigned)sn2 < sizeof sk - 20; ++i) {
+            for (int i = 1; i <= 384 && shown < 16 && sn2 > 0 && (unsigned)sn2 < sizeof sk - 24; ++i) {
               const uint64_t v = *(const uint64_t *)(top - i);
               if (v < 0xfffffff007004000ULL || v >= 0xfffffff00c000000ULL) continue;
-              sn2 += snprintf(sk + sn2, sizeof sk - (unsigned)sn2, " %llx", (unsigned long long)v);
+              sn2 += snprintf(sk + sn2, sizeof sk - (unsigned)sn2, " %d:%llx", i, (unsigned long long)v);
               ++shown;
             }
             if (sn2 > 0 && (unsigned)sn2 < sizeof sk) {sk[sn2++] = '\n'; qcom_usb_debug_write(sk, (size_t)sn2 < sizeof sk ? (size_t)sn2 : sizeof sk - 1);}
