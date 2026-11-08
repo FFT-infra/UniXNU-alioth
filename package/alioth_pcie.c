@@ -192,9 +192,9 @@ line(const char *fmt, ...)
 	}
 }
 
-/* Print, wait for the persistent-log writer's next round, then use the USB console. The wait is
- * before the USB write on purpose: if the USB path is the thing that does not return, the line is
- * already on the medium. */
+/* Print, use the USB console, then wait for the persistent-log writer. USB first is deliberate:
+ * a stuck UFS writer must not hide the fact that the CPU reached this line. The wait still puts
+ * the line on the medium when the writer is alive. */
 static void
 line_persist(const char *fmt, ...)
 {
@@ -205,14 +205,16 @@ line_persist(const char *fmt, ...)
 	vsnprintf(body, sizeof body, fmt, ap);
 	__builtin_va_end(ap);
 	printf("pcie: %u: %s\n", pcie_step, body);
-	if (&boot_log_flush_wait) {
-		(void)boot_log_flush_wait();
-	}
+	/* USB first: the line must be readable even if the persistent writer is the thing that is
+	 * stuck. The wait below still puts it on the medium when the writer is alive. */
 	if (&qcom_usb_debug_write) {
 		const int m = snprintf(out, sizeof out, "PCIE %u: %s\n", pcie_step, body);
 		if (m > 0) {
 			qcom_usb_debug_write(out, (size_t)m < sizeof(out) ? (size_t)m : sizeof(out) - 1);
 		}
+	}
+	if (&boot_log_flush_wait && !boot_log_flush_wait()) {
+		line("the persistent log did not complete two rounds within 6 s");
 	}
 }
 

@@ -450,6 +450,7 @@ extern void boot_reset_pet(void) __attribute__((weak_import));
 extern volatile int32_t boot_reset_wdt_stats[4];
 void boot_log_tick(unsigned now);
 int boot_log_flush_wait(void);
+static uint64_t log_ticks(void);
 extern volatile uint64_t native_adreno_import_diag[10] __attribute__((weak_import));
 extern volatile uint32_t native_adreno_import_stage __attribute__((weak_import));
 extern volatile uint64_t native_adreno_import_live[3 + 8 * 4] __attribute__((weak_import));
@@ -534,18 +535,25 @@ int
 boot_log_flush_wait(void)
 {
   const uint32_t before = boot_log_rounds;
+  uint64_t freq = 0, limit;
 
   if (boot_log_state == 3 || boot_log_state == 4) return 0;
   /*
    * Two completed rounds, not one: a round may already have copied the message buffer when
    * this is called and only then increment its counter, so one increment can name a copy that
-   * predates the line. The second round is the first one that certainly copied it. The writer's
-   * period is 2 s, so the bound is six seconds.
+   * predates the line. The second round is the first one that certainly copied it.
+   *
+   * Spin on the system counter, not delay_for_interval(). The PCIe probe can run on a core
+   * whose timer interrupt has stopped (the deaf-core failure this port is chasing); a timer
+   * wait there never returns, and the caller never reaches its first register access. The
+   * counter still advances, so this bound is independent of the per-core timer queue.
    */
-  for (uint32_t waited = 0; waited < 6000; waited++) {
+  __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+  if (!freq) freq = 19200000;
+  limit = log_ticks() + freq * 6;
+  while (log_ticks() < limit) {
     if (boot_log_state == 2 && (uint32_t)(boot_log_rounds - before) >= 2) return 1;
     if (boot_log_state == 3 || boot_log_state == 4) return 0;
-    delay_for_interval(1, NSEC_PER_MSEC);
   }
   return 0;
 }
