@@ -2797,14 +2797,31 @@ static void core_health_thread(void *arg, wait_result_t result)
        * entered when it stopped taking interrupts, and the five behind it are the descent that led
        * there. Healthy cores are left out: their sites are the ordinary idle path and only lengthen
        * the line. */
+      /* The arch timer of every core, whether or not it looks deaf: ctl is the low three bits
+       * (enable, imask, istatus) and rem is the deadline minus the counter as that core last saw
+       * it on its way into a masked section. A core whose rem stays negative while its counter
+       * stopped had a deadline in the past, so the interrupt was raised and not delivered; a
+       * positive rem means it is waiting for a deadline it has not reached. */
+      if (&sheng_irq_ring_cntv_ctl && &sheng_irq_ring_cntv_rem) {
+        char gt[320];
+        int tn = snprintf(gt, sizeof gt, "GICRT t=%us", elapsed);
+        for (unsigned c = 0; c < cores && tn > 0 && (unsigned)tn < sizeof gt - 28; ++c)
+          tn += snprintf(gt + tn, sizeof gt - (unsigned)tn, " c%u=%llx/%lld", c,
+                         (unsigned long long)(__atomic_load_n(&sheng_irq_ring_cntv_ctl[c], __ATOMIC_RELAXED) & 7u),
+                         (long long)__atomic_load_n(&sheng_irq_ring_cntv_rem[c], __ATOMIC_RELAXED));
+        if (tn > 0 && (unsigned)tn < sizeof gt) {gt[tn++] = '\n'; qcom_usb_debug_write(gt, (size_t)tn < sizeof gt ? (size_t)tn : sizeof gt - 1);}
+      }
       if (&sheng_irq_ring_site && &sheng_irq_mask_count) {
         char gm[512];
         for (unsigned c = 0; c < cores; ++c) {
           if (!((deaf >> c) & 1u)) continue;
           const uint64_t n = __atomic_load_n(&sheng_irq_mask_count[c], __ATOMIC_RELAXED);
           const uint64_t u = sheng_irq_unmask_count ? __atomic_load_n(&sheng_irq_unmask_count[c], __ATOMIC_RELAXED) : 0ULL;
-          int gn = snprintf(gm, sizeof gm, "GICRM t=%us c%u n=%llu/%llu", elapsed, c,
-                            (unsigned long long)n, (unsigned long long)u);
+          const uint64_t ctl = &sheng_irq_ring_cntv_ctl ? __atomic_load_n(&sheng_irq_ring_cntv_ctl[c], __ATOMIC_RELAXED) : 0ULL;
+          const int64_t rem = &sheng_irq_ring_cntv_rem ? __atomic_load_n(&sheng_irq_ring_cntv_rem[c], __ATOMIC_RELAXED) : 0;
+          int gn = snprintf(gm, sizeof gm, "GICRM t=%us c%u n=%llu/%llu ctl=%llx rem=%lld", elapsed, c,
+                            (unsigned long long)n, (unsigned long long)u, (unsigned long long)(ctl & 7u),
+                            (long long)rem);
           /* The newest six sites, newest first, each with its caller and the thread that took it. */
           for (unsigned k = 1; k <= 6 && n >= k && gn > 0 && (unsigned)gn < sizeof gm - 44; ++k) {
             const uint32_t slot = (uint32_t)((n - k) & 7u);

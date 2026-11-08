@@ -1936,18 +1936,37 @@ void memBench() {
     }
 }
 
+/* One line straight to the console, carrying the thread, the CPU it is on and a timebase stamp.
+ * A boot that never reaches the first GPU row is stuck in the three steps below, and the row scan
+ * is silent until the summary row exists, so these four writes are the only record of how far the
+ * probe thread got and on which core. */
+static void gpuMark(const char *what) {
+    char line[128];
+    uint64_t now;
+    __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(now));
+    extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
+    const int n = snprintf(line, sizeof line, "GPUTHR %s tid=%llx cpu=%u t=%llu\n", what,
+                           (unsigned long long)thread_tid(current_thread()),
+                           (unsigned)cpu_number(), (unsigned long long)now);
+    if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof(line) ? (size_t)n : sizeof(line) - 1);
+}
+
 void gpuThread(void *, wait_result_t) {
     /* The GICR row names the thread a stopped core was running; without this name every unnamed
      * kernel thread reads the same. */
     thread_set_thread_name(current_thread(), "gpu_probe");
+    gpuMark("enter");
     IOSleep(5000);
+    gpuMark("woke");
     memBench();
+    gpuMark("bench");
     native_gpu_step = 1;
     unsigned have = 0;
     for (unsigned w = 0; w < GPB_WINDOWS; ++w) if (mapWindow(w)) have |= 1u << w;
     // Which of the probe's register windows actually mapped. Without this, a step that skips
     // because its window is missing is indistinguishable from one that ran and failed.
     snprintf(native_gpu_rows[kRowLoad], sizeof native_gpu_rows[0], "MAP have=%02x want=%02x", have, (1u << GPB_WINDOWS) - 1);
+    gpuMark("mapped");
     const gpb_io io = {nullptr, rd, wr, delayUs};
     gpb_result &r = native_gpu_result;
     native_gpu_step = 10;
