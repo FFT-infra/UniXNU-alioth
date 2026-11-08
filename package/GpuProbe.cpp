@@ -1942,9 +1942,9 @@ void memBench() {
  * probe thread got and on which core. */
 static void gpuMark(const char *what) {
     char line[128];
-    uint64_t now;
-    __asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(now));
-    extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
+    /* mach_absolute_time, not cntpct_el0: the physical counter reads a value near 2^64 on this
+     * platform and does not advance between two marks, so it cannot order them. */
+    const uint64_t now = mach_absolute_time();
     const int n = snprintf(line, sizeof line, "GPUTHR %s tid=%llx cpu=%u t=%llu\n", what,
                            (unsigned long long)thread_tid(current_thread()),
                            (unsigned)cpu_number(), (unsigned long long)now);
@@ -1958,7 +1958,12 @@ void gpuThread(void *, wait_result_t) {
     gpuMark("enter");
     IOSleep(5000);
     gpuMark("woke");
-    memBench();
+    /* The benchmark is two 32 MiB kernel buffers, the largest allocation this boot makes, and on
+     * 2026-11-08 it stopped returning: every boot after 06:55 printed `enter` and `woke` and never
+     * `bench`, so the GPU firmware load that follows never ran and no boot reached the desktop.
+     * It measures memset and memcpy and feeds no decision, so it no longer runs unless asked for
+     * with pipa-gpu-membench=1. */
+    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-membench", &p, sizeof p) && p) memBench(); }
     gpuMark("bench");
     native_gpu_step = 1;
     unsigned have = 0;
