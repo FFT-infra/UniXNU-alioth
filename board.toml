@@ -1085,8 +1085,14 @@ root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 model = "iPad7,1"
 target-type = "J120"
 
+# The official MobileGestalt table's value (docs/guide/mobilegestalt.md: display-scale 2, artwork
+# scale 2, subtype 2732). The port kept 3 from its first iPhone10,3 identity; with the iPad7,1
+# identity the device's logical screen class becomes '1024w-1366h@3x~ipad', no wallpaper bundle in
+# the iPadOS collection declares that class (they are all @2x), and WallpaperKit falls back to a
+# synthesized wallpaper: the lock screen is black and CollectionsPoster logs "No compatible
+# wallpaper found on disk" (grid1 boot, 2026-11-09).
 [adt.chosen.u32]
-display-scale = 3
+display-scale = 2
 
 [adt.product.string]
 product-name = "iPad Pro (12.9-inch) (2nd generation)"
