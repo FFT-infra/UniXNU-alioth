@@ -44,6 +44,12 @@ static const char *const diag_roots[] = {
   "/private/var/mobile/Library/MobileInstallation",
   "/private/var/containers/Data/System",
   "/private/var/db/datamigrator",
+  // in33's unified log put the two things the widget line actually needs here, and neither was
+  // exported: the LaunchServices store lives in an InternalDaemon container
+  // (.../InternalDaemon/<uuid>/Library/Caches/com.apple.LaunchServices-5028-v2.csstore), and the
+  // app and extension containers are under /private/var/mobile/Containers, capital C, not the
+  // lowercase system tree above. The store is the file whose bundle-to-container map pkd needs.
+  "/private/var/mobile/Containers/Data/InternalDaemon",
   "/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/prime.log",
   "/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/prime-bad",
   "/private/var/root/Library/Caches/com.apple.backboardd/m2v/prime.log",
@@ -159,7 +165,8 @@ static uint64_t diag_dsc_max;
 static int diag_mi_state(const char *path) {
   return !strncmp(path, "/private/var/mobile/Library/MobileInstallation", 46) ||
          !strncmp(path, "/private/var/containers/Data/System", 35) ||
-         !strncmp(path, "/private/var/db/datamigrator", 28);
+         !strncmp(path, "/private/var/db/datamigrator", 28) ||
+         !strncmp(path, "/private/var/mobile/Containers/Data/InternalDaemon", 51);
 }
 static int diag_rank(const struct diag_file *f) {
   if (diag_dsc_max && f->size == diag_dsc_max && !strncmp(f->path, "/private/var/db/uuidtext/dsc/", 29)) return 0;
