@@ -104,7 +104,13 @@ pause_group(void)
 	}
 }
 
-#define BLOCK_NAMES 9
+/* The GIC side of an MSI: ArmCpu owns the distributor and the SPI table, so the vector is
+ * attached through its own entry point. Weak, so a build without that driver still links. */
+extern int armcpu_spi_attach (uint32_t intid, bool edge, void (*handler) (void *), void *context,
+                              uint32_t *readback, uint64_t *router) __attribute__ ((weak_import));
+extern uint64_t armcpu_spi_count (uint32_t intid) __attribute__ ((weak_import));
+
+#define BLOCK_NAMES 10
 static struct {
 	const char *name;
 	uint64_t base;
@@ -130,6 +136,11 @@ static struct {
 	 * endpoint's BAR0 is placed at its start so the outbound MEM region reaches it. Appended last
 	 * so the block numbers the earlier steps use keep their positions. */
 	{ "mem", 0x60300000, 0x100000 },
+	/* qcom,pcie0_msi@17a10040 (kona-pcie.dtsi:215): the doorbell the endpoint writes its MSI to.
+	 * pci-msm-msi.c:186-201 composes the message as address = this page, data = the GIC hardware
+	 * IRQ, and the device tree's 32 interrupts are SPIs 768..799, so a write of 768 here must
+	 * raise SPI 768. */
+	{ "msi", 0x17a10000, 0x1000 },
 };
 
 static uint64_t
@@ -1705,6 +1716,56 @@ step_config(void)
 
 /* ---- what runs ------------------------------------------------------------------------------ */
 
+/* ---- step 18: one MSI vector, from the doorbell to the GIC -------------------------------- */
+
+/*
+ * The endpoint's MSI does not go through a GICv3 ITS here. qcom,pcie0_msi@17a10040 is a doorbell
+ * page whose message data is the GIC hardware IRQ itself (pci-msm-msi.c:186-201), and the device
+ * tree gives that controller 32 SPIs, 768..799. So the whole delivery path is: a 32-bit write of
+ * 768 to the doorbell raises SPI 768. This step proves that path without the endpoint - attach the
+ * SPI to a counting handler through ArmCpu, write the doorbell from the CPU, and read back both
+ * the handler's own count and the GIC's - and it leaves the handler attached, so a later step that
+ * lets the endpoint raise a real MSI reads the same counter.
+ */
+static volatile uint64_t step_msi_hits;
+
+static void
+step_msi_handler (void *context)
+{
+	(void)context;
+	step_msi_hits = step_msi_hits + 1;
+}
+
+static bool
+step_msi (void)
+{
+	if (!&armcpu_spi_attach || !&armcpu_spi_count) {
+		line ("this build has no ArmCpu SPI entry points; the doorbell is not written");
+		return true;
+	}
+	uint32_t readback = 0;
+	uint64_t router = 0;
+	const int attached = armcpu_spi_attach (768, true, step_msi_handler, NULL, &readback, &router);
+	line ("spi 768 attach returned %#x, readback %#x, router %#llx", (unsigned)attached, readback,
+	    router);
+	if (attached != 0) {
+		line ("SPI 768 could not be attached; the doorbell is not written");
+		return true;
+	}
+	risky ();
+	wr (reg (9, 0x40), 768);
+	line ("wrote 768 to the msi doorbell at %#llx", reg (9, 0x40));
+	for (int i = 0; i < 200 && step_msi_hits == 0; i++) {
+		sleep_ms (1);
+	}
+	line ("msi handler hits %llu, gic count %llu", step_msi_hits, armcpu_spi_count (768));
+	if (step_msi_hits == 0) {
+		line ("the doorbell produced no interrupt; the block's message format is not the vendor "
+		    "driver's, or the SPI is not routed to this core");
+	}
+	return true;
+}
+
 static bool (*const steps[])(void) = {
 	step_look,
 	step_gdsc,
@@ -1723,6 +1784,7 @@ static bool (*const steps[])(void) = {
 	step_elbi,
 	step_dbi,
 	step_config,
+	step_msi,
 };
 
 void
