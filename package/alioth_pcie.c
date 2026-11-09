@@ -1299,6 +1299,35 @@ rpmh_write_commands(const struct rail_cmd *cmds, unsigned count, const char *lab
 }
 
 /*
+ * The WLAN rails (package/AliothWifi): the same command database and TCS path, one rail at a
+ * time. Values are millivolts, matching early_power_vote(); the mode register is left as the
+ * bootloader set it, because this board has no verified read-back for the buck rails yet and a
+ * guessed mode write is worse than none. Every call logs its own command and completion line.
+ */
+bool
+alioth_rpmh_rail_vote(const char *name, uint32_t millivolts)
+{
+	struct rail_cmd cmds[2];
+	uint32_t base = 0;
+
+	if (!name || !millivolts) {
+		return false;
+	}
+	if (!rail_address(name, &base)) {
+		line("%s is not in the command database; no vote", name);
+		return false;
+	}
+	cmds[0].addr = base + RAIL_VRM_VOLTAGE;
+	cmds[0].data = millivolts;
+	cmds[0].what = "voltage";
+	cmds[1].addr = base + RAIL_VRM_ENABLE;
+	cmds[1].data = RAIL_ENABLE_ON;
+	cmds[1].what = "enable 1";
+	line("wlan rail %s: address %#x, %u mV", name, base, millivolts);
+	return rpmh_write_commands(cmds, 2, name);
+}
+
+/*
  * pcie_power=1: vote the three rails the controller node names, before step 2 powers the
  * controller. pcie_power=2 prints the same sequence and writes nothing. No pcie_power means
  * no PMIC write. Values are from kona-pcie.dtsi:47-53 and the vendor rpmh-regulator map:

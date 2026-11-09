@@ -225,6 +225,25 @@ struct nw_board gBoard;
 
 }  // namespace
 
+/* The five cnss2 supplies, with alioth's override that puts aon and dig both on pm8150_s6
+ * (smpa6), so four distinct rails carry five supplies (docs/wifi-qca6390-board.md). */
+extern "C" bool alioth_rpmh_rail_vote(const char *name, uint32_t millivolts);
+
+bool voteWlanRails() {
+    static const struct { const char *name; uint32_t mv; } rails[] = {
+        {"smpa6", 950},   /* vdd-wlan-aon and vdd-wlan-dig */
+        {"smpa4", 1800},  /* vdd-wlan-io */
+        {"smpa5", 1900},  /* vdd-wlan-rfa1 */
+        {"smpc8", 1350},  /* vdd-wlan-rfa2 */
+    };
+    for (const auto &rail : rails)
+        if (!alioth_rpmh_rail_vote(rail.name, rail.mv)) {
+            IOLog("AliothWifi: rail %s did not take the vote\n", rail.name);
+            return false;
+        }
+    return true;
+}
+
 extern "C" int alioth_wifi_board_open(void) {
     if (gOpen) return 0;
     if (!gBar.open(kBarBase, kBarBytes) || !gConf.open(kConfBase, kConfBytes) || !gDoorbell.open(kMsiDoorbell, kMsiBytes)) {
@@ -251,6 +270,7 @@ extern "C" int alioth_wifi_board_open(void) {
         char *block = static_cast<char *>(p) - 16;
         IOFree(block, *reinterpret_cast<size_t *>(block) + 16);
     };
+    if (!voteWlanRails()) return -1;
     if (!claimStream()) return -1;
     if (!arenaOpen()) return -1;
     gBypass = true;
