@@ -6,9 +6,11 @@ Wi-Fi ABI (`Ath12kWifi`'s `nw_*` runtime), with this board's PCIe, SMMU, DMA, MS
 ## State
 
 Imported from `qiumochen/UniXNU-zizhan` (`drivers/PongWifi`), the same structure on QCA6490 /
-SM8475 that reached scan, WPA2, DHCP and HTTPS on the device (its record g275–g337). Only the
-ath11k glue is here so far; the board platform, the network layer and the build recipe are the
-next steps, and nothing in this directory is built into the image yet.
+SM8475 that reached scan, WPA2, DHCP and HTTPS on the device (its record g275–g337). The ath11k
+glue and the compile recipe are in place (37 objects build with the kernel's clang-24); the board
+layer's first increment answers the windows, config space, MSI target and firmware, and stops
+honestly at the SMMU context, the DMA window and the rails. Nothing here is linked into the image
+yet: the kernel recipe and the call site are the next step, together with that SMMU work.
 
 | File | State |
 | --- | --- |
