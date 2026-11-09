@@ -13,6 +13,8 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/proc.h>
+#include <sys/proc_internal.h>
+#include <kern/task.h>
 #include <sys/vnode.h>
 #include <sys/mount_internal.h>
 #include <sys/uio.h>
@@ -531,6 +533,130 @@ void boot_diag_ls_dump_ms(unsigned now_ms) {
   for (unsigned i = 0; i < count; ++i) ls_dump_file(paths[i], ctx);
 }
 
+
+// lsfix=<seconds>: print the owner daemon's LaunchServices repair log
+// (/private/var/ngpu/lsfix.log). The daemon is the only userland process this image adds; it runs
+// as root outside every sandbox through the addon's launchd overlay, and this row is how its result
+// reaches the host without a shell. Lines print as they are, 200 bytes each, first 16 KiB.
+// Which processes carry a bootstrap port: the owner helper has to copy one because it was forked
+// before launchd ran, and task_for_pid plus task_get_special_port could not find it from userland
+// (in6). Read here from the task itself, so the next round knows whether the port exists at all or
+// only the copy is blocked.
+static void ls_bootstraps(void) {
+  int shown = 0;
+  for (int pid = 1; pid <= 300 && shown < 24; ++pid) {
+    proc_t p = proc_find(pid);
+    if (!p) continue;
+    task_t task = proc_task(p);
+    mach_port_t bootstrap = MACH_PORT_NULL;
+    const int found = task && task_get_special_port(task, TASK_BOOTSTRAP_PORT, &bootstrap) == KERN_SUCCESS;
+    const int boot = found && bootstrap != MACH_PORT_NULL;
+    if (&qcom_usb_debug_write) {
+      char line[96];
+      const int n = snprintf(line, sizeof line, "LSBOOT pid=%d name=%s boot=%d\n", pid, p->p_name, boot);
+      if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+    }
+    ++shown;
+    proc_rele(p);
+  }
+}
+
+// The owner helper is a child of the init trampoline and was forked before launchd ran, so its task
+// has no bootstrap port and it cannot copy one from userland: task_for_pid reaches pid 1 only, and
+// launchd's own task carries none (in5/in6). The kernel can hand it one from a process launchd
+// already started, which is what this does while the helper waits. One gift per boot; the helper
+// adopts the port and calls LaunchServices.
+static uint32_t lsgift_at, lsgift_done;
+static void ls_bootstrap_gift(unsigned now_ms) {
+  if (lsgift_done || (lsgift_at && now_ms - lsgift_at < 1000u)) return;
+  lsgift_at = now_ms ? now_ms : 1;
+  proc_t worker = NULL;
+  for (int pid = 2; pid <= 400 && !worker; ++pid) {
+    proc_t p = proc_find(pid);
+    if (!p) continue;
+    if (p->p_name[0] == 'l' && !strcmp(p->p_name, "lsfixd")) worker = p;
+    else proc_rele(p);
+  }
+  if (!worker) return;
+  task_t wt = proc_task(worker);
+  mach_port_t have = MACH_PORT_NULL;
+  if (wt && task_get_special_port(wt, TASK_BOOTSTRAP_PORT, &have) == KERN_SUCCESS && have != MACH_PORT_NULL) {
+    lsgift_done = 1;
+    proc_rele(worker);
+    return;
+  }
+  for (int pid = 2; pid <= 400; ++pid) {
+    proc_t p = proc_find(pid);
+    if (!p) continue;
+    if (p == worker) { proc_rele(p); continue; }
+    task_t t = proc_task(p);
+    mach_port_t b = MACH_PORT_NULL;
+    const int ok = t && task_get_special_port(t, TASK_BOOTSTRAP_PORT, &b) == KERN_SUCCESS && b != MACH_PORT_NULL;
+    if (!ok) { proc_rele(p); continue; }
+    const kern_return_t kr = wt ? task_set_special_port(wt, TASK_BOOTSTRAP_PORT, b) : KERN_FAILURE;
+    if (&qcom_usb_debug_write) {
+      char line[96];
+      const int n = snprintf(line, sizeof line, "LSGIFT from pid=%d name=%s kr=%d\n", pid, p->p_name, kr);
+      if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+    }
+    lsgift_done = kr == KERN_SUCCESS;
+    proc_rele(p);
+    break;
+  }
+  proc_rele(worker);
+}
+
+static uint32_t lsfix_at, lsfix_done, lsfix_first_ms;
+void boot_diag_lsfix_ms(unsigned now_ms) {
+  if (lsfix_done) return;
+  ls_bootstrap_gift(now_ms);
+  if (!lsfix_at && (!PE_parse_boot_argn("lsfix", &lsfix_at, sizeof lsfix_at) || !lsfix_at)) {lsfix_done = 1; return;}
+  if (!lsfix_first_ms) {lsfix_first_ms = now_ms ? now_ms : 1; return;}
+  if ((now_ms - lsfix_first_ms) / 1000u < lsfix_at) return;
+  lsfix_done = 1;
+  ls_bootstraps();
+  /* The store's size and modify time say whether anything rewrote it this boot (the seed carries
+   * mtime 64); the DataClassMigrator route is judged by this row alone until the widgets show. */
+  {
+    char stores[8][DiagPath];
+    const unsigned n = ls_store_candidates(stores, 8, vfs_context_kernel());
+    for (unsigned i = 0; i < n; ++i) ls_stat_store(stores[i], vfs_context_kernel());
+  }
+  const char *path = "/private/var/ngpu/lsfix.log";
+  vfs_context_t ctx = vfs_context_kernel();
+  vnode_t vp = NULLVP;
+  int error = vnode_open(path, FREAD, 0, 0, &vp, ctx);
+  if (error) {ls_reset_note(path, error); return;}
+  char *buf = IOMallocData(4096);
+  if (!buf) {vnode_close(vp, FREAD, ctx); return;}
+  off_t off = 0;
+  while (off < (off_t)(16 * 1024) && &qcom_usb_debug_write) {
+    uio_t uio = uio_create(1, off, UIO_SYSSPACE, UIO_READ);
+    if (!uio) break;
+    uio_addiov(uio, CAST_USER_ADDR_T(buf), 4096);
+    const int read_error = VNOP_READ(vp, uio, 0, ctx);
+    const size_t got = 4096 - (size_t)uio_resid(uio);
+    uio_free(uio);
+    if (read_error || !got) break;
+    for (size_t i = 0; i < got;) {
+      size_t end = i;
+      while (end < got && buf[end] != '\n') ++end;
+      char line[224];
+      size_t n = end - i;
+      if (n > 200) n = 200;
+      const int prefix = snprintf(line, sizeof line, "LSFIX ");
+      memcpy(line + prefix, buf + i, n);
+      line[prefix + n] = 0;
+      qcom_usb_debug_write(line, (size_t)prefix + n);
+      qcom_usb_debug_write("\n", 1);
+      i = end + 1;
+      if ((off + (off_t)i) >= (off_t)(16 * 1024)) break;
+    }
+    off += (off_t)got;
+  }
+  IOFreeData(buf, 4096);
+  vnode_close(vp, FREAD, ctx);
+}
 
 static uint32_t ls_late_at, ls_late_done;
 void boot_diag_ls_reset_tick(unsigned now) {

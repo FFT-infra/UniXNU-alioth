@@ -163,12 +163,23 @@ entitlements = OUT / 'adrenoprobed-entitlements.plist'
 entitlements.write_bytes(plistlib.dumps({'com.apple.private.security.no-container': True,
                                          'com.apple.security.iokit-user-client-class': ['AGXDeviceUserClient'],
                                          'com.apple.private.logging.admin': True, 'com.apple.private.logging.diagnostic': True,
-                                         'com.apple.private.logging.stream': True}))
+                                         'com.apple.private.logging.stream': True,
+                                         # The LaunchServices rebuild the init trampoline performs: lsd gates
+                                         # _LSPrivateRebuildApplicationDatabasesForSystemApps:internal:user: on these
+                                         # (both strings are in the shared cache beside the selector).
+                                         'com.apple.private.coreservices.can-perform-rebuild-registration': True,
+                                         'com.apple.private.coreservices.can-register-install-results': True,
+                                         # The init trampoline's worker is forked before launchd runs and has no
+                                         # bootstrap port; it copies launchd's (NativeInstallFix.cpp).
+                                         'task_for_pid-allow': True,
+                                         'com.apple.system-task-ports': True}))
 daemon = OUT / 'adrenoprobed'
 subprocess.run(['xcrun', 'clang++', *base[2:], '-std=c++17', '-I', ROOT / 'drivers/Adreno740', '-I', ROOT / 'kits/AdrenoPM4', '-I', VULKAN_INCLUDE,
                 '-I', ROOT / 'build/turnip-smoke',
                 METAL / 'NativeAdrenoProbeDaemon.cpp', '-x', 'objective-c++', '-fobjc-arc',
-                METAL / 'NativeOsLogExport.mm', '-x', 'none', pm4, '-framework', 'Foundation', '-lz', '-o', daemon], check=True)
+                METAL / 'NativeInstallFix.cpp',
+                METAL / 'NativeOsLogExport.mm', '-x', 'none', pm4,
+                '-framework', 'Foundation', '-framework', 'CoreFoundation', '-lz', '-o', daemon], check=True)
 subprocess.run(['codesign', '--force', '--sign', '-', '--pagesize', '4096', '--identifier', 'org.blu-sharky.adrenoprobed',
                 '--entitlements', entitlements, daemon], check=True)
 actual = plistlib.loads(subprocess.check_output(['codesign', '-d', '--entitlements', ':-', str(daemon)], stderr=subprocess.DEVNULL))
@@ -189,7 +200,25 @@ assert re.search(r'^Page size=4096$', detail, re.M)
 (OUT / 'com.apple.bluetoothd.plist').write_bytes(plistlib.dumps(dict(
     Label='com.apple.bluetoothd', ProgramArguments=['/private/var/ngpu/bin/adrenoprobed'], RunAtLoad=True, KeepAlive=False,
     ProcessType='Interactive', StandardErrorPath='/dev/null'), fmt=plistlib.FMT_XML))
-(OUT / 'trust.json').write_text(json.dumps(dict(cdhash=cdhash, daemon_cdhash=daemon_cdhash, turnip_cdhash=turnip_cdhash, bundle='NativeAdrenoMetal.bundle',
-    executable_bytes=exe.stat().st_size, purpose='owner-built plugin and probe daemon; trusted only through an extra owner trust module'),
+# The init trampoline the kernel runs as process 1 (patches/xnu/native-init-trampoline.patch): the
+# LaunchServices repair, then exec /sbin/launchd. It exists because launchd's system jobs come from the
+# signed cache in /System/Library/xpc/launchd.plist, so the owner job mounted over
+# /System/Library/LaunchDaemons is never loaded (lx1, 2026-11-09).
+trampoline = OUT / 'lsfixd'
+subprocess.run(['xcrun', 'clang++', *base[2:], '-std=c++17', '-I', ROOT / 'drivers/Adreno740', '-I', ROOT / 'kits/AdrenoPM4',
+                '-I', VULKAN_INCLUDE, '-I', ROOT / 'build/turnip-smoke',
+                METAL / 'NativeInitTrampoline.cpp', '-x', 'objective-c++', '-fobjc-arc',
+                METAL / 'NativeInstallFix.cpp',
+                '-framework', 'Foundation', '-framework', 'CoreFoundation', '-o', trampoline], check=True)
+subprocess.run(['codesign', '--force', '--sign', '-', '--pagesize', '4096', '--identifier', 'org.blu-sharky.lsfixd',
+                '--entitlements', entitlements, trampoline], check=True)
+subprocess.run(['codesign', '--verify', '--strict', trampoline], check=True)
+detail = subprocess.run(['codesign', '--display', '--verbose=4', trampoline], capture_output=True, text=True, check=True).stderr
+trampoline_cdhash = re.search(r'^CDHash=([a-f0-9]{40})$', detail, re.M)[1]
+assert re.search(r'^Page size=4096$', detail, re.M)
+(OUT / 'trust.json').write_text(json.dumps(dict(cdhash=cdhash, daemon_cdhash=daemon_cdhash, turnip_cdhash=turnip_cdhash,
+    trampoline_cdhash=trampoline_cdhash, bundle='NativeAdrenoMetal.bundle',
+    executable_bytes=exe.stat().st_size, purpose='owner-built plugin, probe daemon and init trampoline; trusted only through an extra owner trust module'),
     indent=2) + '\n')
-print('PASS: Adreno plugin bundle and probe daemon built and 4K-signed, CDHashes', cdhash, daemon_cdhash, turnip_cdhash)
+print('PASS: Adreno plugin bundle, probe daemon and init trampoline built and 4K-signed, CDHashes', cdhash, daemon_cdhash, turnip_cdhash,
+      trampoline_cdhash)

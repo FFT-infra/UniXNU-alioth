@@ -322,6 +322,8 @@ extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak
 extern "C" void boot_diag_ls_report_ms(unsigned) __attribute__((weak_import));
 /* sheng-ls-dump=<s>: the same readout plus the store's own strings, on the same thread. */
 extern "C" void boot_diag_ls_dump_ms(unsigned) __attribute__((weak_import));
+/* sheng-lsfix-report=<s>: the owner daemon's LaunchServices repair log, same thread. */
+extern "C" void boot_diag_lsfix_ms(unsigned) __attribute__((weak_import));
 
 /* Synthetic tap, for unattended rounds. The compositor draws when something asks it to, so a
  * boot nobody touches publishes a handful of frames and then stops (of6: prep=12 sw=12, one
@@ -406,6 +408,7 @@ void publish(const struct Fts5652Contact *c, unsigned count) {
         synthTap(nowMs);
         if (&boot_diag_ls_report_ms) boot_diag_ls_report_ms(nowMs);
         if (&boot_diag_ls_dump_ms) boot_diag_ls_dump_ms(nowMs);
+        if (&boot_diag_lsfix_ms) boot_diag_lsfix_ms(nowMs);
         if (synthState == 1) {
             memset(&synthContact, 0, sizeof synthContact);
             synthContact.id = 0;

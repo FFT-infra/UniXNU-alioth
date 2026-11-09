@@ -1,0 +1,40 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8242,6 +8242,37 @@
+ 	}
+ #endif
+ 
++	/* Native init trampoline (patches/xnu/native-init-trampoline.patch): run an owner helper as
++	 * process 1 before launchd. launchd takes its system jobs from the signed cache in
++	 * /System/Library/xpc/launchd.plist, read by launchd_cache_loader, so a plist placed in
++	 * /System/Library/LaunchDaemons -- even through the addon's union mount -- is never loaded; lx1
++	 * (2026-11-09) measured exactly that: the owner plists were visible and the daemon never ran.
++	 * The helper keeps the environment this exec gives init (none here: the SystemOS union keeps the
++	 * cache at its normal path) and execs /sbin/launchd itself. Off unless sheng-init=1; the marker
++	 * /private/var/ngpu/lsfix.ok, written once the registration ran, skips it on later boots; any
++	 * failure falls through to launchd below. */
++	{
++		int sheng_init = 0;
++		if (PE_parse_boot_argn("sheng-init", &sheng_init, sizeof(sheng_init)) && sheng_init == 1) {
++			vnode_t probe_vp = NULLVP;
++			int done = vnode_lookup("/private/var/ngpu/lsfix.ok", 0, &probe_vp, vfs_context_current()) == 0;
++			if (done) {
++				vnode_put(probe_vp);
++			}
++			probe_vp = NULLVP;
++			if (!done && vnode_lookup("/private/var/ngpu/bin/lsfixd", 0, &probe_vp, vfs_context_current()) == 0) {
++				vnode_put(probe_vp);
++				printf("load_init_program: attempting the native init trampoline\n");
++				error = load_init_program_at_path(p, (user_addr_t)scratch_addr,
++				    "/private/var/ngpu/bin/lsfixd", init_envp);
++				if (!error) {
++					return;
++				}
++				printf("load_init_program: init trampoline failed, errno %d; loading launchd\n", error);
++			}
++		}
++	}
++
+ #if DEBUG || DEVELOPMENT
+ 	/* Check for boot-arg suffix first */
+ 	char launchd_suffix[64];
