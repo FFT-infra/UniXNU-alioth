@@ -93,3 +93,23 @@ The vendor WLAN node has no clocks; the reference clock is PCIe0's XO.
   `0x40000000`, value in `GENMASK(24,19)`, range mask `GENMASK(18,0)`, dynamic windows.
 - CEs: 9 host CEs (0..8) and 9 target pipes; service map WMI on CE3/CE2, HTT on CE4/CE1, reserved
   control on CE0/CE2 (`hw.c:1623-1799`).
+
+## SMMU plan for the endpoint (next step)
+
+Two stages, smallest first:
+
+1. **Bypass for the first MHI boot.** The SMMUv2 register model this board already uses is in
+   `src/NativeUfs-alioth/SmmuTakeover.h`: stream count at GR0 `0x20`, `SMR[n]` at `0x800 + 4n`,
+   `S2CR[n]` at `0xc00 + 4n`, exact-match via `SMR = 0x80000000 | sid` (mask in bits 16..30).
+   The WLAN endpoint is SID `0x1c01` (requester `0x100`, `iommu-map`); it needs its own free SMR
+   slot with `S2CR = 0` (type 0, bypass), after which endpoint DMA is untranslated and
+   `dma_alloc` hands out physical addresses. The UFS takeover scans the same arrays and picks its
+   own slot, so the platform takes a lock around the scan/write and only uses a slot that is
+   invalid before it writes.
+2. **Translated window later.** The vendor shape is a stage-1 context with the IOVA pool
+   `0xa0000000 + 0x10000000` and `qcom,iommu-dma = "fastmap"`. program it with the ArmSmmu4K kit
+   (`ArmSmmu4KProgramDisabledContext`) once the bypass boot proves MHI, and keep the same arena.
+
+DMA memory needs to be physically contiguous for the BHI image and the rings under bypass:
+allocate one arena at boot with `IOBufferMemoryDescriptor::inTaskWithPhysicalMask` (the GPU driver
+uses the same call for its firmware pages) and hand out slices with their physical addresses.
