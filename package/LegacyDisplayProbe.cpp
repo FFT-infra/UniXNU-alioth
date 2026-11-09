@@ -1271,6 +1271,14 @@ void native_legacy_display_late_probe(void) {
 	// The Wi-Fi controller's power and clock steps. Opt-in through pcie=<n>; step 1 only reads.
 	extern void alioth_pcie_init(void);
 	alioth_pcie_init();
+	{
+		/* The QCA6390 board layer (drivers/AliothWifi). It needs the trained link and the
+		 * windows the step above leaves, so it runs right after it; the argument keeps the
+		 * normal boot untouched until the first MHI round says otherwise. */
+		extern void alioth_wifi_start(void) __attribute__((weak_import));
+		unsigned wifi = 0;
+		if (&alioth_wifi_start && PE_parse_boot_argn("alioth-wifi", &wifi, sizeof wifi) && wifi) alioth_wifi_start();
+	}
 
 	// The AppleKeyStore stand-in. Same reason as the HID publisher: a selected component that
 	// nothing references is dropped from a static link, and without it there is no keybag to

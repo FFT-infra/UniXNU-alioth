@@ -49,7 +49,25 @@ cmd += ['-I', str(shared / 'include'), '-I', str(driver), '-Wall', '-Wno-unused-
 result = subprocess.run(cmd, cwd=recipe['directory'], capture_output=True, text=True)
 if result.returncode:
     sys.exit(str(source) + ':\n' + result.stderr[-3000:])
-archive = out / 'libAliothWifi.a'
-archive.unlink(missing_ok=True)
-subprocess.run(['xcrun', 'ar', 'rcs', archive, obj], check=True)
-print('BUILT', archive)
+objects = [obj]
+# The ath11k half (Linux v7.0.14 ath11k, MHI host, QRTR, QMI, the shared runtime and the glue)
+# is compiled by scripts/build-alioth-ath11k.py with the same clang; its objects join the same
+# archive. Both trees are inputs: ALIOTH_LINUX (fetch-sources.py) and ALIOTH_WIFI_SHARED above.
+linux = Path(os.environ.get('ALIOTH_LINUX', ''))
+if linux:
+    ath = subprocess.run([sys.executable, str(ROOT / 'scripts/build-alioth-ath11k.py'),
+                          '--linux', str(linux), '--shared', str(shared),
+                          '--clang', recipe['arguments'][0], '--output-dir', str(out / 'ath11k-build')],
+                         capture_output=True, text=True)
+    if ath.returncode:
+        sys.exit('ath11k objects failed:\n' + ath.stdout[-1500:] + ath.stderr[-2500:])
+    print(ath.stdout.strip().splitlines()[-1])
+    objects += sorted((out / 'ath11k-build').glob('*.o'))
+else:
+    print('NOTE: ALIOTH_LINUX unset; packing the platform only')
+# The kernel links exactly one force-loaded archive, libAdreno740.a (build-adreno650.py). The
+# wifi objects join it there; a tree without it gets a standalone archive for host checks.
+force = ROOT / 'build/adreno740/libAdreno740.a'
+archive = force if force.is_file() else out / 'libAliothWifi.a'
+subprocess.run(['xcrun', 'ar', 'rcs', archive, *[str(o) for o in objects]], check=True)
+print('BUILT', archive, len(objects), 'objects')

@@ -313,10 +313,23 @@ extern "C" int alioth_wifi_board_open(void) {
     return 0;
 }
 
+/* The station runtime asks the board for nonces (the shared patch in build-alioth-ath11k.py
+ * routes nw_sta's nonce to this symbol); XNU's CSPRNG is the source, never a timer. */
+extern "C" void AliothWifiRandom(void *out, size_t n) {
+    if (out && n) read_random(out, (u_int)n);
+}
+
 extern "C" int alioth_wifi_board_start(void) {
     if (!gOpen && alioth_wifi_board_open() != 0) return -1;
     extern int nw_wifi_start(const struct lx_platform *, const struct nw_board *);
     const int r = nw_wifi_start(&gPlatform, &gBoard);
     IOLog("AliothWifi: nw_wifi_start returned %d\n", r);
     return r;
+}
+
+/* The kernel's entry: the late display probe calls this (weakly) after the PCIe bring-up when the
+ * boot argument alioth-wifi=1 is set. Failure is logged and leaves the rest of the boot alone. */
+extern "C" void alioth_wifi_start(void) {
+    const int r = alioth_wifi_board_start();
+    IOLog("AliothWifi: start returned %d\n", r);
 }

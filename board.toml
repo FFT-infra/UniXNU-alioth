@@ -128,6 +128,9 @@ archives = [
   "build-gop-legacy-display.py",
   "build-alioth-pcie.py",
   "component:Adreno650",
+  # The QCA6390 board layer and the ath11k/MHI objects join libAdreno740.a (the one
+  # force-loaded archive) right after the GPU recipe creates it. See drivers/AliothWifi.
+  "build-alioth-wifi.py",
   # The USB debug console. It is a shared component: the OS profile patch series names it,
   # and the other alioth device records and munch select it. This device pins its own branch
   # through feeds.toml; the catalog builds the archive.
@@ -1004,8 +1007,6 @@ kernel_args = [
   # the official GPU §3/§4/§5 evidence is complete. The lower frame count is a measurement
   # target, not a reason to fall back to the CPU copy.
   "sheng-fb-gpu=1",
-  "sheng-swaptest=1",
-  "sheng-gpu-trace=1",
   # boot-usb99 was the first image that passed this pair, and it faulted in the writer's
   # read-back of the previous run: the header struct was handed straight to a block-addressed
   # read, which copied 4096 bytes into a 152-byte stack object and ran into the guard page
