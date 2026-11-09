@@ -1004,7 +1004,8 @@ kernel_args = [
   # the official GPU §3/§4/§5 evidence is complete. The lower frame count is a measurement
   # target, not a reason to fall back to the CPU copy.
   "sheng-fb-gpu=1",
-  "sheng-gpu-trace=1",
+  "sheng-swaptest=1",
+  "amfi_get_out_of_my_way=1",
   # boot-usb99 was the first image that passed this pair, and it faulted in the writer's
   # read-back of the previous run: the header struct was handed straight to a block-addressed
   # read, which copied 4096 bytes into a 152-byte stack object and ran into the guard page
