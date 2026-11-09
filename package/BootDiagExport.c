@@ -37,6 +37,13 @@ volatile uint32_t boot_diag_files, boot_diag_skipped, boot_diag_errors;
 // A root may be a single file: the render server's shader priming state (PrimeShaders.h) in its persistent cache directory, small and
 // the only record of how far priming got (backboardd runs as mobile; the root home is the fallback).
 static const char *const diag_roots[] = {
+  // The widget line's open question: what state makes installd run the system-app LaunchServices
+  // migration at boot. Its database directory holds the system-app state and the last LS map
+  // (the "rebuild system" step a shell would run), and the system data containers carry installd's
+  // own. All are small, so they are funded before the unified log (diag_rank below).
+  "/private/var/mobile/Library/MobileInstallation",
+  "/private/var/containers/Data/System",
+  "/private/var/db/datamigrator",
   "/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/prime.log",
   "/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/prime-bad",
   "/private/var/root/Library/Caches/com.apple.backboardd/m2v/prime.log",
@@ -146,8 +153,17 @@ static void scan(const char *path, unsigned depth, uint32_t root, vfs_context_t 
 // 2. Everything else in root order; inside a root the later name first (log files are numbered
 //    upward, so the newest comes first).
 static uint64_t diag_dsc_max;
+// The MobileInstallation state and the system data containers answer a question no other file can,
+// and they are kilobytes: rank them with the persisted log so the log's own files cannot starve
+// them. Their roots are listed first, so a rank tie falls their way.
+static int diag_mi_state(const char *path) {
+  return !strncmp(path, "/private/var/mobile/Library/MobileInstallation", 46) ||
+         !strncmp(path, "/private/var/containers/Data/System", 35) ||
+         !strncmp(path, "/private/var/db/datamigrator", 28);
+}
 static int diag_rank(const struct diag_file *f) {
   if (diag_dsc_max && f->size == diag_dsc_max && !strncmp(f->path, "/private/var/db/uuidtext/dsc/", 29)) return 0;
+  if (diag_mi_state(f->path)) return 1;
   if (!strncmp(f->path, "/private/var/db/diagnostics/Persist/", 36)) return 1;
   return 2;
 }
