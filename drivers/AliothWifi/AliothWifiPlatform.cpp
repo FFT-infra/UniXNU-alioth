@@ -298,8 +298,22 @@ bool voteWlanRails() {
     return true;
 }
 
+/* The endpoint's BAR answers only after package/alioth_pcie.c has trained the link, opened the root
+ * complex's command register and programmed the outbound window; that is step 17, and it runs only
+ * when the command line carries pcie=N. A read of an unbacked BAR address hangs the CPU, which is
+ * what in24/in25 did (both boots stopped at "opening the PCIe windows" and the board then needed a
+ * power cycle). So the readiness check comes before any window is touched. */
+extern "C" uint32_t alioth_pcie_completed_step(void) __attribute__((weak_import));
+constexpr uint32_t kPcieStepOutboundWindow = 17;
+
 extern "C" int alioth_wifi_board_open(void) {
     if (gOpen) return 0;
+    if (!&alioth_pcie_completed_step || alioth_pcie_completed_step() < kPcieStepOutboundWindow) {
+        wifiLog("the PCIe controller is not ready (step %u of %u); add pcie=%u to the command line",
+                &alioth_pcie_completed_step ? alioth_pcie_completed_step() : 0u, kPcieStepOutboundWindow,
+                kPcieStepOutboundWindow);
+        return -1;
+    }
     wifiLog("opening the PCIe windows");
     if (!gBar.open(kBarBase, kBarBytes) || !gConf.open(kConfBase, kConfBytes) || !gDoorbell.open(kMsiDoorbell, kMsiBytes)) {
         wifiLog("a PCIe window did not map");

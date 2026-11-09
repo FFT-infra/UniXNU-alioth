@@ -81,6 +81,16 @@ extern int boot_log_flush_wait(void) __attribute__((weak_import));
 extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
 
 static uint32_t pcie_last_step, pcie_step, pcie_pause_ms = 2200;
+/* How far the steps got, for anything that needs the controller afterwards. A caller that reads the
+ * endpoint's BAR before step 17 has programmed the outbound window and the root complex's header
+ * reads an address nothing answers: the first load hangs the CPU (in24/in25, 2026-11-09). Only a
+ * completed step 17 counts, and only when every step before it also ran. */
+static volatile uint32_t pcie_completed_step;
+uint32_t
+alioth_pcie_completed_step(void)
+{
+	return pcie_completed_step;
+}
 static uint32_t pcie_skip_steps;
 
 static void run_steps(void);
@@ -2065,6 +2075,7 @@ run_steps(void)
 			line("step %u: FAILED; the steps after it are not attempted", pcie_step);
 			return;
 		}
+		pcie_completed_step = pcie_step;
 		line("step %u: done", pcie_step);
 	}
 	line("steps done; the controller is left as it was found");
