@@ -305,15 +305,6 @@ extern "C" int alioth_wifi_board_open(void) {
         wifiLog("a PCIe window did not map");
         return -1;
     }
-    /* The three readings that say whether the endpoint is there at all: BAR0's TCSR_SOC_HW_VERSION
-     * carries the WCNSS major in GENMASK(11,8) and must read 2 for this ath11k, and the config
-     * window must answer the endpoint's own ids. They come before any DMA or rail work so a boot
-     * that stops here still names which half is missing. */
-    {
-        const uint32_t hwVersion = gBar.r(0x0224);
-        wifiLog("bar0[0x224]=%#x major=%u config_id=%#x class=%#x", hwVersion, (hwVersion >> 8) & 0xf,
-                gConf.r(0x00), gConf.r(0x08));
-    }
     gPlatform.now_ms = nowMs;
     gPlatform.now_ns = nullptr;
     gPlatform.boottime_ns = nullptr;
@@ -340,6 +331,15 @@ extern "C" int alioth_wifi_board_open(void) {
     wifiLog("stream claimed");
     if (!arenaOpen()) return -1;
     wifiLog("arena up");
+    /* The three readings that say whether the endpoint is there at all: BAR0's TCSR_SOC_HW_VERSION
+     * carries the WCNSS major in GENMASK(11,8) and must read 2 for this ath11k, and the config
+     * window must answer the endpoint's own ids. They come last, so a boot that stops here has already
+     * reported the rails, the SMMU stream and the arena, and the hang belongs to the endpoint. */
+    {
+        const uint32_t hwVersion = gBar.r(0x0224);
+        wifiLog("bar0[0x224]=%#x major=%u config_id=%#x class=%#x", hwVersion, (hwVersion >> 8) & 0xf,
+                gConf.r(0x00), gConf.r(0x08));
+    }
     gPlatform.dma_alloc = dmaAlloc;
     gPlatform.dma_free = dmaFree;
     gPlatform.dma_map = dmaMap;
