@@ -1082,14 +1082,17 @@ root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
 model = "iPad7,1"
 target-type = "J120"
 
-# The official MobileGestalt table's value (docs/guide/mobilegestalt.md: display-scale 2, artwork
-# scale 2, subtype 2732). The port kept 3 from its first iPhone10,3 identity; with the iPad7,1
-# identity the device's logical screen class becomes '1024w-1366h@3x~ipad', no wallpaper bundle in
-# the iPadOS collection declares that class (they are all @2x), and WallpaperKit falls back to a
-# synthesized wallpaper: the lock screen is black and CollectionsPoster logs "No compatible
-# wallpaper found on disk" (grid1 boot, 2026-11-09).
+# display-scale is the UI policy, not identity metadata: that many scanout pixels per logical point
+# (LegacyDisplayProbe.cpp, offline-legacy-unit-scale). The panel is 1080x2400, so 3 gives the phone
+# layout the port has always shipped (360x800 points, one point per 3 pixels, pixel exact) and 2
+# gives 540x1200 points, which lays the iPad UI out at a size that does not fit a phone screen.
+# 1df4c3c set 2 to make the iPad7,1 wallpaper class '@2x' and collections match; the cost was the
+# desktop scale, which is not acceptable. Back to 3. The wallpaper keeps falling back to the
+# synthesized one until a collection entry declares '1024w-1366h@3x~ipad' (the class follows
+# display-scale, so it cannot be fixed by any other ADT property); the planned fix is an addon
+# overlay of the wallpaper collection, not a scale change.
 [adt.chosen.u32]
-display-scale = 2
+display-scale = 3
 
 [adt.product.string]
 product-name = "iPad Pro (12.9-inch) (2nd generation)"
