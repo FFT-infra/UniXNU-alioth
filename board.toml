@@ -324,7 +324,7 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # plus the same two original modules byte for byte, which the script verifies against
 # build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "075f3170abf57cac798a9be91c83a9aa4094f8f2251a82177c649017ad2ad71e",
+  "7981c1e81aa96f0b04cbd5f50a6a1291c21036ab332142809e1301dae2fde4cc",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -640,7 +640,6 @@ kernel_args = [
   # at frames=99, calls=6, sw=0, no desktop. That is one variable group and two rounds, so it does
   # not say which of the three matters; it says the group does. Do not trade these away for
   # command-line bytes again without a round that adds them back one at a time.
-  "alioth-bt=1",
   "alioth-bl=1",
   # sheng-data-persist=2 opens the Data store read-write. Without it the seed is what the kernel
   # calls a big volume (3 GiB) and the ram-block driver has no volatile mode for one: it serves
@@ -976,7 +975,6 @@ kernel_args = [
   # 428660 -> 3125522. That is one variable and three rounds, so it is a correlation, not a
   # cause; it is back because of11 is the only round that reached sw=231 unattended, and this
   # argument was in it.
-  "boot-ui-trace=1",
   # trace=1 alone still records nothing for slots 1 and 2: BootProcessProbe.c only sets
   # trace_slot[] for focus3/focus4, and for focus/focus2 through boot-ui-follow. Without this the
   # probe walked the processes and stored no stack, which is why STK stayed empty with the trace on.
@@ -1006,6 +1004,7 @@ kernel_args = [
   # the official GPU §3/§4/§5 evidence is complete. The lower frame count is a measurement
   # target, not a reason to fall back to the CPU copy.
   "sheng-fb-gpu=1",
+  "sheng-gpu-trace=1",
   # boot-usb99 was the first image that passed this pair, and it faulted in the writer's
   # read-back of the previous run: the header struct was handed straight to a block-addressed
   # read, which copied 4096 bytes into a 152-byte stack object and ran into the guard page

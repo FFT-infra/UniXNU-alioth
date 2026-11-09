@@ -84,15 +84,22 @@ def main():
     jobs = cache.get('LaunchDaemons')
     if not isinstance(jobs, dict) or KEY in jobs:
         raise SystemExit('the cache has no LaunchDaemons table or already carries %s' % KEY)
+    # No StandardErrorPath. xpcproxy treats the value as a path under which it must create a stderr
+    # directory; /dev/null fails with 0x1e (read-only file system) on devfs, and the job dies with
+    # exit(78) before exec ("Unable to create stderr directory (/dev/null)", lsjob, 2026-11-09).
+    # The program lives in the system namespace, not on the Data volume: launchd's default system
+    # profile refused to posix_spawn /private/var/ngpu/bin/adrenoprobed with EPERM (lsjob, 2026-11-09),
+    # and the documented integration exposes owner services the same way, through a read-only union
+    # mount at a system path (/usr/libexec/unixnu-wpa_supplicant in docs/zh/drivers/ath12k-wifi.md).
+    # The init trampoline mounts /private/var/ngpu/usrlibexec over /usr/libexec.
     jobs[KEY] = {
         'Label': LABEL,
-        'ProgramArguments': ['/private/var/ngpu/bin/adrenoprobed'],
+        'ProgramArguments': ['/usr/libexec/adrenoprobed'],
         'RunAtLoad': True,
         'KeepAlive': False,
         'POSIXSpawnType': 'Adaptive',
         'ThrottleInterval': 30,
         'UserName': 'root',
-        'StandardErrorPath': '/dev/null',
     }
     original = (mount / 'System/Library/xpc/launchd.plist.sig').read_bytes()
     templates = {}
