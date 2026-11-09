@@ -26,6 +26,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# In the assembled tree the device package lives at kits/<board>; the repository itself keeps the
+# layer under drivers/AliothWifi. ALIOTH_WIFI_DIR names it when neither location applies.
+WIFI = Path(os.environ.get('ALIOTH_WIFI_DIR', str(ROOT / 'drivers/AliothWifi')))
 ATH = 'core hal hal_tx hal_rx wmi mac reg htc qmi dp dp_tx dp_rx ce peer dbring hw pcic fw p2p mhi pci'.split()
 MHI = ('init', 'main', 'pm', 'boot')
 
@@ -216,6 +219,10 @@ def main():
             raise SystemExit('Ath12kWifi shared ABI required under --shared: ' + name)
     out = args.output_dir.resolve()
     out.mkdir(parents=True, exist_ok=True)
+    # The archive step globs this directory, so an object from an older recipe would ride along
+    # and collide with the kernel (link-time duplicate symbols). Start from an empty set.
+    for stale in out.glob('*.o'):
+        stale.unlink()
     source = linux / 'drivers/net/wireless/ath/ath11k'
     gen = out / 'ath11k'
     gen.mkdir(exist_ok=True)
@@ -239,7 +246,7 @@ def main():
     spectral = out / 'spectral_common.h'
     spectral.unlink(missing_ok=True)
     spectral.symlink_to(source.parent / 'spectral_common.h')
-    overlay = ROOT / 'drivers/AliothWifi/ath11k/compat'
+    overlay = WIFI / 'ath11k/compat'
     # clang's own builtin headers (stdint.h, stddef.h) survive -nostdinc only through its resource
     # directory; the shim/libc supplies the C library side.
     resource = subprocess.check_output([args.clang, '-print-resource-dir'], text=True).strip() + '/include'
@@ -255,18 +262,26 @@ def main():
              # but only after every shim path has been searched.
              '-idirafter', str(linux / 'include'), '-idirafter', str(linux / 'arch/arm64/include'),
              '-DCONFIG_ATH11K_PCI=1',
+             # XNU's kpi_socket exports sock_release(socket_t); the shared QRTR has its own
+             # sock_release(struct socket *) for the QIPCRTR sockets. One link holds both, so the
+             # shared copy carries a private name here (definition and every caller in these
+             # objects go through the same macro).
+             '-Dsock_release=lx_qrtr_sock_release',
              '-DLX_BOOT_SETTLE_MS=0']
     jobs = [(gen / (n + '.c'), out / ('ath11k_' + n + '.o'), []) for n in ATH]
     jobs += [(mhi / (n + '.c'), out / ('mhi_' + n + '.o'), ['-I', str(mhi)]) for n in MHI]
-    common = ['src/nw_crypto.c', 'src/nw_mac80211.c', 'src/nw_net.c', 'src/nw_pci.c',
-              'src/nw_qrtr.c', 'src/nw_qrtr_mhi.c', 'src/nw_sta.c',
-              'shim/src/lx_rt.c', 'shim/src/mhi_hook.c']
+    # nw_events/nw_netdev and Linux's rbtree.c are part of the shared module (tools/sources.txt);
+    # the station path references them, so they are compiled here too.
+    common = ['src/nw_crypto.c', 'src/nw_mac80211.c', 'src/nw_net.c', 'src/nw_netdev.c',
+              'src/nw_events.c', 'src/nw_pci.c', 'src/nw_qrtr.c', 'src/nw_qrtr_mhi.c',
+              'src/nw_sta.c', 'shim/src/lx_rt.c', 'shim/src/mhi_hook.c']
     replacements = {'src/nw_sta.c': out / 'nw_sta_alioth.c',
                     'src/nw_mac80211.c': out / 'nw_mac80211_alioth.c',
                     'shim/src/lx_rt.c': out / 'lx_rt_alioth.c'}
     jobs += [(replacements.get(n, shared / n), out / ('shared_' + Path(n).stem + '.o'), []) for n in common]
     jobs += [(linux / ('drivers/soc/qcom/' + n + '.c'), out / (n + '.o'), []) for n in ('qmi_interface', 'qmi_encdec')]
-    jobs += [(ROOT / 'drivers/AliothWifi/ath11k/AliothAth11k.c', out / 'AliothAth11k.o', [])]
+    jobs += [(linux / 'lib/rbtree.c', out / 'rbtree.o', [])]
+    jobs += [(WIFI / 'ath11k/AliothAth11k.c', out / 'AliothAth11k.o', [])]
     commands = []
     def compile_job(job):
         src, obj, extra = job

@@ -13,6 +13,7 @@
 #include <sys/vnode.h>
 #include <sys/uio.h>
 #include <sys/fcntl.h>
+#include <sys/random.h>
 #include "nw_abi.h"
 
 namespace {
