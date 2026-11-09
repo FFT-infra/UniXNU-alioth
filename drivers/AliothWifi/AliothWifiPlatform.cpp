@@ -8,7 +8,11 @@
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IODeviceMemory.h>
 #include <kern/clock.h>
+#include <libkern/libkern.h>
 #include <pexpert/pexpert.h>
+#include <sys/vnode.h>
+#include <sys/uio.h>
+#include <sys/fcntl.h>
 #include "nw_abi.h"
 
 namespace {
@@ -107,7 +111,6 @@ void *mapPhys(uint64_t pa, size_t n) { (void)pa; (void)n; return nullptr; }
 constexpr uint64_t kSmmuBase = 0x15000000, kSmmuBytes = 0x100000;
 constexpr uint32_t kEndpointSid = 0x1c01;
 Window gSmmu;
-bool gBypass;
 
 bool claimStream() {
     if (!gSmmu.open(kSmmuBase, kSmmuBytes)) { IOLog("AliothWifi: apps_smmu did not map\n"); return false; }
@@ -151,7 +154,7 @@ uint64_t arenaPhys(const void *p) {
     if (!gArena || !p) return 0;
     const uint8_t *at = static_cast<const uint8_t *>(p);
     if (at < gArenaVa || at >= gArenaVa + kArenaBytes) return 0;
-    io_byte_count_t length = 0;
+    IOByteCount length = 0;
     const addr64_t pa = gArena->getPhysicalSegment((vm_offset_t)(at - gArenaVa), &length, kIOMemoryMapperNone);
     return (uint64_t)pa;
 }
@@ -195,20 +198,35 @@ int fwGet(const char *name, const uint8_t **data, size_t *size) {
     if (gFirmwareCount >= sizeof gFirmware / sizeof gFirmware[0]) return -1;
     char path[160];
     snprintf(path, sizeof path, "/private/var/ngpu/firmware/qca6390/%s", name);
-    int fd = open(path, O_RDONLY, 0);
-    if (fd < 0) { IOLog("AliothWifi: firmware %s absent (%d)\n", path, errno); return -1; }
-    struct stat st;
-    if (fstat(fd, &st) != 0 || st.st_size <= 0 || st.st_size > (16 << 20)) { close(fd); return -1; }
-    uint8_t *buffer = static_cast<uint8_t *>(IOMalloc((size_t)st.st_size));
-    if (!buffer) { close(fd); return -1; }
-    size_t got = 0;
-    while (got < (size_t)st.st_size) {
-        ssize_t n = read(fd, buffer + got, (size_t)st.st_size - got);
-        if (n <= 0) break;
-        got += (size_t)n;
+    vfs_context_t ctx = vfs_context_kernel();
+    vnode_t vp = NULLVP;
+    int error = vnode_open(path, FREAD, 0, 0, &vp, ctx);
+    if (error) { IOLog("AliothWifi: firmware %s open %d\n", path, error); return -1; }
+    struct vnode_attr va;
+    VATTR_INIT(&va);
+    VATTR_WANTED(&va, va_data_size);
+    error = vnode_getattr(vp, &va, ctx);
+    if (error || va.va_data_size <= 0 || va.va_data_size > (16 << 20)) {
+        IOLog("AliothWifi: firmware %s size %d (%d)\n", path, error, (int)va.va_data_size);
+        vnode_close(vp, FREAD, ctx);
+        return -1;
     }
-    close(fd);
-    if (got != (size_t)st.st_size) { IOFree(buffer, (size_t)st.st_size); return -1; }
+    const size_t bytes = (size_t)va.va_data_size;
+    uint8_t *buffer = static_cast<uint8_t *>(IOMalloc(bytes));
+    if (!buffer) { vnode_close(vp, FREAD, ctx); return -1; }
+    size_t got = 0;
+    while (got < bytes) {
+        uio_t uio = uio_create(1, (off_t)got, UIO_SYSSPACE, UIO_READ);
+        if (!uio) break;
+        uio_addiov(uio, CAST_USER_ADDR_T(buffer + got), bytes - got);
+        const int read_error = VNOP_READ(vp, uio, 0, ctx);
+        const size_t step = (bytes - got) - (size_t)uio_resid(uio);
+        uio_free(uio);
+        if (read_error || !step) break;
+        got += step;
+    }
+    vnode_close(vp, FREAD, ctx);
+    if (got != bytes) { IOFree(buffer, bytes); return -1; }
     Firmware &slot = gFirmware[gFirmwareCount++];
     strlcpy(slot.name, name, sizeof slot.name);
     slot.data = buffer;
@@ -273,7 +291,6 @@ extern "C" int alioth_wifi_board_open(void) {
     if (!voteWlanRails()) return -1;
     if (!claimStream()) return -1;
     if (!arenaOpen()) return -1;
-    gBypass = true;
     gPlatform.dma_alloc = dmaAlloc;
     gPlatform.dma_free = dmaFree;
     gPlatform.dma_map = dmaMap;
@@ -281,7 +298,7 @@ extern "C" int alioth_wifi_board_open(void) {
     gPlatform.fw_get = fwGet;
     gPlatform.preempt_disable = nullptr;
     gPlatform.preempt_enable = nullptr;
-    gBoard.bar = const_cast<void *>(static_cast<const void *>(gBar.v));
+    gBoard.bar = const_cast<void *>(static_cast<const volatile void *>(gBar.v));
     gBoard.bar_len = kBarBytes;
     gBoard.device_id = kDeviceId;
     gBoard.msi_cap = kMsiCap;
