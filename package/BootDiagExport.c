@@ -23,6 +23,7 @@
 #include <sys/kauth.h>
 #include <IOKit/IOLib.h>
 #include <pexpert/pexpert.h>
+#include <pexpert/device_tree.h>
 
 enum {DiagMaxFiles = 6144, DiagPath = 192, DiagDepth = 6, DiagChunk = 256 * 1024, DiagNote = 32768};
 struct diag_file {char path[DiagPath]; uint64_t size; uint32_t mode, uid, gid, root, keep;};
@@ -606,45 +607,14 @@ static void ls_bootstrap_gift(unsigned now_ms) {
   proc_rele(worker);
 }
 
-static uint32_t lsfix_at, lsfix_done, lsfix_first_ms;
-void boot_diag_lsfix_ms(unsigned now_ms) {
-  if (lsfix_done) return;
-  ls_bootstrap_gift(now_ms);
-  if (!lsfix_at && (!PE_parse_boot_argn("lsfix", &lsfix_at, sizeof lsfix_at) || !lsfix_at)) {lsfix_done = 1; return;}
-  if (!lsfix_first_ms) {lsfix_first_ms = now_ms ? now_ms : 1; return;}
-  if ((now_ms - lsfix_first_ms) / 1000u < lsfix_at) return;
-  lsfix_done = 1;
-  ls_bootstraps();
-  /* The trampoline's own log (it writes /dev/console, which does not reach the USB capture) and the
-   * cache file's size: 887525 means our merged cache is mounted over /System/Library/xpc, 1640626 the
-   * sealed one. */
-  {
-    const char *paths[2] = {"/private/var/ngpu/lsinit.log", "/System/Library/xpc/launchd.plist"};
-    for (int index = 0; index < 2; ++index) {
-      vnode_t vp = NULLVP;
-      if (vnode_lookup(paths[index], 0, &vp, vfs_context_kernel()) != 0) continue;
-      struct vnode_attr va;
-      VATTR_INIT(&va);
-      VATTR_WANTED(&va, va_data_size);
-      if (vnode_getattr(vp, &va, vfs_context_kernel()) == 0 && &qcom_usb_debug_write) {
-        char line[192];
-        const int n = snprintf(line, sizeof line, "LSVIEW %s size=%lld\n", paths[index], (long long)va.va_data_size);
-        if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
-      }
-      vnode_put(vp);
-    }
-  }
-  /* The store's size and modify time say whether anything rewrote it this boot (the seed carries
-   * mtime 64); the DataClassMigrator route is judged by this row alone until the widgets show. */
-  {
-    char stores[8][DiagPath];
-    const unsigned n = ls_store_candidates(stores, 8, vfs_context_kernel());
-    for (unsigned i = 0; i < n; ++i) ls_stat_store(stores[i], vfs_context_kernel());
-  }
-  const char *path = "/private/var/ngpu/lsfix.log";
+// Print a text file line by line, tag first, the first 16 KiB. Used for the logs a launchd cache
+// question is decided by: the trampoline's own log, launchd_cache_loader's log (it names the CDHash
+// it validated or the failure), and launchd's job log (a spawn refusal is written there, not in the
+// exec observer, because posix_spawn never creates the process).
+static void ls_dump_text(const char *path, const char *tag) {
   vfs_context_t ctx = vfs_context_kernel();
   vnode_t vp = NULLVP;
-  int error = vnode_open(path, FREAD, 0, 0, &vp, ctx);
+  const int error = vnode_open(path, FREAD, 0, 0, &vp, ctx);
   if (error) {ls_reset_note(path, error); return;}
   char *buf = IOMallocData(4096);
   if (!buf) {vnode_close(vp, FREAD, ctx); return;}
@@ -660,10 +630,10 @@ void boot_diag_lsfix_ms(unsigned now_ms) {
     for (size_t i = 0; i < got;) {
       size_t end = i;
       while (end < got && buf[end] != '\n') ++end;
-      char line[224];
+      char line[240];
       size_t n = end - i;
       if (n > 200) n = 200;
-      const int prefix = snprintf(line, sizeof line, "LSFIX ");
+      const int prefix = snprintf(line, sizeof line, "%s ", tag);
       memcpy(line + prefix, buf + i, n);
       line[prefix + n] = 0;
       qcom_usb_debug_write(line, (size_t)prefix + n);
@@ -675,6 +645,117 @@ void boot_diag_lsfix_ms(unsigned now_ms) {
   }
   IOFreeData(buf, 4096);
   vnode_close(vp, FREAD, ctx);
+}
+
+// Print only the lines of a text file that contain needle, tag first, the first 512 KiB scanned.
+// launchd's job log is far larger than a dump budget and the evidence for one label is a handful
+// of lines inside it; a full dump loses them past the cut.
+static void ls_grep_text(const char *path, const char *needle, const char *tag, unsigned limit) {
+  vfs_context_t ctx = vfs_context_kernel();
+  vnode_t vp = NULLVP;
+  if (vnode_open(path, FREAD, 0, 0, &vp, ctx)) return;
+  char *buf = IOMallocData(4096);
+  if (!buf) {vnode_close(vp, FREAD, ctx); return;}
+  char line[512];
+  size_t used = 0;
+  unsigned printed = 0;
+  off_t off = 0;
+  while (off < (off_t)(512 * 1024) && printed < limit && &qcom_usb_debug_write) {
+    uio_t uio = uio_create(1, off, UIO_SYSSPACE, UIO_READ);
+    if (!uio) break;
+    uio_addiov(uio, CAST_USER_ADDR_T(buf), 4096);
+    const int read_error = VNOP_READ(vp, uio, 0, ctx);
+    const size_t got = 4096 - (size_t)uio_resid(uio);
+    uio_free(uio);
+    if (read_error || !got) break;
+    for (size_t i = 0; i < got && printed < limit; ++i) {
+      if (buf[i] != '\n') {
+        if (used < sizeof line - 1) line[used++] = buf[i];
+        continue;
+      }
+      line[used] = 0;
+      used = 0;
+      if (!strnstr(line, needle, sizeof line)) continue;
+      char out[560];
+      const int n = snprintf(out, sizeof out, "%s %s\n", tag, line);
+      if (n > 0) {
+        qcom_usb_debug_write(out, (size_t)n < sizeof out ? (size_t)n : sizeof out - 1);
+        ++printed;
+      }
+    }
+    off += (off_t)got;
+  }
+  IOFreeData(buf, 4096);
+  vnode_close(vp, FREAD, ctx);
+}
+
+// The UI scale the payload actually shipped: /chosen display-scale is the number of scanout pixels
+// per logical point (LegacyDisplayProbe.cpp), so 3 reads 360x800 points on this panel and 2 reads
+// 540x1200. Printed because a board round with no screenshot otherwise cannot tell the two apart.
+static void display_scale_row(void) {
+  DTEntry chosen = NULL;
+  void *value = NULL;
+  unsigned int size = 0;
+  if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != 0 || chosen == NULL) return;
+  if (SecureDTGetProperty(chosen, "display-scale", &value, &size) != 0 || value == NULL || size != 4) return;
+  uint32_t scale = 0;
+  memcpy(&scale, value, sizeof scale);
+  if (&qcom_usb_debug_write) {
+    char line[64];
+    const int n = snprintf(line, sizeof line, "LSSCALE display-scale=%u\n", scale);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
+}
+
+// Size of one path, or nothing when it does not exist.
+static void ls_view_size(const char *path) {
+  vnode_t vp = NULLVP;
+  if (vnode_lookup(path, 0, &vp, vfs_context_kernel()) != 0 || vp == NULLVP) return;
+  struct vnode_attr va;
+  VATTR_INIT(&va);
+  VATTR_WANTED(&va, va_data_size);
+  if (vnode_getattr(vp, &va, vfs_context_kernel()) == 0 && &qcom_usb_debug_write) {
+    char line[192];
+    const int n = snprintf(line, sizeof line, "LSVIEW %s size=%lld\n", path, (long long)va.va_data_size);
+    if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+  }
+  vnode_put(vp);
+}
+
+static uint32_t lsfix_at, lsfix_done, lsfix_first_ms;
+void boot_diag_lsfix_ms(unsigned now_ms) {
+  if (lsfix_done) return;
+  ls_bootstrap_gift(now_ms);
+  if (!lsfix_at && (!PE_parse_boot_argn("lsfix", &lsfix_at, sizeof lsfix_at) || !lsfix_at)) {lsfix_done = 1; return;}
+  if (!lsfix_first_ms) {lsfix_first_ms = now_ms ? now_ms : 1; return;}
+  if ((now_ms - lsfix_first_ms) / 1000u < lsfix_at) return;
+  lsfix_done = 1;
+  ls_bootstraps();
+  /* The trampoline's own log (it writes /dev/console, which does not reach the USB capture) and the
+   * cache file's size: 887525 means our merged cache is mounted over /System/Library/xpc, 1640626 the
+   * sealed one. The two .sig sizes separate a mounted merged signature (11674) from the sealed one
+   * (21346); a job plist that is in the cache but whose Program is absent fails in launchd, not in the
+   * exec observer, so its path is measured too. */
+  ls_view_size("/private/var/ngpu/lsinit.log");
+  ls_view_size("/System/Library/xpc/launchd.plist");
+  ls_view_size("/System/Library/xpc/launchd.plist.sig");
+  ls_view_size("/private/var/ngpu/xpc/launchd.plist");
+  ls_view_size("/private/var/ngpu/xpc/launchd.plist.sig");
+  ls_view_size("/private/var/ngpu/bin/adrenoprobed");
+  ls_view_size("/private/var/ngpu/bin/lsfixd");
+  /* The store's size and modify time say whether anything rewrote it this boot (the seed carries
+   * mtime 64); the DataClassMigrator route is judged by this row alone until the widgets show. */
+  {
+    char stores[8][DiagPath];
+    const unsigned n = ls_store_candidates(stores, 8, vfs_context_kernel());
+    for (unsigned i = 0; i < n; ++i) ls_stat_store(stores[i], vfs_context_kernel());
+  }
+  ls_dump_text("/private/var/ngpu/lsfix.log", "LSFIX");
+  ls_dump_text("/private/var/ngpu/lsinit.log", "LSINITLOG");
+  ls_dump_text("/var/log/com.apple.xpc.launchd/launchd_cache_loader.log", "LSCACHELOG");
+  ls_view_size("/var/log/com.apple.xpc.launchd/launchd.log");
+  ls_grep_text("/var/log/com.apple.xpc.launchd/launchd.log", "adrenoprobed", "LSJOB", 40);
+  display_scale_row();
 }
 
 static uint32_t ls_late_at, ls_late_done;
