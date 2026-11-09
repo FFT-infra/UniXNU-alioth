@@ -461,6 +461,7 @@ kernel_args = [
   # panel row 39 (native_cpufreq_row); mode 3 votes every domain that reads enabled.
   "sheng-cpufreq=3",
   "sheng-pmgr=2",
+  "alioth-bt=1",
   "-no_slto_panic",
   # ml-timeout-lock-panic-scale=40 is dropped for now: it only scales how long a lock
   # timeout waits before panicking, nothing in this tree reads it, and the command line
@@ -954,6 +955,7 @@ kernel_args = [
   # deadline: "no reset at 150 s" was the writer never having started, not the reset path
   # failing. The official unattended example passes both arguments together.
   "sheng-log=1",
+  "boot-ui-trace=1",
   # The official frame diagnostics documented in zh/porting/gpu-diagnostics.md. They are
   # defaults again now that the one-off wallpaper and synthetic-touch arguments are gone.
   "sheng-diag-export=240",
@@ -1004,8 +1006,6 @@ kernel_args = [
   # the official GPU §3/§4/§5 evidence is complete. The lower frame count is a measurement
   # target, not a reason to fall back to the CPU copy.
   "sheng-fb-gpu=1",
-  "sheng-swaptest=1",
-  "amfi_get_out_of_my_way=1",
   # boot-usb99 was the first image that passed this pair, and it faulted in the writer's
   # read-back of the previous run: the header struct was handed straight to a block-addressed
   # read, which copied 4096 bytes into a 152-byte stack object and ran into the guard page
