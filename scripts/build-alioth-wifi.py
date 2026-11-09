@@ -53,7 +53,7 @@ objects = [obj]
 # The ath11k half (Linux v7.0.14 ath11k, MHI host, QRTR, QMI, the shared runtime and the glue)
 # is compiled by scripts/build-alioth-ath11k.py with the same clang; its objects join the same
 # archive. Both trees are inputs: ALIOTH_LINUX (fetch-sources.py) and ALIOTH_WIFI_SHARED above.
-linux = Path(os.environ.get('ALIOTH_LINUX', ''))
+linux = Path(os.environ['ALIOTH_LINUX']) if os.environ.get('ALIOTH_LINUX') else None
 if linux:
     ath = subprocess.run([sys.executable, str(ROOT / 'scripts/build-alioth-ath11k.py'),
                           '--linux', str(linux), '--shared', str(shared),

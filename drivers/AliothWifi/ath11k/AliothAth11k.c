@@ -50,7 +50,11 @@ static const struct nw_wifi_hooks hooks = {
 
 int nw_wifi_start(const struct lx_platform *p, const struct nw_board *b)
 {
-    if (running || !p || !b || b->device_id != 0x1101 || !b->bar || b->bar_len < 0x200000 ||
+    /* alioth's QCA6390 exposes a 1 MiB BAR0 (the outbound MEM window starts at 0x60300000 and the
+     * vendor map gives 0x3d00000 above it); everything above offset 0x80000 goes through the
+     * window register, and nw_wifi clamps a BHI offset beyond the bar. A 2 MiB minimum is the
+     * QCA6490 board's, not this one's. */
+    if (running || !p || !b || b->device_id != 0x1101 || !b->bar || b->bar_len < 0x100000 ||
         !p->now_ms || !p->sleep_ms || !p->poll || !p->log || !p->halt || !p->alloc || !p->free ||
         !p->dma_alloc || !p->dma_free || !p->dma_map || !p->dma_sync || !p->fw_get ||
         !b->cfg_read || !b->cfg_write || !b->msi_target || !b->map_phys) return -EINVAL;
