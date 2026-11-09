@@ -754,11 +754,16 @@ static void ls_view_size(const char *path) {
 }
 
 static uint32_t lsfix_at, lsfix_done, lsfix_first_ms;
-static uint32_t trace_first_done;
+// Fixed checkpoints, independent of the lsfix argument: the colour-order test runs about twenty
+// seconds after the render server publishes its device, and that time moves with boot health, so
+// three snapshots are taken and each prints only what is in the ring at that moment.
+static uint32_t trace_marks;
 void boot_diag_lsfix_ms(unsigned now_ms) {
-  if (!trace_first_done && now_ms >= 60000) {
-    trace_first_done = 1;
-    gpu_problem_dump("GTPROB1");
+  static const uint32_t marks[3] = {60000, 120000, 180000};
+  static const char *const tags[3] = {"GTPROB1", "GTPROB2", "GTPROB3"};
+  while (trace_marks < 3 && now_ms >= marks[trace_marks]) {
+    gpu_problem_dump(tags[trace_marks]);
+    ++trace_marks;
   }
   if (lsfix_done) return;
   ls_bootstrap_gift(now_ms);
@@ -792,7 +797,6 @@ void boot_diag_lsfix_ms(unsigned now_ms) {
   ls_view_size("/var/log/com.apple.xpc.launchd/launchd.log");
   ls_grep_text("/var/log/com.apple.xpc.launchd/launchd.log", "adrenoprobed", "LSJOB", 40);
   display_scale_row();
-  gpu_problem_dump("GTPROB2");
 }
 
 static uint32_t ls_late_at, ls_late_done;
