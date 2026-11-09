@@ -241,11 +241,19 @@ unsigned gFirmwareCount;
 
 int fwGet(const char *name, const uint8_t **data, size_t *size) {
     if (!name || !data || !size) return -1;
+    /* The ABI passes the name the driver asked for, which ath11k builds as
+     * "ath11k/QCA6390/hw2.0/<file>"; this board keeps the files flat, so the lookup is by the last
+     * component. That is also what makes the API1 fallback work at all: ath11k tries
+     * firmware-2.bin first, and when it is absent (this board ships amss.bin, m3.bin and
+     * board-2.bin) it asks for exactly those three names. */
+    const char *base = strrchr(name, '/');
+    base = base ? base + 1 : name;
+    if (!*base) return -1;
     for (unsigned i = 0; i < gFirmwareCount; ++i)
-        if (!strcmp(gFirmware[i].name, name)) { *data = gFirmware[i].data; *size = gFirmware[i].size; return 0; }
+        if (!strcmp(gFirmware[i].name, base)) { *data = gFirmware[i].data; *size = gFirmware[i].size; return 0; }
     if (gFirmwareCount >= sizeof gFirmware / sizeof gFirmware[0]) return -1;
     char path[160];
-    snprintf(path, sizeof path, "/private/var/ngpu/firmware/qca6390/%s", name);
+    snprintf(path, sizeof path, "/private/var/ngpu/firmware/qca6390/%s", base);
     vfs_context_t ctx = vfs_context_kernel();
     vnode_t vp = NULLVP;
     int error = vnode_open(path, FREAD, 0, 0, &vp, ctx);
@@ -276,12 +284,12 @@ int fwGet(const char *name, const uint8_t **data, size_t *size) {
     vnode_close(vp, FREAD, ctx);
     if (got != bytes) { IOFree(buffer, bytes); return -1; }
     Firmware &slot = gFirmware[gFirmwareCount++];
-    strlcpy(slot.name, name, sizeof slot.name);
+    strlcpy(slot.name, base, sizeof slot.name);
     slot.data = buffer;
     slot.size = got;
     *data = buffer;
     *size = got;
-    wifiLog("firmware %s %zu bytes\n", name, got);
+    wifiLog("firmware %s %zu bytes\n", base, got);
     return 0;
 }
 
