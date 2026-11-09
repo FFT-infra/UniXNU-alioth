@@ -190,13 +190,30 @@ uint64_t arenaPhys(const void *p);
 
 bool arenaOpen() {
     if (gArena) return true;
+    /* dma_alloc_coherent promises the driver memory the device may read while the CPU still holds
+     * its own writes. IOBufferMemoryDescriptor's own mapping is cacheable (cache mode 0 is
+     * kIOMemoryBufferCacheDefault), so the arena is mapped again with kIOMapInhibitCache and every
+     * slice is handed out of that mapping. The first transfer that depends on it is MHI's SBL load:
+     * it memcpy's the image into the buffer and rings the doorbell with no cache operation of its
+     * own. in32 rang that doorbell and then stopped while reading BHI_STATUS.
+     *
+     * The coherent mask ath11k asks for is 32 bits (pci.c: ATH11K_PCI_COHERENT_DMA_MASK 32), so the
+     * arena is requested below 4 GiB first; a boot where that fails says so and falls back. */
     gArena = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous,
-                                                              kArenaBytes, 0xfffffffffffff000ULL);
+                                                              kArenaBytes, 0x00000000fffff000ULL);
+    if (!gArena) {
+        wifiLog("no contiguous %zu-byte arena below 4 GiB; asking for any address\n", kArenaBytes);
+        gArena = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous,
+                                                                  kArenaBytes, 0xfffffffffffff000ULL);
+    }
     if (!gArena) { wifiLog("no contiguous %zu-byte arena\n", kArenaBytes); return false; }
     if (gArena->prepare() != kIOReturnSuccess) { gArena->release(); gArena = nullptr; return false; }
-    gArenaVa = static_cast<uint8_t *>(gArena->getBytesNoCopy());
+    IOMemoryMap *map = gArena->createMappingInTask(kernel_task, 0, kIOMapAnywhere | kIOMapInhibitCache);
+    if (!map) { wifiLog("the arena did not map uncached\n"); gArena->release(); gArena = nullptr; return false; }
+    gArenaVa = reinterpret_cast<uint8_t *>(map->getVirtualAddress());
     gArenaUsed = 0;
-    wifiLog("DMA arena %zu bytes at %p phys %#llx\n", kArenaBytes, gArenaVa, (unsigned long long)arenaPhys(gArenaVa));
+    wifiLog("DMA arena %zu bytes at %p phys %#llx (uncached)\n", kArenaBytes, gArenaVa,
+            (unsigned long long)arenaPhys(gArenaVa));
     return gArenaVa != nullptr;
 }
 
