@@ -90,23 +90,35 @@ void say(int level, const char *line) {
  * this endpoint and the shim passes capability-relative offsets, so the caller's offset is the
  * capability-relative one. The ATU CFG0 view for bus 1 is left programmed by package/alioth_pcie.c
  * step_config, so a read is a load from the config window. */
+/* The window answers 32-bit loads only (msi3 hung on a 16-bit access), so a narrower request is
+ * served from one aligned word and the caller's bytes are shifted out of it. ath11k asks for the
+ * device id with a 16-bit read and the first version of this returned -1, which left its local
+ * device_id at 0 and produced "pci device id mismatch: 0x0 0x1101" (in26). */
+uint32_t cfgAt(int off) {
+    if (off & 0x80000000) return 0xd0u + (uint32_t)(off & 0x7fffffff);
+    return (uint32_t)off;
+}
+
 int cfgRead(int off, int size, uint32_t *v) {
-    if (!gOpen || !v) return -1;
-    uint32_t at;
-    if (off & 0x80000000) at = 0xd0u + (uint32_t)(off & 0x7fffffff);
-    else at = (uint32_t)off;
-    if (size != 4) return -1;
-    *v = gConf.r(at & 0xfff);
+    if (!gOpen || !v || (size != 1 && size != 2 && size != 4)) return -1;
+    const uint32_t at = cfgAt(off) & 0xfff;
+    if ((at & (uint32_t)(size - 1)) || at > 0x1000u - (uint32_t)size) return -1;
+    const uint32_t word = gConf.r(at & ~3u);
+    const unsigned shift = (at & 3u) * 8;
+    const uint32_t mask = size == 4 ? 0xffffffffu : ((1u << (size * 8)) - 1u);
+    *v = (word >> shift) & mask;
     return 0;
 }
 
 int cfgWrite(int off, int size, uint32_t v) {
-    if (!gOpen) return -1;
-    uint32_t at;
-    if (off & 0x80000000) at = 0xd0u + (uint32_t)(off & 0x7fffffff);
-    else at = (uint32_t)off;
-    if (size != 4) return -1;
-    gConf.w(at & 0xfff, v);
+    if (!gOpen || (size != 1 && size != 2 && size != 4)) return -1;
+    const uint32_t at = cfgAt(off) & 0xfff;
+    if ((at & (uint32_t)(size - 1)) || at > 0x1000u - (uint32_t)size) return -1;
+    const unsigned shift = (at & 3u) * 8;
+    const uint32_t mask = (size == 4 ? 0xffffffffu : ((1u << (size * 8)) - 1u)) << shift;
+    /* Read-modify-write: the neighbouring fields of the same word belong to other registers. */
+    const uint32_t word = gConf.r(at & ~3u);
+    gConf.w(at & ~3u, (word & ~mask) | ((v << shift) & mask));
     return 0;
 }
 
