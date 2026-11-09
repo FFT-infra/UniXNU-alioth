@@ -2688,6 +2688,23 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                           who, txt, rest);
         if (gn > 0 && &qcom_usb_debug_write)
           qcom_usb_debug_write(g, (size_t)gn < sizeof g ? (size_t)gn : sizeof g - 1);
+        // Why every frame the GPU hand-off completed reported failure: the display driver keeps only
+        // the count, so the client's own status values are carried out here, first four distinct.
+        {
+          static uint64_t shown;
+          extern volatile uint64_t native_adreno_handoff_fail[6] __attribute__((weak_import));
+          if (&native_adreno_handoff_fail && native_adreno_handoff_fail[0] != shown && &qcom_usb_debug_write) {
+            char h[120];
+            shown = native_adreno_handoff_fail[0];
+            int hn = snprintf(h, sizeof h, "GPUHANDOFF fail=%llu st=%x/%x/%x/%x last=%x\n",
+                              (unsigned long long)shown,
+                              (unsigned)(&native_adreno_handoff_fail ? native_adreno_handoff_fail[1] : 0),
+                              (unsigned)native_adreno_handoff_fail[2], (unsigned)native_adreno_handoff_fail[3],
+                              (unsigned)native_adreno_handoff_fail[4],
+                              (unsigned)native_adreno_handoff_fail[5]);
+            if (hn > 0) qcom_usb_debug_write(h, (size_t)hn < sizeof h ? (size_t)hn : sizeof h - 1);
+          }
+        }
         if (&native_adreno_metal_starter && native_adreno_metal_starter[0][0] && &qcom_usb_debug_write) {
           char p[120];
           const int pn = snprintf(p, sizeof p, "GPUPLUG started %.16s | %.16s | %.16s\n",
