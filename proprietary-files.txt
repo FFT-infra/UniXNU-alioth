@@ -30,3 +30,14 @@
 #
 # Earlier versions of this file said no image of this board loads them. That was true before the
 # GPU path was enabled and is not true now.
+
+# ---- QCA6390 Wi-Fi --------------------------------------------------------------------------
+# The PCI endpoint behind qcom,pcie@1c00000 (17cb:1101) boots with the mainline ath11k firmware
+# set, read by the driver through /private/var/ngpu/firmware/qca6390 after the addon is installed.
+# The files are the generic QCA6390 hw2.0 images from linux-firmware; the board-specific BDF the
+# phone ships in its vendor partition is a later substitution, not a prerequisite for MHI start.
+# Source: https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git
+@fetch https://git.kernel.org/pub/scm/linux/kernel/git/firmware/linux-firmware.git/plain/
+ath11k/QCA6390/hw2.0/amss.bin|8ab2a06422e3989012df423bb6a156fde2c3feb4cd5db4c5d3588f674dc872ff
+ath11k/QCA6390/hw2.0/m3.bin|1921d25edb52f90a7a0acc7275861e14399f904d579aae9f7ab1c4d28533fad6
+ath11k/QCA6390/hw2.0/board-2.bin|4aa9f0fe15e9e2b6f9bb13b7187ed8ce035d9d46fb65fac5d5eba2c4e7edc091
