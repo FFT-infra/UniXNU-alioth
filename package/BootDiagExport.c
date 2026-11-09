@@ -273,37 +273,6 @@ void boot_diag_ls_reset(void) {
   }
 }
 
-// sheng-ls-late=<seconds>: report the LaunchServices store once the Data volume exists. The early
-// call above runs before userland and finds nothing (hdp6: vnode_lookup rc=2 for both roots).
-//
-// Report by fixed path, never by walking: hdp9 walked the whole InternalDaemon tree from this same
-// tick thread at t=80 and the thread never came back (mon froze at 80, the exec log stopped, the
-// desktop never started). lsd maps and rewrites that tree at exactly this time, so the walk is one
-// more reader of the files it is rebuilding. One lookup and one getattr on the store this device
-// actually uses (the UUID is the one the hdp7 walk printed) answers the same question with no
-// directory reads at all.
-static const char *const ls_store_paths[] = {
-  "/private/var/mobile/Containers/Data/InternalDaemon/2E637D83-1834-4994-8755-84173239AA65/Library/Caches/com.apple.LaunchServices-5028-v2.csstore",
-  "/private/var/mobile/Library/Caches/com.apple.LaunchServices-501-v2.csstore",
-};
-static void ls_store_report(vfs_context_t ctx) {
-  for (unsigned i = 0; i < sizeof(ls_store_paths) / sizeof(ls_store_paths[0]); ++i) {
-    vnode_t vp = NULLVP;
-    int error = vnode_lookup(ls_store_paths[i], 0, &vp, ctx);
-    if (error) {ls_reset_note(ls_store_paths[i], error); continue;}
-    struct vnode_attr va;
-    VATTR_INIT(&va);
-    VATTR_WANTED(&va, va_data_size);
-    VATTR_WANTED(&va, va_modify_time);
-    error = vnode_getattr(vp, &va, ctx);
-    vnode_put(vp);
-    if (error) {ls_reset_note(ls_store_paths[i], error); continue;}
-    char line[224];
-    int n = snprintf(line, sizeof line, "LSSTORE %s size=%lld mtime=%ld\n", ls_store_paths[i],
-                     (long long)va.va_data_size, (long)va.va_modify_time.tv_sec);
-    if (n > 0 && &qcom_usb_debug_write) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
-  }
-}
 // sheng-ls-report=<seconds>: the store's size and the root mount's read-only bit, run from the
 // touch loop instead of the boot monitor. hdp9 (a directory walk at t=80) and hdp10 (one lookup at
 // t=240) both stopped the monitor thread for the rest of the boot while lsd was rewriting the
@@ -572,7 +541,20 @@ void boot_diag_ls_reset_tick(unsigned now) {
   }
   if (now < ls_late_at) return;
   ls_late_done = 1;
-  ls_store_report(vfs_context_kernel());
+  {
+    /* sheng-ls-late was written before the container UUID was known to change: its two baked-in
+     * paths read ENOENT on every volume created after the first (hdp18 printed rc=2 for both and
+     * truncated nothing). Read the containers first and poke the store in whichever one carries it. */
+    vfs_context_t ctx = vfs_context_kernel();
+    ls_reset_poke = 1;
+    char paths[8][DiagPath];
+    const unsigned count = ls_store_candidates(paths, 8, ctx);
+    for (unsigned i = 0; i < count; ++i) {
+      const int rc = ls_reset_one(paths[i], ctx);
+      if (rc) ++boot_ls_reset_errors; else ++boot_ls_reset_files;
+      ls_reset_note(paths[i], rc);
+    }
+  }
   if (&qcom_usb_debug_write) {
     char line[96];
     int n = snprintf(line, sizeof line, "LSRESET late t=%us files=%u errors=%u\n", now, boot_ls_reset_files, boot_ls_reset_errors);
