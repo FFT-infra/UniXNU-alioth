@@ -18,9 +18,7 @@ typedef unsigned long kernel_ulong_t;
 #define dma_free_noncoherent(d, n, p, h, dir) lx_dma_free(d, n, p, h)
 static inline u32 *memset32(u32 *dst, u32 value, size_t count)
 { u32 *result = dst; while (count--) *dst++ = value; return result; }
-/* No RSS hash has been calculated for a newly received shim skb. Zero means
- * "not calculated", and is not a fabricated flow classification. */
-static inline u32 skb_get_hash(struct sk_buff *skb) { (void)skb; return 0; }
+/* skb_get_hash comes from the catalog shim (src/nw_net.c), which declares it. */
 static inline struct device_node *of_find_node_by_type(struct device_node *node, const char *type)
 { (void)node; (void)type; return NULL; }
 static inline bool of_property_present(const struct device_node *node, const char *name)
