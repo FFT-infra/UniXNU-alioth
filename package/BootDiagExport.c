@@ -330,6 +330,44 @@ static void ls_stat_store(const char *path, vfs_context_t ctx) {
 // Every candidate store path: one level of InternalDaemon containers plus the mobile user's own
 // cache. The container UUID changes when the Data volume is reset (hdp11), so the path is read,
 // not baked in.
+// Entry count of one directory, no recursion, names not used. The LS store names 382
+// PluginKitPlugin containers and 208 /Applications bundles; whether those containers exist on this
+// Data volume is the one thing that decides whether the store describes this machine or the one it
+// was built on. A directory that cannot be read reports -errno.
+static int ls_count_dir(const char *path, vfs_context_t ctx) {
+  vnode_t dir = NULLVP;
+  int error = vnode_lookup(path, 0, &dir, ctx);
+  if (error) return -error;
+  if (vnode_vtype(dir) != VDIR) {vnode_put(dir); return -ENOTDIR;}
+  char *buffer = IOMallocData(4096);
+  if (!buffer) {vnode_put(dir); return -ENOMEM;}
+  int total = 0;
+  off_t offset = 0;
+  for (int eof = 0; !eof;) {
+    uio_t uio = uio_create(1, offset, UIO_SYSSPACE, UIO_READ);
+    if (!uio) break;
+    uio_addiov(uio, CAST_USER_ADDR_T(buffer), 4096);
+    int count = 0;
+    int read_error = VNOP_READDIR(dir, uio, 0, &eof, &count, ctx);
+    const size_t got = 4096 - (size_t)uio_resid(uio);
+    offset = uio_offset(uio);
+    uio_free(uio);
+    if (read_error) {total = -read_error; break;}
+    if (!got) break;
+    for (size_t at = 0; at + offsetof(struct dirent, d_name) <= got;) {
+      const struct dirent *d = (const struct dirent *)(buffer + at);
+      if (!d->d_reclen) {eof = 1; break;}
+      at += d->d_reclen;
+      if (!d->d_ino || (d->d_namlen == 1 && d->d_name[0] == '.') ||
+          (d->d_namlen == 2 && d->d_name[0] == '.' && d->d_name[1] == '.')) continue;
+      ++total;
+    }
+  }
+  IOFreeData(buffer, 4096);
+  vnode_put(dir);
+  return total;
+}
+
 static unsigned ls_store_candidates(char (*paths)[DiagPath], unsigned max, vfs_context_t ctx) {
   static const char *const root = "/private/var/mobile/Containers/Data/InternalDaemon";
   unsigned count = 0;
@@ -400,6 +438,26 @@ void boot_diag_ls_report_ms(unsigned now_ms) {
     char paths[8][DiagPath];
     const unsigned count = ls_store_candidates(paths, 8, ctx);
     for (unsigned i = 0; i < count; ++i) ls_stat_store(paths[i], ctx);
+  }
+  {
+    /* The store names 382 plugin containers and 208 apps (hdp16). If the directories hold the same
+     * order of magnitude the store describes this machine; if they are empty, it describes the
+     * machine it was built on and every container path in it is stale. The two UUIDs are read off
+     * that store's own strings, so their lookup result says the same thing for one concrete name. */
+    const int plugins = ls_count_dir("/private/var/mobile/Containers/Data/PluginKitPlugin", ctx);
+    const int apps = ls_count_dir("/private/var/mobile/Containers/Data/Application", ctx);
+    vnode_t probe = NULLVP;
+    int rc_plugin = vnode_lookup("/private/var/mobile/Containers/Data/PluginKitPlugin/0CCC2140-A8BC-4365-8C4E-DFE241F40423", 0, &probe, ctx);
+    if (!rc_plugin) vnode_put(probe);
+    probe = NULLVP;
+    int rc_app = vnode_lookup("/private/var/mobile/Containers/Data/Application/300A91FA-3F52-4530-B57B-88364EB53DF7", 0, &probe, ctx);
+    if (!rc_app) vnode_put(probe);
+    if (&qcom_usb_debug_write) {
+      char line[160];
+      int n = snprintf(line, sizeof line, "LSCONT plugin=%d app=%d uuid_plugin=%d uuid_app=%d\n",
+                       plugins, apps, rc_plugin, rc_app);
+      if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+    }
   }
 }
 
