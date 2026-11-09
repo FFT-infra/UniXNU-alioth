@@ -302,16 +302,21 @@ bool voteWlanRails() {
  * complex's command register and programmed the outbound window; that is step 17, and it runs only
  * when the command line carries pcie=N. A read of an unbacked BAR address hangs the CPU, which is
  * what in24/in25 did (both boots stopped at "opening the PCIe windows" and the board then needed a
- * power cycle). So the readiness check comes before any window is touched. */
+ * power cycle). So the readiness check comes before any window is touched.
+ *
+ * Step 19 is the one this layer needs, not 17: 17 programs the outbound window the BAR is reached
+ * through, and 19 programs the inbound window that turns the endpoint's MSI write at PCI
+ * 0x60400040 into the doorbell at 0x17a10000. Without 19 the vectors this layer hands out would
+ * never arrive. */
 extern "C" uint32_t alioth_pcie_completed_step(void) __attribute__((weak_import));
-constexpr uint32_t kPcieStepOutboundWindow = 17;
+constexpr uint32_t kPcieStepInboundWindow = 19;
 
 extern "C" int alioth_wifi_board_open(void) {
     if (gOpen) return 0;
-    if (!&alioth_pcie_completed_step || alioth_pcie_completed_step() < kPcieStepOutboundWindow) {
+    if (!&alioth_pcie_completed_step || alioth_pcie_completed_step() < kPcieStepInboundWindow) {
         wifiLog("the PCIe controller is not ready (step %u of %u); add pcie=%u to the command line",
-                &alioth_pcie_completed_step ? alioth_pcie_completed_step() : 0u, kPcieStepOutboundWindow,
-                kPcieStepOutboundWindow);
+                &alioth_pcie_completed_step ? alioth_pcie_completed_step() : 0u, kPcieStepInboundWindow,
+                kPcieStepInboundWindow);
         return -1;
     }
     wifiLog("opening the PCIe windows");
