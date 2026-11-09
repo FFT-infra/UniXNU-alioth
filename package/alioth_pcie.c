@@ -1766,6 +1766,148 @@ step_msi (void)
 	return true;
 }
 
+/* ---- step 19: the inbound window an MSI needs, and the endpoint's own MSI capability ---------- */
+
+/*
+ * An MSI is a posted memory write from the endpoint to an address the host names. The doorbell
+ * page is at system 0x17a10000 (step 18 proved a CPU write there raises SPI 768), so the endpoint
+ * must be told to write a *PCI* address that the root complex translates back to that page. That
+ * translation is an inbound iATU region.
+ *
+ * The outbound layout this file already uses (block "iatu", region n at n * 0x200) was found
+ * empirically; the vendor's PCIE_GET_ATU_*_UNR_REG_OFFSET macros do not describe it (their
+ * 0x300000 base lands on the memory window). What the macros do say is that an inbound region sits
+ * 0x100 above its outbound neighbour in the same 0x200 slot, so this step reads slot 0x100 first
+ * and reports what is there before writing anything. If the survey reads as register file rather
+ * than as an empty hole, the window is programmed in the vendor's order: target first, then type,
+ * then enable, and every write is read back.
+ *
+ * The endpoint half is its MSI capability (capability id 0x05): message address 0x60400040, the
+ * PCI address that translates to the doorbell at 0x17a10040, and message data 768, the SPI this
+ * step's sibling attached. Firmware is what would make the endpoint raise one by itself, so this
+ * step can only prove the configuration reads back; it says so rather than claiming an MSI.
+ */
+#define PCIE_IB_PCI_BASE   0x60400000u
+#define PCIE_IB_PCI_SIZE   0x1000u
+#define PCIE_IB_SYSTEM     0x17a10000u
+
+static uint32_t
+conf_read (uint32_t bus, uint32_t offset)
+{
+	/* The config window step 17 opened: bus 1, function 0, one 4 KB page per access, so the page
+	 * for an offset is selected by writing the CFG0 region again. Offsets stay inside the first
+	 * 4 KB, which is the header and the capability list.
+	 *
+	 * rd()/wr() with line(), not get()/put(): this is the last step of the run, and the first
+	 * access of the last step goes through line_persist() - which waits for the persistent log to
+	 * complete two rounds. msi2 blocked there for the rest of its boot ("the persistent log did not
+	 * complete two rounds within 6 s" right before the first read), with the machine healthy and
+	 * the probe thread stuck. Step 17 reads the same window through the normal path. */
+	/* One aligned 32-bit access, then the byte lane: the window answers a 4-byte load and msi3
+	 * hung on the first unaligned one (conf 0x06 printed its "read" line and never returned while
+	 * the machine stayed healthy). Every earlier conf access in this file was 4-byte aligned,
+	 * which is why the problem only appeared at the capability list. */
+	const uint32_t aligned = offset & ~3u;
+	const uint64_t address = reg (5, aligned);
+	atu_program_unrolled (0, PCIE_ATU_TYPE_CFG0, bus << 24);
+	line ("conf read %#x (aligned %#x) at %#llx", offset, aligned, address);
+	risky ();
+	const uint32_t word = rd (address);
+	const uint32_t value = word >> ((offset & 3u) * 8u);
+	line ("conf[%#x] = %#x (word %#x)", offset, value, word);
+	return value;
+}
+
+static void
+conf_write32 (uint32_t bus, uint32_t offset, uint32_t value)
+{
+	const uint64_t address = reg (5, offset & ~3u);
+	atu_program_unrolled (0, PCIE_ATU_TYPE_CFG0, bus << 24);
+	line ("conf write32 %#x = %#x at %#llx", offset, value, address);
+	risky ();
+	wr (address, value);
+}
+
+static void
+conf_write16 (uint32_t bus, uint32_t offset, uint32_t value)
+{
+	const uint32_t aligned = offset & ~3u;
+	const uint64_t address = reg (5, aligned);
+	atu_program_unrolled (0, PCIE_ATU_TYPE_CFG0, bus << 24);
+	uint32_t word = rd (address);
+	const uint32_t shift = (offset & 3u) * 8u;
+	word = (word & ~(0xffffu << shift)) | ((value & 0xffffu) << shift);
+	line ("conf write16 %#x = %#x (word %#x) at %#llx", offset, value, word, address);
+	risky ();
+	wr (address, word);
+}
+
+static bool
+step_msi_config (void)
+{
+	/* The hypothesis first: an inbound region 0 at iatu + 0x100, read only. */
+	for (uint32_t off = 0x100; off <= 0x118; off += 4) {
+		char nm[24];
+		snprintf (nm, sizeof nm, "iatu+%#x (inbound slot read)", off);
+		get (4, nm, off);
+	}
+	announce ("program the inbound window: PCI 0x60400000..0x60400fff -> system 0x17a10000, the doorbell page");
+	put (4, "ib ctrl2 (disable before programming)", 0x104, 0);
+	put (4, "ib lower base (pci address)", 0x108, PCIE_IB_PCI_BASE);
+	put (4, "ib upper base", 0x10c, 0);
+	put (4, "ib limit (pci)", 0x110, PCIE_IB_PCI_BASE + PCIE_IB_PCI_SIZE - 1);
+	put (4, "ib lower target (system address)", 0x114, PCIE_IB_SYSTEM);
+	put (4, "ib upper target", 0x118, 0);
+	put (4, "ib ctrl1 (type mem)", 0x100, 0);
+	put (4, "ib ctrl2 (enable)", 0x104, 0x80000000u);
+	const uint32_t ctrl2 = get (4, "ib ctrl2 readback", 0x104);
+	const uint32_t target = get (4, "ib lower target readback", 0x114);
+	line ("inbound window %s: ctrl2 %#x target %#x", (ctrl2 & 0x80000000u) && target == PCIE_IB_SYSTEM
+	    ? "reads back enabled" : "DID NOT read back; the layout is not this slot",
+	    ctrl2, target);
+
+	announce ("the endpoint's capability list, then its MSI capability");
+	uint32_t status = conf_read (1, 0x06);
+	uint32_t cap = (conf_read (1, 0x34) & 0xffu);
+	line ("endpoint status %#x (capability list %s), first capability %#x", status,
+	    (status & 0x10u) ? "present" : "absent", cap);
+	uint32_t msi = 0, msix = 0;
+	for (int hops = 0; hops < 16 && cap >= 0x40 && cap < 0x100; hops++) {
+		const uint32_t id = conf_read (1, cap) & 0xffu;
+		const uint32_t next = (conf_read (1, cap) >> 8) & 0xffu;
+		line ("capability at %#x: id %#x next %#x", cap, id, next);
+		if (id == 0x05u && !msi) { msi = cap; }
+		if (id == 0x11u && !msix) { msix = cap; }
+		if (!next || next == cap) { break; }
+		cap = next;
+	}
+	line ("MSI capability at %#x, MSI-X at %#x", msi, msix);
+	if (!msi) {
+		line ("no MSI capability; the doorbell half is as far as this endpoint goes");
+		return true;
+	}
+	const uint32_t control_before = conf_read (1, msi + 2) & 0xffffu;
+	const uint32_t address_before = conf_read (1, msi + 4);
+	const uint32_t data_before = conf_read (1, msi + 0x0c);
+	line ("msi before: control %#x address %#x data %#x", control_before, address_before, data_before);
+	/* msi4 wrote these through the one-byte helper and read back address 0x40, data 0: the
+	 * message address is a 32-bit register, the data and control fields 16-bit ones. */
+	conf_write32 (1, msi + 4, PCIE_IB_PCI_BASE + 0x40u);
+	if (control_before & 0x0080u) {
+		conf_write32 (1, msi + 8, 0);
+	}
+	conf_write16 (1, msi + 0x0c, 768);
+	conf_write16 (1, msi + 2, (control_before & ~0x0070u) | 0x0001u);
+	const uint32_t control_after = conf_read (1, msi + 2) & 0xffffu;
+	line ("msi after: control %#x address %#x data %#x", control_after, conf_read (1, msi + 4),
+	    conf_read (1, msi + 0x0c));
+	line ("address %s, data %s, enable %s", conf_read (1, msi + 4) == PCIE_IB_PCI_BASE + 0x40u
+	    ? "took" : "DID NOT take", conf_read (1, msi + 0x0c) == 768 ? "took" : "DID NOT take",
+	    (control_after & 1u) ? "set" : "NOT set");
+	line ("the endpoint raising a real MSI needs firmware; this step proves the configuration only");
+	return true;
+}
+
 static bool (*const steps[])(void) = {
 	step_look,
 	step_gdsc,
@@ -1785,6 +1927,7 @@ static bool (*const steps[])(void) = {
 	step_dbi,
 	step_config,
 	step_msi,
+	step_msi_config,
 };
 
 void
