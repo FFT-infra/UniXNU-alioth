@@ -185,16 +185,28 @@ bool claimStream() {
     const unsigned count = id0 & 0xff;
     gStreamClaim[0] = id0; gStreamClaim[1] = scr0; gStreamClaim[2] = gfsrBefore;
     if (!count || count > 128) { wifiLog("apps_smmu stream count %u (ID0 %#x)\n", count, id0); return false; }
+    /* A scan that finds nothing has to say why, or the next round cannot tell a full table from a
+     * wrong rule: these four counts are the whole picture in one line. */
+    unsigned smrValidCount = 0, faultCount = 0, translateCount = 0, bypassCount = 0;
+    for (unsigned slot = 0; slot < count; ++slot) {
+        if (gSmmu.r(0x800 + 4 * slot) & kSmrValid) { ++smrValidCount; continue; }
+        switch (gSmmu.r(0xc00 + 4 * slot) & kS2crTypeMask) {
+        case kS2crFault: ++faultCount; break;
+        case 0: ++translateCount; break;
+        default: ++bypassCount; break;
+        }
+    }
     for (unsigned slot = 0; slot < count; ++slot) {
         if (gSmmu.r(0x800 + 4 * slot) & kSmrValid) continue;
         /* Another owner may have written its S2CR before its SMR (the UFS takeover does exactly
-         * that), so an invalid SMR is not on its own proof that the slot is free. A slot that
-         * still names an ENABLED context bank belongs to someone; one whose bank is disabled, or
-         * whose S2CR is FAULT, is free. Context banks start at 0x8000 with a 0x1000 stride and
-         * SCTLR is their word 0 (NativeUfs-alioth/SmmuTakeover.h:252). */
+         * that: S2CR = bank with type TRANSLATE, SMR last), so an invalid SMR is not on its own
+         * proof that the slot is free. Only a FAULT slot is free, which is the shared kit's own
+         * rule (ArmSmmu4KStreams.c:43-44). A context bank's SCTLR cannot stand in for this: the
+         * UFS takeover's bank is a bypass bank with SCTLR 0, so "bank disabled" would call a slot
+         * in use free. This part leaves FAULT words carrying CBNDX 0xff (0x000203ff), which is
+         * still FAULT and still free. */
         const uint32_t s2crNow = gSmmu.r(0xc00 + 4 * slot);
-        const uint32_t typeNow = s2crNow & kS2crTypeMask;
-        if (typeNow == 0 && (gSmmu.r(((8 + (s2crNow & 0xff)) << 12)) & 1u)) continue;
+        if ((s2crNow & kS2crTypeMask) != kS2crFault) continue;
         gSmmu.w(0xc00 + 4 * slot, kS2crBypass | exid);
         __asm__ volatile("dsb sy" ::: "memory");
         const uint32_t s2cr = gSmmu.r(0xc00 + 4 * slot);
@@ -219,7 +231,9 @@ bool claimStream() {
         }
         return ok;
     }
-    wifiLog("no free SMR slot for SID %#x (ID0 %#x, sCR0 %#x)\n", kEndpointSid, id0, scr0);
+    wifiLog("no free SMR slot for SID %#x (ID0 %#x, sCR0 %#x): %u slots, %u SMR valid, "
+            "%u free (FAULT), %u TRANSLATE, %u BYPASS\n", kEndpointSid, id0, scr0, count,
+            smrValidCount, faultCount, translateCount, bypassCount);
     return false;
 }
 
