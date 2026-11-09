@@ -95,13 +95,87 @@ int msiTarget(uint32_t *lo, uint32_t *hi, uint32_t *data) {
  * that needs it fail instead of dereferencing a wrong address. */
 void *mapPhys(uint64_t pa, size_t n) { (void)pa; (void)n; return nullptr; }
 
-/* ---- DMA ----------------------------------------------------------------------------------- */
-/* NOT YET: the endpoint's SMMU context (SID 0x1c01) and the 0xa0000000 window. Until the context
- * is programmed, every DMA request fails with 0, which is what nw_wifi_start must see. */
-void *dmaAlloc(size_t n, uint64_t *bus) { (void)n; if (bus) *bus = 0; return nullptr; }
+/* ---- SMMU: the endpoint's stream ----------------------------------------------------------- */
+/* The first MHI boot uses stream bypass: the SMMUv2 model this board already runs in
+ * src/NativeUfs-alioth/SmmuTakeover.h puts the stream count at GR0 0x20, SMR[n] at 0x800 + 4n,
+ * S2CR[n] at 0xc00 + 4n, with an exact match written as 0x80000000 | sid. The endpoint is SID
+ * 0x1c01 (requester 0x100). A free slot is claimed and given S2CR = 0 (type 0, bypass), after
+ * which the endpoint's DMA is untranslated and the arena below hands out physical addresses.
+ * The UFS takeover picked its own slot before this runs, and the scan only takes a slot whose
+ * SMR is invalid, so the two never collide. The translated 0xa0000000 window with the ArmSmmu4K
+ * kit comes after MHI is proven; the record carries that plan. */
+constexpr uint64_t kSmmuBase = 0x15000000, kSmmuBytes = 0x100000;
+constexpr uint32_t kEndpointSid = 0x1c01;
+Window gSmmu;
+bool gBypass;
+
+bool claimStream() {
+    if (!gSmmu.open(kSmmuBase, kSmmuBytes)) { IOLog("AliothWifi: apps_smmu did not map\n"); return false; }
+    const unsigned count = gSmmu.r(0x20) & 0xff;
+    if (!count || count > 128) { IOLog("AliothWifi: apps_smmu stream count %u\n", count); return false; }
+    for (unsigned slot = 0; slot < count; ++slot) {
+        if (gSmmu.r(0x800 + 4 * slot) & 0x80000000u) continue;
+        gSmmu.w(0x800 + 4 * slot, 0x80000000u | kEndpointSid);
+        gSmmu.w(0xc00 + 4 * slot, 0);          /* S2CR type 0: bypass */
+        __asm__ volatile("dsb sy" ::: "memory");
+        const uint32_t back = gSmmu.r(0x800 + 4 * slot);
+        IOLog("AliothWifi: SID %#x claimed at SMR slot %u (readback %#x), S2CR bypass\n", kEndpointSid, slot, back);
+        return (back & 0x80000000u) && (back & 0xffffu) == kEndpointSid;
+    }
+    IOLog("AliothWifi: no free SMR slot for SID %#x\n", kEndpointSid);
+    return false;
+}
+
+/* ---- DMA: one physically contiguous arena --------------------------------------------------- */
+/* BHI offers the image and the rings as physical addresses under bypass, so the arena must be
+ * physically contiguous; inTaskWithPhysicalMask gives that the same way the GPU driver gets its
+ * firmware pages. Slices are handed out first-fit and never returned to a pool. */
+constexpr size_t kArenaBytes = 32 << 20;
+IOBufferMemoryDescriptor *gArena;
+uint8_t *gArenaVa;
+size_t gArenaUsed;
+
+bool arenaOpen() {
+    if (gArena) return true;
+    gArena = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous,
+                                                              kArenaBytes, 0xfffffffffffff000ULL);
+    if (!gArena) { IOLog("AliothWifi: no contiguous %zu-byte arena\n", kArenaBytes); return false; }
+    if (gArena->prepare() != kIOReturnSuccess) { gArena->release(); gArena = nullptr; return false; }
+    gArenaVa = static_cast<uint8_t *>(gArena->getBytesNoCopy());
+    gArenaUsed = 0;
+    IOLog("AliothWifi: DMA arena %zu bytes at %p\n", kArenaBytes, gArenaVa);
+    return gArenaVa != nullptr;
+}
+
+uint64_t arenaPhys(const void *p) {
+    if (!gArena || !p) return 0;
+    const uint8_t *at = static_cast<const uint8_t *>(p);
+    if (at < gArenaVa || at >= gArenaVa + kArenaBytes) return 0;
+    io_byte_count_t length = 0;
+    const addr64_t pa = gArena->getPhysicalSegment((vm_offset_t)(at - gArenaVa), &length, kIOMemoryMapperNone);
+    return (uint64_t)pa;
+}
+
+void *dmaAlloc(size_t n, uint64_t *bus) {
+    if (!arenaOpen() || !n) return nullptr;
+    const size_t aligned = (n + 63) & ~(size_t)63;
+    if (gArenaUsed + aligned > kArenaBytes) { IOLog("AliothWifi: arena exhausted (%zu + %zu)\n", gArenaUsed, aligned); return nullptr; }
+    void *p = gArenaVa + gArenaUsed;
+    const uint64_t pa = arenaPhys(p);
+    if (!pa) return nullptr;
+    gArenaUsed += aligned;
+    if (bus) *bus = pa;
+    return p;
+}
 void dmaFree(size_t n, void *p, uint64_t bus) { (void)n; (void)p; (void)bus; }
-uint64_t dmaMap(void *p, size_t n, int dir) { (void)p; (void)n; (void)dir; return 0; }
-void dmaSync(uint64_t bus, size_t n, int dir) { (void)bus; (void)n; (void)dir; }
+uint64_t dmaMap(void *p, size_t n, int dir) { (void)n; (void)dir; return arenaPhys(p); }
+/* arm64 declares flush_dcache(vm_offset_t, unsigned, int phys) and no separate invalidate; a
+ * clean-and-invalidate covers both directions for this arena. */
+void dmaSync(uint64_t bus, size_t n, int dir) {
+    (void)dir;
+    if (!bus || !n) return;
+    flush_dcache((vm_offset_t)bus, (unsigned)n, 1);
+}
 
 /* ---- firmware ------------------------------------------------------------------------------ */
 /* The addon writes the QCA6390 hw2.0 set under /private/var/ngpu/firmware/qca6390; each file is
@@ -177,6 +251,9 @@ extern "C" int alioth_wifi_board_open(void) {
         char *block = static_cast<char *>(p) - 16;
         IOFree(block, *reinterpret_cast<size_t *>(block) + 16);
     };
+    if (!claimStream()) return -1;
+    if (!arenaOpen()) return -1;
+    gBypass = true;
     gPlatform.dma_alloc = dmaAlloc;
     gPlatform.dma_free = dmaFree;
     gPlatform.dma_map = dmaMap;
