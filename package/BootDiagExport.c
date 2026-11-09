@@ -689,6 +689,37 @@ static void ls_grep_text(const char *path, const char *needle, const char *tag, 
   vnode_close(vp, FREAD, ctx);
 }
 
+// The GPU trace's problem records (event 65): the GMEM colour-order test (sheng-swaptest=1) reports
+// each of its A/B/C/D regions through this event, and the trace ring is otherwise only readable
+// from the persistent log through a TWRP round. Copying the newest records here puts the lines on
+// the USB console in the same boot. The snapshot returns the newest records that fit, so it is
+// taken twice: once just after the test window and once at the lsfix dump.
+extern uint32_t native_gpu_trace_snapshot(void *out, uint32_t bytes) __attribute__((weak_import));
+struct diag_trace_record {uint64_t sequence, us; uint32_t event, pid; uint64_t value[12];};
+static void gpu_problem_dump(const char *tag) {
+  enum {TraceBytes = 4 * 1024 * 1024};
+  if (!&native_gpu_trace_snapshot || !&qcom_usb_debug_write) return;
+  char *out = IOMallocData(TraceBytes);
+  if (!out) return;
+  const uint32_t got = native_gpu_trace_snapshot(out, TraceBytes);
+  if (got >= 32 + sizeof(struct diag_trace_record)) {
+    const uint32_t count = *(const uint32_t *)(void *)(out + 12);
+    const struct diag_trace_record *rows = (const struct diag_trace_record *)(void *)(out + 32);
+    char line[240];
+    unsigned printed = 0;
+    for (uint32_t i = 0; i < count && printed < 40; ++i) {
+      if (rows[i].event != 65) continue;
+      const char *text = (const char *)&rows[i].value[1];
+      const int n = snprintf(line, sizeof line, "%s %.96s\n", tag, text);
+      if (n > 0) {
+        qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+        ++printed;
+      }
+    }
+  }
+  IOFreeData(out, TraceBytes);
+}
+
 // The UI scale the payload actually shipped: /chosen display-scale is the number of scanout pixels
 // per logical point (LegacyDisplayProbe.cpp), so 3 reads 360x800 points on this panel and 2 reads
 // 540x1200. Printed because a board round with no screenshot otherwise cannot tell the two apart.
@@ -723,7 +754,12 @@ static void ls_view_size(const char *path) {
 }
 
 static uint32_t lsfix_at, lsfix_done, lsfix_first_ms;
+static uint32_t trace_first_done;
 void boot_diag_lsfix_ms(unsigned now_ms) {
+  if (!trace_first_done && now_ms >= 60000) {
+    trace_first_done = 1;
+    gpu_problem_dump("GTPROB1");
+  }
   if (lsfix_done) return;
   ls_bootstrap_gift(now_ms);
   if (!lsfix_at && (!PE_parse_boot_argn("lsfix", &lsfix_at, sizeof lsfix_at) || !lsfix_at)) {lsfix_done = 1; return;}
@@ -756,6 +792,7 @@ void boot_diag_lsfix_ms(unsigned now_ms) {
   ls_view_size("/var/log/com.apple.xpc.launchd/launchd.log");
   ls_grep_text("/var/log/com.apple.xpc.launchd/launchd.log", "adrenoprobed", "LSJOB", 40);
   display_scale_row();
+  gpu_problem_dump("GTPROB2");
 }
 
 static uint32_t ls_late_at, ls_late_done;
