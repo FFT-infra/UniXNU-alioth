@@ -694,7 +694,7 @@ static void ls_grep_text(const char *path, const char *needle, const char *tag, 
 // 540x1200. Printed because a board round with no screenshot otherwise cannot tell the two apart.
 static void display_scale_row(void) {
   DTEntry chosen = NULL;
-  void *value = NULL;
+  const void *value = NULL;
   unsigned int size = 0;
   if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != 0 || chosen == NULL) return;
   if (SecureDTGetProperty(chosen, "display-scale", &value, &size) != 0 || value == NULL || size != 4) return;
