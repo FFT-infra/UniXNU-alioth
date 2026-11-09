@@ -50,6 +50,11 @@ static const char *const diag_roots[] = {
   // app and extension containers are under /private/var/mobile/Containers, capital C, not the
   // lowercase system tree above. The store is the file whose bundle-to-container map pkd needs.
   "/private/var/mobile/Containers/Data/InternalDaemon",
+  // lsfixd plants the rebuild flag in this file and writes no log when it does, so the file itself
+  // is the only evidence that the flag landed. Both homes are named because the tool writes
+  // whichever one it resolved.
+  "/private/var/mobile/Library/Preferences/com.apple.datamigrator.plist",
+  "/private/var/root/Library/Preferences/com.apple.datamigrator.plist",
   "/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/prime.log",
   "/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/prime-bad",
   "/private/var/root/Library/Caches/com.apple.backboardd/m2v/prime.log",
@@ -166,7 +171,9 @@ static int diag_mi_state(const char *path) {
   return !strncmp(path, "/private/var/mobile/Library/MobileInstallation", 46) ||
          !strncmp(path, "/private/var/containers/Data/System", 35) ||
          !strncmp(path, "/private/var/db/datamigrator", 28) ||
-         !strncmp(path, "/private/var/mobile/Containers/Data/InternalDaemon", 51);
+         !strncmp(path, "/private/var/mobile/Containers/Data/InternalDaemon", 51) ||
+         !strncmp(path, "/private/var/mobile/Library/Preferences/com.apple.datamigrator", 60) ||
+         !strncmp(path, "/private/var/root/Library/Preferences/com.apple.datamigrator", 58);
 }
 static int diag_rank(const struct diag_file *f) {
   if (diag_dsc_max && f->size == diag_dsc_max && !strncmp(f->path, "/private/var/db/uuidtext/dsc/", 29)) return 0;
