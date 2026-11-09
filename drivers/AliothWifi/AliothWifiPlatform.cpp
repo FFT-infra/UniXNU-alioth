@@ -376,8 +376,13 @@ extern "C" int alioth_wifi_board_open(void) {
      * reported the rails, the SMMU stream and the arena, and the hang belongs to the endpoint. */
     {
         const uint32_t hwVersion = gBar.r(0x0224);
-        wifiLog("bar0[0x224]=%#x major=%u config_id=%#x class=%#x", hwVersion, (hwVersion >> 8) & 0xf,
-                gConf.r(0x00), gConf.r(0x08));
+        /* MHICFG carries the BHI and BHIe offsets at 0x28 and 0x2c; both are below the window
+         * start, so they are safe to read here. A value at or above 0x80000 is an offset the
+         * window at 0x80000 must be selected for, which is what the recipe's MHI register hook
+         * now does. */
+        wifiLog("bar0[0x224]=%#x major=%u config_id=%#x class=%#x bhi=%#x bhie=%#x window=%#x", hwVersion,
+                (hwVersion >> 8) & 0xf, gConf.r(0x00), gConf.r(0x08), gBar.r(0x028), gBar.r(0x02c),
+                gBar.r(0x310c));
     }
     gPlatform.dma_alloc = dmaAlloc;
     gPlatform.dma_free = dmaFree;

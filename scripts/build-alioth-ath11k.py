@@ -87,6 +87,14 @@ def patch_ath11k(source, gen):
     # rename covers definitions and uses without double-prefixing.
     pc = re.sub(r'\bath11k_pci_exit\b', 'alioth_ath11k_pci_exit', pc)
     pc = re.sub(r'\bath11k_pci_init\b', 'alioth_ath11k_pci_init', pc)
+    # ath11k_pci_select_window writes 0x310c only when the window number changes. It starts at 0,
+    # and the BHI offset on this part also maps to window 0, so the first high access would assume
+    # a window the reset never programmed. A value no window number can equal forces the first
+    # select to write the register, which is the state the first access needs.
+    reset_window = '\tab_pci->register_window = 0;\n'
+    if pc.count(reset_window) != 1:
+        raise SystemExit('ath11k window reset ABI differs')
+    pc = pc.replace(reset_window, '\tab_pci->register_window = 0xffffffffu;\n')
     (gen / 'pci.c').unlink()
     (gen / 'pci.c').write_text(pc)
     wmi = (source / 'wmi.c').read_text()
@@ -109,6 +117,49 @@ def patch_ath11k(source, gen):
         '\tif (cb == MHI_CB_SYS_ERROR || cb == MHI_CB_FATAL_ERROR || cb == MHI_CB_EE_RDDM) {\n'
         '\t\talioth_ath11k_mhi_failed(mhi_cntrl, cb);\n\t\treturn;\n\t}\n\n'
         '\tath11k_dbg(ab, ATH11K_DBG_BOOT, "notify status reason %s\\n",')
+    # MHI must read and write the BAR through its window. This board's QCA6390 exposes 1 MiB of
+    # BAR0; offsets from ATH11K_PCI_WINDOW_START (0x80000) up are one 512 KiB window selected
+    # through 0x310c, not the address the offset names. The BHI block sits at the offset MHICFG
+    # reports (0x28), and readl on a window that was never selected is an access to no register:
+    # in in30 the CPU stopped at MHI's first register operation. ath11k_pcic_read32/write32 pick
+    # the window and are the same pair every other ath11k register access uses.
+    op_read = '''static int ath11k_mhi_op_read_reg(struct mhi_controller *mhi_cntrl,
+				  void __iomem *addr,
+				  u32 *out)
+{
+	*out = readl(addr);
+
+	return 0;
+}
+
+static void ath11k_mhi_op_write_reg(struct mhi_controller *mhi_cntrl,
+				    void __iomem *addr,
+				    u32 val)
+{
+	writel(val, addr);
+}'''
+    op_new = '''static int ath11k_mhi_op_read_reg(struct mhi_controller *mhi_cntrl,
+				  void __iomem *addr,
+				  u32 *out)
+{
+	struct ath11k_base *ab = dev_get_drvdata(mhi_cntrl->cntrl_dev);
+
+	*out = ath11k_pcic_read32(ab, (unsigned long)addr - (unsigned long)ab->mem);
+
+	return 0;
+}
+
+static void ath11k_mhi_op_write_reg(struct mhi_controller *mhi_cntrl,
+				    void __iomem *addr,
+				    u32 val)
+{
+	struct ath11k_base *ab = dev_get_drvdata(mhi_cntrl->cntrl_dev);
+
+	ath11k_pcic_write32(ab, (unsigned long)addr - (unsigned long)ab->mem, val);
+}'''
+    if mhi_driver.count(op_read) != 1:
+        raise SystemExit('ath11k MHI register op ABI differs')
+    mhi_driver = mhi_driver.replace(op_read, op_new)
     (gen / 'mhi.c').unlink()
     (gen / 'mhi.c').write_text(mhi_driver)
     ath_mac = (source / 'mac.c').read_text()
