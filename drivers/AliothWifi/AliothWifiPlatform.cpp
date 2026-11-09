@@ -353,6 +353,9 @@ bool voteWlanRails() {
  * 0x60400040 into the doorbell at 0x17a10000. Without 19 the vectors this layer hands out would
  * never arrive. */
 extern "C" uint32_t alioth_pcie_completed_step(void) __attribute__((weak_import));
+/* The endpoint's DMA path: an inbound iATU region over the arena, identity-translated. */
+extern "C" uint32_t alioth_pcie_dma_window(uint32_t pci_base, uint32_t system_base, uint32_t size)
+    __attribute__((weak_import));
 constexpr uint32_t kPcieStepInboundWindow = 19;
 
 extern "C" int alioth_wifi_board_open(void) {
@@ -394,6 +397,17 @@ extern "C" int alioth_wifi_board_open(void) {
     wifiLog("stream claimed");
     if (!arenaOpen()) return -1;
     wifiLog("arena up");
+    /* The endpoint's first self-started transfer is MHI's SBL load, and it reads this arena. Give
+     * it an inbound window over exactly that range before anything asks it to read: the MSI window
+     * covers one 4 KiB page and nothing else. */
+    if (alioth_pcie_dma_window) {
+        const uint32_t base = (uint32_t)arenaPhys(gArenaVa);
+        const uint32_t window = alioth_pcie_dma_window(base, base, (uint32_t)kArenaBytes);
+        wifiLog("dma inbound window %#x..%#x -> %#x: %s", base, base + (uint32_t)kArenaBytes - 1, base,
+                window ? "enabled and reads back" : "DID NOT read back");
+    } else {
+        wifiLog("no inbound-window hook; the endpoint has no DMA path");
+    }
     /* The three readings that say whether the endpoint is there at all: BAR0's TCSR_SOC_HW_VERSION
      * carries the WCNSS major in GENMASK(11,8) and must read 2 for this ath11k, and the config
      * window must answer the endpoint's own ids. They come last, so a boot that stops here has already

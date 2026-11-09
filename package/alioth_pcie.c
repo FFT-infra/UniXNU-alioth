@@ -1947,6 +1947,42 @@ step_msi_config (void)
 	return true;
 }
 
+/*
+ * The endpoint's own DMA. Every earlier access through this controller went one of two ways: the
+ * host reaching the endpoint through the outbound window, or the endpoint reaching one 4 KiB page
+ * through the MSI inbound window. MHI's SBL load is the first transfer the endpoint starts by
+ * itself, and it reads host memory: the host writes BHI_IMGADDR and rings BHI_IMGTXDB, and the
+ * endpoint reads that address as a PCI memory read.
+ *
+ * Region 0 inbound is the doorbell page, so this uses region 1. The translation is the identity:
+ * the address the endpoint is given is already the system address of the arena. The caller passes
+ * the arena's own range rather than a guessed one, because a region that does not cover the buffer
+ * is exactly the case that must not happen silently.
+ *
+ * Returns the read-back ctrl2 when the region is enabled and its target reads back, 0 otherwise, so
+ * the caller can say whether the endpoint was given a path at all before the doorbell is rung.
+ */
+uint32_t
+alioth_pcie_dma_window (uint32_t pci_base, uint32_t system_base, uint32_t size)
+{
+	const uint32_t r = 0x100 + 0x200;   /* inbound region 1 */
+
+	if (blocks[4].va == 0 || size == 0 || pci_base + size < pci_base || pci_base + size - 1 < pci_base) {
+		return 0;
+	}
+	put (4, "dma ib ctrl2 (disable before programming)", r + 0x04, 0);
+	put (4, "dma ib ctrl1 (type mem)", r, 0);
+	put (4, "dma ib lower base (pci address)", r + 0x08, pci_base);
+	put (4, "dma ib upper base", r + 0x0c, 0);
+	put (4, "dma ib limit (pci address)", r + 0x10, pci_base + size - 1);
+	put (4, "dma ib lower target (system address)", r + 0x14, system_base);
+	put (4, "dma ib upper target", r + 0x18, 0);
+	put (4, "dma ib ctrl2 (enable)", r + 0x04, PCIE_ATU_ENABLE);
+	const uint32_t ctrl2 = get (4, "dma ib ctrl2 readback", r + 0x04);
+	const uint32_t target = get (4, "dma ib target readback", r + 0x14);
+	return (ctrl2 & PCIE_ATU_ENABLE) && target == system_base ? ctrl2 : 0;
+}
+
 static bool (*const steps[])(void) = {
 	step_look,
 	step_gdsc,
