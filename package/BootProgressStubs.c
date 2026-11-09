@@ -220,6 +220,7 @@ __attribute__((weak)) uint64_t native_adreno_view_diag[6];
 __attribute__((weak)) uint64_t native_adreno_vm_phase_us[2][8];
 __attribute__((weak)) uint64_t native_adreno_vm_kind_us[5][3];
 __attribute__((weak)) uint64_t native_adreno_wait_outer[4];
+__attribute__((weak)) uint64_t native_adreno_handoff_fail[6];
 __attribute__((weak)) uint64_t native_adreno_wc_audit[6];
 __attribute__((weak)) uint64_t native_adreno_window_overflow[4][3];
 __attribute__((weak)) uint64_t native_adsp_stats[16];
