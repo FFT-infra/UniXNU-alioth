@@ -251,6 +251,70 @@ void ieee80211_queue_work(struct ieee80211_hw *hw, struct work_struct *work) { i
         dest.symlink_to(src)
 
 
+def patch_mhi_boot(source):
+    """Put one log line before each step of the SBL load.
+
+    The console stops after the AMSS file is read and before READY, and a wedged MMIO access is
+    indistinguishable from a wedged DMA without knowing which step ran last. Every line names the
+    step, so the last line of the round is the answer.
+    """
+    def once(old, new):
+        nonlocal source
+        if source.count(old) != 1:
+            raise SystemExit('MHI boot.c ABI differs: ' + old[:60].replace('\n', '\\n'))
+        source = source.replace(old, new)
+
+    once('\tint ret;\n\n\tif (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state)) {\n',
+         '\tint ret;\n\n'
+         '\tlx_log(6, "mhi fw: ee=%u pm=%u sbl=%zu seg=%zu fw_sz=%zu fw_data=%d",\n'
+         '\t       (unsigned)mhi_cntrl->ee, (unsigned)mhi_cntrl->pm_state,\n'
+         '\t       mhi_cntrl->sbl_size, mhi_cntrl->seg_len, mhi_cntrl->fw_sz,\n'
+         '\t       mhi_cntrl->fw_data != NULL);\n\n'
+         '\tif (MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state)) {\n')
+    once('\t/* save hardware info from BHI */\n'
+         '\tret = mhi_read_reg(mhi_cntrl, mhi_cntrl->bhi, BHI_SERIALNU,\n'
+         '\t\t\t   &mhi_cntrl->serial_number);\n'
+         '\tif (ret)\n'
+         '\t\tdev_err(dev, "Could not capture serial number via BHI\\n");\n',
+         '\t/* save hardware info from BHI */\n'
+         '\tret = mhi_read_reg(mhi_cntrl, mhi_cntrl->bhi, BHI_SERIALNU,\n'
+         '\t\t\t   &mhi_cntrl->serial_number);\n'
+         '\tif (ret)\n'
+         '\t\tdev_err(dev, "Could not capture serial number via BHI\\n");\n'
+         '\tlx_log(6, "mhi fw: serial %#x bhi off %#lx bhie off %#lx",\n'
+         '\t       mhi_cntrl->serial_number,\n'
+         '\t       (unsigned long)mhi_cntrl->bhi - (unsigned long)mhi_cntrl->regs,\n'
+         '\t       (unsigned long)mhi_cntrl->bhie - (unsigned long)mhi_cntrl->regs);\n')
+    once('\tret = mhi_alloc_bhi_buffer(mhi_cntrl, &image, size);\n\tif (ret)\n\t\treturn ret;\n',
+         '\tret = mhi_alloc_bhi_buffer(mhi_cntrl, &image, size);\n\tif (ret)\n\t\treturn ret;\n'
+         '\tlx_log(6, "mhi bhi: buffer %#llx len %zu",\n'
+         '\t       (unsigned long long)image->mhi_buf[0].dma_addr, image->mhi_buf[0].len);\n')
+    once('\tmhi_write_reg(mhi_cntrl, base, BHI_STATUS, 0);\n',
+         '\tlx_log(6, "mhi bhi: load addr %#llx size %zu session %u",\n'
+         '\t       (unsigned long long)mhi_buf->dma_addr, mhi_buf->len, session_id);\n'
+         '\tmhi_write_reg(mhi_cntrl, base, BHI_STATUS, 0);\n')
+    once('\tmhi_write_reg(mhi_cntrl, base, BHI_IMGTXDB, session_id);\n\tread_unlock_bh(pm_lock);\n',
+         '\tmhi_write_reg(mhi_cntrl, base, BHI_IMGTXDB, session_id);\n\tread_unlock_bh(pm_lock);\n'
+         '\tlx_log(6, "mhi bhi: doorbell rung, waiting for BHI_STATUS");\n')
+    once('\tmhi_write_reg(mhi_cntrl, base, BHIE_TXVECADDR_HIGH_OFFS,\n',
+         '\tlx_log(6, "mhi bhie: load addr %#llx size %zu session %u",\n'
+         '\t       (unsigned long long)mhi_buf->dma_addr, mhi_buf->len, sequence_id);\n'
+         '\tmhi_write_reg(mhi_cntrl, base, BHIE_TXVECADDR_HIGH_OFFS,\n')
+    once('\t\t\t\t  BHIE_TXVECDB_SEQNUM_BMSK, sequence_id);\n\tread_unlock_bh(pm_lock);\n',
+         '\t\t\t\t  BHIE_TXVECDB_SEQNUM_BMSK, sequence_id);\n\tread_unlock_bh(pm_lock);\n'
+         '\tlx_log(6, "mhi bhie: doorbell rung, waiting for TXVECSTATUS");\n')
+    once('\tif (fw_load_type == MHI_FW_LOAD_BHIE)\n'
+         '\t\tret = mhi_load_image_bhie(mhi_cntrl, fw_data, size);\n'
+         '\telse\n'
+         '\t\tret = mhi_load_image_bhi(mhi_cntrl, fw_data, size);\n',
+         '\tif (fw_load_type == MHI_FW_LOAD_BHIE)\n'
+         '\t\tret = mhi_load_image_bhie(mhi_cntrl, fw_data, size);\n'
+         '\telse\n'
+         '\t\tret = mhi_load_image_bhi(mhi_cntrl, fw_data, size);\n'
+         '\tlx_log(6, "mhi fw: image load ret %d type %d", ret, (int)fw_load_type);\n')
+    return source
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--linux', type=Path, default=Path(os.environ.get('ALIOTH_LINUX', '')))
@@ -291,6 +355,12 @@ def main():
         dest = mhi / link
         dest.unlink(missing_ok=True)
         dest.symlink_to(linux / 'drivers/bus/mhi/host' / target)
+    # in30 and in31 both stopped the CPU after the AMSS file was read and before
+    # "Wait for device to enter SBL or Mission mode": that is inside the SBL load, and the console
+    # cannot say which register or DMA operation wedged. One line before each step turns the last
+    # line of the next round into the answer.
+    (mhi / 'boot.c').unlink(missing_ok=True)
+    (mhi / 'boot.c').write_text(patch_mhi_boot((linux / 'drivers/bus/mhi/host/boot.c').read_text()))
     (mhi / 'trace.h').write_text((shared / 'shim/mhi/trace.h').read_text())
     (out / 'common.h').unlink(missing_ok=True)
     (out / 'common.h').symlink_to(linux / 'drivers/bus/mhi/common.h')

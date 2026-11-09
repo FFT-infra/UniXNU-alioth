@@ -186,6 +186,8 @@ IOBufferMemoryDescriptor *gArena;
 uint8_t *gArenaVa;
 size_t gArenaUsed;
 
+uint64_t arenaPhys(const void *p);
+
 bool arenaOpen() {
     if (gArena) return true;
     gArena = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task, kIODirectionInOut | kIOMemoryPhysicallyContiguous,
@@ -194,7 +196,7 @@ bool arenaOpen() {
     if (gArena->prepare() != kIOReturnSuccess) { gArena->release(); gArena = nullptr; return false; }
     gArenaVa = static_cast<uint8_t *>(gArena->getBytesNoCopy());
     gArenaUsed = 0;
-    wifiLog("DMA arena %zu bytes at %p\n", kArenaBytes, gArenaVa);
+    wifiLog("DMA arena %zu bytes at %p phys %#llx\n", kArenaBytes, gArenaVa, (unsigned long long)arenaPhys(gArenaVa));
     return gArenaVa != nullptr;
 }
 
@@ -216,6 +218,11 @@ void *dmaAlloc(size_t n, uint64_t *bus) {
     if (!pa) return nullptr;
     gArenaUsed += aligned;
     if (bus) *bus = pa;
+    /* MHI hands the endpoint these addresses. The SBL load is the first transfer the endpoint
+     * makes for itself, so the address and size it is given are part of that reading; the count
+     * stays bounded because a quiet boot makes a few dozen of these. */
+    static unsigned shown;
+    if (shown < 24) wifiLog("dma[%u] %zu bytes phys %#llx", shown++, aligned, (unsigned long long)pa);
     return p;
 }
 void dmaFree(size_t n, void *p, uint64_t bus) { (void)n; (void)p; (void)bus; }
