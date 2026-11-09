@@ -151,29 +151,75 @@ void *mapPhys(uint64_t pa, size_t n) {
 /* The first MHI boot uses stream bypass: the SMMUv2 model this board already runs in
  * src/NativeUfs-alioth/SmmuTakeover.h puts the stream count at GR0 0x20, SMR[n] at 0x800 + 4n,
  * S2CR[n] at 0xc00 + 4n, with an exact match written as 0x80000000 | sid. The endpoint is SID
- * 0x1c01 (requester 0x100). A free slot is claimed and given S2CR = 0 (type 0, bypass), after
- * which the endpoint's DMA is untranslated and the arena below hands out physical addresses.
- * The UFS takeover picked its own slot before this runs, and the scan only takes a slot whose
- * SMR is invalid, so the two never collide. The translated 0xa0000000 window with the ArmSmmu4K
- * kit comes after MHI is proven; the record carries that plan. */
+ * 0x1c01 (requester 0x100).
+ *
+ * 2026-11-09: this wrote S2CR = 0 and called it bypass. It is not. The vendor kernel's own
+ * register header (reference/k40-kernel/drivers/iommu/arm-smmu-regs.h:119-128) gives type in
+ * bits [17:16] as TRANS = 0, BYPASS = 1, FAULT = 2, and the shared kit agrees
+ * (ArmSmmu4KStreams.c:3, FAULT = 2 << 16). Zero is TRANSLATE through the context bank in bits
+ * [7:0], so every transaction from this stream was sent to CB 0, which nothing here configured,
+ * and faulted. in32 rang MHI's BHI doorbell and then stopped on the next register read: a
+ * non-posted read from the endpoint that never completes blocks the reads behind it.
+ *
+ * Two more rules come from the same kit and are applied here. A matched stream needs
+ * EXIDVALID (bit 10) when ID0 reports EXIDS, and S2CR is written before the SMR publishes the
+ * match, so no window exists where the SMR matches and the S2CR is still the old one. A slot
+ * whose SMR is invalid but whose S2CR still names a context bank is in use by something else and
+ * is skipped (ArmSmmu4KStreams.c:47). */
 constexpr uint64_t kSmmuBase = 0x15000000, kSmmuBytes = 0x100000;
 constexpr uint32_t kEndpointSid = 0x1c01;
+constexpr uint32_t kS2crTypeMask = 3u << 16, kS2crBypass = 1u << 16, kS2crFault = 2u << 16,
+                   kS2crExidValid = 1u << 10;
+constexpr uint32_t kSmrValid = 1u << 31;
 Window gSmmu;
+/* What the stream claim found, for the console: [0] ID0, [1] sCR0, [2] GFSR before, [3] the
+ * slot, [4] the S2CR readback, [5] the SMR readback, [6] GFSR after. */
+volatile uint32_t gStreamClaim[7];
 
 bool claimStream() {
     if (!gSmmu.open(kSmmuBase, kSmmuBytes)) { wifiLog("apps_smmu did not map\n"); return false; }
-    const unsigned count = gSmmu.r(0x20) & 0xff;
-    if (!count || count > 128) { wifiLog("apps_smmu stream count %u\n", count); return false; }
+    const uint32_t id0 = gSmmu.r(0x20), scr0 = gSmmu.r(0x0), gfsrBefore = gSmmu.r(0x48);
+    const bool exids = (id0 & (1u << 8)) != 0;
+    const uint32_t exid = exids ? kS2crExidValid : 0;
+    const uint32_t smrValue = exids ? kEndpointSid : (kSmrValid | kEndpointSid);
+    const unsigned count = id0 & 0xff;
+    gStreamClaim[0] = id0; gStreamClaim[1] = scr0; gStreamClaim[2] = gfsrBefore;
+    if (!count || count > 128) { wifiLog("apps_smmu stream count %u (ID0 %#x)\n", count, id0); return false; }
     for (unsigned slot = 0; slot < count; ++slot) {
-        if (gSmmu.r(0x800 + 4 * slot) & 0x80000000u) continue;
-        gSmmu.w(0x800 + 4 * slot, 0x80000000u | kEndpointSid);
-        gSmmu.w(0xc00 + 4 * slot, 0);          /* S2CR type 0: bypass */
+        if (gSmmu.r(0x800 + 4 * slot) & kSmrValid) continue;
+        /* Another owner may have written its S2CR before its SMR (the UFS takeover does exactly
+         * that), so an invalid SMR is not on its own proof that the slot is free. A slot that
+         * still names an ENABLED context bank belongs to someone; one whose bank is disabled, or
+         * whose S2CR is FAULT, is free. Context banks start at 0x8000 with a 0x1000 stride and
+         * SCTLR is their word 0 (NativeUfs-alioth/SmmuTakeover.h:252). */
+        const uint32_t s2crNow = gSmmu.r(0xc00 + 4 * slot);
+        const uint32_t typeNow = s2crNow & kS2crTypeMask;
+        if (typeNow == 0 && (gSmmu.r(((8 + (s2crNow & 0xff)) << 12)) & 1u)) continue;
+        gSmmu.w(0xc00 + 4 * slot, kS2crBypass | exid);
+        __asm__ volatile("dsb sy" ::: "memory");
+        const uint32_t s2cr = gSmmu.r(0xc00 + 4 * slot);
+        if (s2cr != (kS2crBypass | exid)) {
+            wifiLog("S2CR at slot %u did not take bypass: wrote %#x read %#x\n", slot, kS2crBypass | exid, s2cr);
+            continue;
+        }
+        gSmmu.w(0x800 + 4 * slot, smrValue);
         __asm__ volatile("dsb sy" ::: "memory");
         const uint32_t back = gSmmu.r(0x800 + 4 * slot);
-        wifiLog("SID %#x claimed at SMR slot %u (readback %#x), S2CR bypass\n", kEndpointSid, slot, back);
-        return (back & 0x80000000u) && (back & 0xffffu) == kEndpointSid;
+        gStreamClaim[3] = slot; gStreamClaim[4] = s2cr; gStreamClaim[5] = back;
+        const bool ok = back == smrValue;
+        if (ok) {
+            const uint32_t gfsrAfter = gSmmu.r(0x48);
+            gStreamClaim[6] = gfsrAfter;
+            wifiLog("SID %#x claimed at SMR slot %u: SMR %#x, S2CR %#x (BYPASS%s), GFSR %#x -> %#x\n",
+                    kEndpointSid, slot, back, s2cr, exids ? "|EXID" : "", gfsrBefore, gfsrAfter);
+        } else {
+            wifiLog("SMR at slot %u did not take %#x: read %#x\n", slot, smrValue, back);
+            gSmmu.w(0xc00 + 4 * slot, kS2crFault);   /* put the slot back to FAULT */
+            __asm__ volatile("dsb sy" ::: "memory");
+        }
+        return ok;
     }
-    wifiLog("no free SMR slot for SID %#x\n", kEndpointSid);
+    wifiLog("no free SMR slot for SID %#x (ID0 %#x, sCR0 %#x)\n", kEndpointSid, id0, scr0);
     return false;
 }
 
@@ -394,7 +440,9 @@ extern "C" int alioth_wifi_board_open(void) {
     if (!voteWlanRails()) return -1;
     wifiLog("rails voted");
     if (!claimStream()) return -1;
-    wifiLog("stream claimed");
+    wifiLog("stream claimed: ID0 %#x sCR0 %#x slot %u S2CR %#x SMR %#x GFSR %#x->%#x",
+            gStreamClaim[0], gStreamClaim[1], gStreamClaim[3], gStreamClaim[4], gStreamClaim[5],
+            gStreamClaim[2], gStreamClaim[6]);
     if (!arenaOpen()) return -1;
     wifiLog("arena up");
     /* The endpoint's first self-started transfer is MHI's SBL load, and it reads this arena. Give
