@@ -615,6 +615,25 @@ void boot_diag_lsfix_ms(unsigned now_ms) {
   if ((now_ms - lsfix_first_ms) / 1000u < lsfix_at) return;
   lsfix_done = 1;
   ls_bootstraps();
+  /* The trampoline's own log (it writes /dev/console, which does not reach the USB capture) and the
+   * cache file's size: 887525 means our merged cache is mounted over /System/Library/xpc, 1640626 the
+   * sealed one. */
+  {
+    const char *paths[2] = {"/private/var/ngpu/lsinit.log", "/System/Library/xpc/launchd.plist"};
+    for (int index = 0; index < 2; ++index) {
+      vnode_t vp = NULLVP;
+      if (vnode_lookup(paths[index], 0, &vp, vfs_context_kernel()) != 0) continue;
+      struct vnode_attr va;
+      VATTR_INIT(&va);
+      VATTR_WANTED(&va, va_data_size);
+      if (vnode_getattr(vp, &va, vfs_context_kernel()) == 0 && &qcom_usb_debug_write) {
+        char line[192];
+        const int n = snprintf(line, sizeof line, "LSVIEW %s size=%lld\n", paths[index], (long long)va.va_data_size);
+        if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
+      }
+      vnode_put(vp);
+    }
+  }
   /* The store's size and modify time say whether anything rewrote it this boot (the seed carries
    * mtime 64); the DataClassMigrator route is judged by this row alone until the widgets show. */
   {

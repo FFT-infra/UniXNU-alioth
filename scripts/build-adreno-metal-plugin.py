@@ -24,6 +24,7 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -172,7 +173,9 @@ entitlements.write_bytes(plistlib.dumps({'com.apple.private.security.no-containe
                                          # The init trampoline's worker is forked before launchd runs and has no
                                          # bootstrap port; it copies launchd's (NativeInstallFix.cpp).
                                          'task_for_pid-allow': True,
-                                         'com.apple.system-task-ports': True}))
+                                         'com.apple.system-task-ports': True,
+                                         # The init trampoline mounts the pkd view over /usr/libexec itself.
+                                         'com.apple.private.bindfs-allow': True}))
 daemon = OUT / 'adrenoprobed'
 subprocess.run(['xcrun', 'clang++', *base[2:], '-std=c++17', '-I', ROOT / 'drivers/Adreno740', '-I', ROOT / 'kits/AdrenoPM4', '-I', VULKAN_INCLUDE,
                 '-I', ROOT / 'build/turnip-smoke',
@@ -216,9 +219,35 @@ subprocess.run(['codesign', '--verify', '--strict', trampoline], check=True)
 detail = subprocess.run(['codesign', '--display', '--verbose=4', trampoline], capture_output=True, text=True, check=True).stderr
 trampoline_cdhash = re.search(r'^CDHash=([a-f0-9]{40})$', detail, re.M)[1]
 assert re.search(r'^Page size=4096$', detail, re.M)
+# The signed launchd cache with the owner job merged in: launchd reads its system jobs from this
+# file (docs/zh/drivers/ath12k-wifi.md), so this is the documented way to add a daemon. OS_MOUNT
+# names the mounted OS volume; without it the tree packs no cache and the trampoline skips the view.
+cache_cdhash = ''
+try:
+    out = subprocess.run([sys.executable, str(DEVICE / 'scripts/make-launchd-cache.py'), str(OUT / 'xpc')],
+                         capture_output=True, text=True, check=True).stdout
+    cache_cdhash = re.search(r'cdhash ([a-f0-9]{64})', out)[1]
+except (subprocess.CalledProcessError, AttributeError, FileNotFoundError) as error:
+    print('NOTE: no launchd cache built (%s)' % getattr(error, 'stderr', error))
+
+# The pkd shim: launchd's own child runs it (the trampoline mounts a view over /usr/libexec), which is
+# the only way to get the XPC bootstrap the LaunchServices rebuild needs.
+shim = OUT / 'pkd'
+subprocess.run(['xcrun', 'clang++', *base[2:], '-std=c++17', '-I', ROOT / 'drivers/Adreno740', '-I', ROOT / 'kits/AdrenoPM4',
+                '-I', VULKAN_INCLUDE, '-I', ROOT / 'build/turnip-smoke',
+                METAL / 'NativePkdShim.cpp', '-x', 'objective-c++', '-fobjc-arc',
+                METAL / 'NativeInstallFix.cpp',
+                '-framework', 'Foundation', '-framework', 'CoreFoundation', '-o', shim], check=True)
+subprocess.run(['codesign', '--force', '--sign', '-', '--pagesize', '4096', '--identifier', 'org.blu-sharky.pkdshim',
+                '--entitlements', entitlements, shim], check=True)
+subprocess.run(['codesign', '--verify', '--strict', shim], check=True)
+detail = subprocess.run(['codesign', '--display', '--verbose=4', shim], capture_output=True, text=True, check=True).stderr
+shim_cdhash = re.search(r'^CDHash=([a-f0-9]{40})$', detail, re.M)[1]
+assert re.search(r'^Page size=4096$', detail, re.M)
 (OUT / 'trust.json').write_text(json.dumps(dict(cdhash=cdhash, daemon_cdhash=daemon_cdhash, turnip_cdhash=turnip_cdhash,
-    trampoline_cdhash=trampoline_cdhash, bundle='NativeAdrenoMetal.bundle',
+    trampoline_cdhash=trampoline_cdhash, shim_cdhash=shim_cdhash, cache_cdhash=cache_cdhash,
+    bundle='NativeAdrenoMetal.bundle',
     executable_bytes=exe.stat().st_size, purpose='owner-built plugin, probe daemon and init trampoline; trusted only through an extra owner trust module'),
     indent=2) + '\n')
-print('PASS: Adreno plugin bundle, probe daemon and init trampoline built and 4K-signed, CDHashes', cdhash, daemon_cdhash, turnip_cdhash,
-      trampoline_cdhash)
+print('PASS: Adreno plugin bundle, probe daemon, init trampoline and pkd shim built and 4K-signed, CDHashes', cdhash, daemon_cdhash,
+      turnip_cdhash, trampoline_cdhash, shim_cdhash)
