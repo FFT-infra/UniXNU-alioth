@@ -193,16 +193,16 @@ daemon_cdhash = re.search(r'^CDHash=([a-f0-9]{40})$', detail, re.M)[1]
 assert re.search(r'^Page size=4096$', detail, re.M)
 (OUT / 'org.blu-sharky.adrenoprobed.plist').write_bytes(plistlib.dumps(dict(
     Label='org.blu-sharky.adrenoprobed', ProgramArguments=['/private/var/ngpu/bin/adrenoprobed'], RunAtLoad=True,
-    KeepAlive=False, ThrottleInterval=30, UserName='root', StandardErrorPath='/dev/null'), fmt=plistlib.FMT_XML))
+    KeepAlive=False, ThrottleInterval=30, UserName='root'), fmt=plistlib.FMT_XML))
 # launchd may enumerate the directory without our overlay's new names, so the same job is also offered under the name of an existing,
 # non-essential RunAtLoad job (the display FDR loader: root, no MachServices): the overlay answers a lookup of that name first.
 (OUT / 'com.apple.iomfb_fdr_loader.plist').write_bytes(plistlib.dumps(dict(
     Label='com.apple.iomfb_fdr_loader', ProgramArguments=['/private/var/ngpu/bin/adrenoprobed'], RunAtLoad=True,
-    KeepAlive=False, LimitLoadToSessionType='System', ProcessType='Interactive', StandardErrorPath='/dev/null'), fmt=plistlib.FMT_XML))
+    KeepAlive=False, LimitLoadToSessionType='System', ProcessType='Interactive'), fmt=plistlib.FMT_XML))
 # Bluetooth is unused on this board; its job is RunAtLoad and was seen to be exec'd on every boot (the exec observer lists bluetoothd).
 (OUT / 'com.apple.bluetoothd.plist').write_bytes(plistlib.dumps(dict(
     Label='com.apple.bluetoothd', ProgramArguments=['/private/var/ngpu/bin/adrenoprobed'], RunAtLoad=True, KeepAlive=False,
-    ProcessType='Interactive', StandardErrorPath='/dev/null'), fmt=plistlib.FMT_XML))
+    ProcessType='Interactive'), fmt=plistlib.FMT_XML))
 # The init trampoline the kernel runs as process 1 (patches/xnu/native-init-trampoline.patch): the
 # LaunchServices repair, then exec /sbin/launchd. It exists because launchd's system jobs come from the
 # signed cache in /System/Library/xpc/launchd.plist, so the owner job mounted over
