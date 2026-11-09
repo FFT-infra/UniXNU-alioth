@@ -14,9 +14,10 @@ next steps, and nothing in this directory is built into the image yet.
 | --- | --- |
 | `ath11k/AliothAth11k.c` | The ath11k ↔ `nw_wifi` glue, adapted to QCA6390 (device id 0x1101). Refers to `alioth_ath11k_pci_init/_exit`, which the platform file will provide. |
 | `ath11k/compat/` | The shim headers the Linux sources build under (`PongCompat.h`, `PongWait.h`, `linux/*`). Names kept as imported; they are found by include path, not by name. |
-| *(next)* platform | Cold start for this board: reuse `package/alioth_pcie.c`'s trained link, BAR and MSI; own the endpoint's SMMU context, the DMA window and the WLAN rails. Pong's PMIC/RSC/PHY constants do not transfer. |
+| `AliothWifiPlatform.cpp` | First increment: BAR0 (0x60300000+1 MiB), the config window and its capability offsets, the MSI target (0x60400040/data 768), an allocating `lx_platform` and a firmware reader (`/private/var/ngpu/firmware/qca6390`). The endpoint's SMMU context (SID 0x1c01), the 0xa0000000 DMA window and the WLAN rail votes are marked NOT YET and fail honestly; nothing calls the layer yet. |
+| *(next)* kernel recipe | Compile the platform with the kernel's own flags and call it after `alioth_pcie_init()` under a boot argument, then program the SMMU context and vote the rails. |
 | *(next)* net | `PongWifiNet.cpp` adapted from Darwin 24 to this image's Darwin 23 Apple80211 ABI. |
-| *(next)* build | `scripts/build-alioth-ath11k.py`, from `build-pong-ath11k.py`: compile Linux ath11k from the pinned `v7.0.14` tree against the `Ath12kWifi` shim. |
+| `scripts/build-alioth-ath11k.py` | Compiles Linux v7.0.14 ath11k, the MHI host, QRTR, the QMI library and the shared runtime with the kernel's clang-24: 37 objects, no failures (2026-11-09). |
 
 ## Firmware
 
