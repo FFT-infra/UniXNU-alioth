@@ -198,15 +198,18 @@ bool claimStream() {
     }
     for (unsigned slot = 0; slot < count; ++slot) {
         if (gSmmu.r(0x800 + 4 * slot) & kSmrValid) continue;
-        /* Another owner may have written its S2CR before its SMR (the UFS takeover does exactly
-         * that: S2CR = bank with type TRANSLATE, SMR last), so an invalid SMR is not on its own
-         * proof that the slot is free. Only a FAULT slot is free, which is the shared kit's own
-         * rule (ArmSmmu4KStreams.c:43-44). A context bank's SCTLR cannot stand in for this: the
-         * UFS takeover's bank is a bypass bank with SCTLR 0, so "bank disabled" would call a slot
-         * in use free. This part leaves FAULT words carrying CBNDX 0xff (0x000203ff), which is
-         * still FAULT and still free. */
+        /* An invalid SMR is not on its own proof that the slot is free, but requiring FAULT is
+         * wrong here and would take no slot at all. This board's apps_smmu carries
+         * qcom,skip-init (msm-arm-smmu-kona.dtsi:76), so the driver never writes the reset table
+         * and whatever the bootloader left stands. The driver's own default for an idle slot is
+         * BYPASS, not FAULT (arm-smmu.c:137 disable_bypass = true is a module parameter, and
+         * arm-smmu.c:179 makes the initial type follow it), so a BYPASS slot with no valid SMR is
+         * the normal idle shape. FAULT and BYPASS both pass this stream through untranslated,
+         * which is exactly what the endpoint needs, so either is taken. TRANSLATE is the only
+         * type that would send the endpoint into a context bank, and it is skipped. */
         const uint32_t s2crNow = gSmmu.r(0xc00 + 4 * slot);
-        if ((s2crNow & kS2crTypeMask) != kS2crFault) continue;
+        const uint32_t typeNow = s2crNow & kS2crTypeMask;
+        if (typeNow == 0) continue;
         gSmmu.w(0xc00 + 4 * slot, kS2crBypass | exid);
         __asm__ volatile("dsb sy" ::: "memory");
         const uint32_t s2cr = gSmmu.r(0xc00 + 4 * slot);
