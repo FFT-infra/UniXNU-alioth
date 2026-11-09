@@ -94,7 +94,7 @@ def main():
     # The init trampoline mounts /private/var/ngpu/usrlibexec over /usr/libexec.
     jobs[KEY] = {
         'Label': LABEL,
-        'ProgramArguments': ['/usr/libexec/adrenoprobed'],
+        'ProgramArguments': ['/private/var/ngpu/bin/adrenoprobed'],
         'RunAtLoad': True,
         'KeepAlive': False,
         'POSIXSpawnType': 'Adaptive',

@@ -324,7 +324,7 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # plus the same two original modules byte for byte, which the script verifies against
 # build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "7981c1e81aa96f0b04cbd5f50a6a1291c21036ab332142809e1301dae2fde4cc",
+  "3cea8e896bd4049f45b6e0aadb29f92054771893dd5963dbda09a6c7117785e7",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -461,7 +461,6 @@ kernel_args = [
   # panel row 39 (native_cpufreq_row); mode 3 votes every domain that reads enabled.
   "sheng-cpufreq=3",
   "sheng-pmgr=2",
-  "alioth-bt=1",
   "-no_slto_panic",
   # ml-timeout-lock-panic-scale=40 is dropped for now: it only scales how long a lock
   # timeout waits before panicking, nothing in this tree reads it, and the command line
@@ -955,7 +954,6 @@ kernel_args = [
   # deadline: "no reset at 150 s" was the writer never having started, not the reset path
   # failing. The official unattended example passes both arguments together.
   "sheng-log=1",
-  "boot-ui-trace=1",
   # The official frame diagnostics documented in zh/porting/gpu-diagnostics.md. They are
   # defaults again now that the one-off wallpaper and synthetic-touch arguments are gone.
   "sheng-diag-export=240",
@@ -1006,6 +1004,8 @@ kernel_args = [
   # the official GPU §3/§4/§5 evidence is complete. The lower frame count is a measurement
   # target, not a reason to fall back to the CPU copy.
   "sheng-fb-gpu=1",
+  "sheng-swaptest=1",
+  "sheng-gpu-trace=1",
   # boot-usb99 was the first image that passed this pair, and it faulted in the writer's
   # read-back of the previous run: the header struct was handed straight to a block-addressed
   # read, which copied 4096 bytes into a 152-byte stack object and ran into the guard page
