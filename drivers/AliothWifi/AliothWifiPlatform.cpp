@@ -430,26 +430,68 @@ static void wifiWorker(void *, wait_result_t) {
         }
         IOSleep(busy ? 1 : 5);
     }
-    thread_terminate(current_thread());
-    thread_block(THREAD_CONTINUE_NULL);
+}
+
+/* The firmware arrives late.  The GPU addon carries it, and the kernel installs the addon from
+ * native_owner_data_prepare, which runs on the first exec -- after this call site, which sits in
+ * the late display probe.  in29 asked for amss.bin at that point and read ENOENT while the addon
+ * was still 60 lines of console away from being written.  So the start waits for the file, on this
+ * thread, with a bounded deadline: the PCIe steps and the windows are already up and nothing else
+ * needs them. */
+static bool firmwareArrived(uint32_t *waitedMs) {
+    constexpr uint32_t kDeadlineMs = 60000, kStepMs = 250;
+    const char *const files[] = {"/private/var/ngpu/firmware/qca6390/amss.bin",
+                                 "/private/var/ngpu/firmware/qca6390/m3.bin",
+                                 "/private/var/ngpu/firmware/qca6390/board-2.bin"};
+    for (uint32_t waited = 0;; waited += kStepMs) {
+        bool all = true;
+        for (const char *path : files) {
+            vnode_t vp = NULLVP;
+            if (vnode_lookup(path, 0, &vp, vfs_context_kernel())) { all = false; break; }
+            vnode_put(vp);
+        }
+        if (all) { *waitedMs = waited; return true; }
+        if (waited >= kDeadlineMs) { *waitedMs = waited; return false; }
+        IOSleep(kStepMs);
+    }
 }
 
 extern "C" int alioth_wifi_board_start(void) {
     if (!gOpen && alioth_wifi_board_open() != 0) return -1;
-    extern int nw_wifi_start(const struct lx_platform *, const struct nw_board *);
-    const int r = nw_wifi_start(&gPlatform, &gBoard);
-    wifiLog("nw_wifi_start returned %d\n", r);
-    if (r == 0) {
-        thread_t thread = nullptr;
-        if (kernel_thread_start(wifiWorker, nullptr, &thread) == KERN_SUCCESS) thread_deallocate(thread);
-        else wifiLog("the wifi worker thread did not start\n");
+    return 0;
+}
+
+/* Everything after the windows belongs on its own thread, for one reason: the firmware arrives
+ * from the GPU addon, and the kernel installs that addon from native_owner_data_prepare on the
+ * first exec -- which cannot happen while this call site, inside the late display probe, has not
+ * returned.  Waiting here would deadlock the boot, so the wait happens here instead. */
+static void wifiStart(void *, wait_result_t) {
+    uint32_t waited = 0;
+    if (!firmwareArrived(&waited)) {
+        wifiLog("the firmware did not appear within %u ms; the addon that carries it installs on the first exec",
+                waited);
+        goto done;
     }
-    return r;
+    wifiLog("firmware present after %u ms", waited);
+    {
+        extern int nw_wifi_start(const struct lx_platform *, const struct nw_board *);
+        const int r = nw_wifi_start(&gPlatform, &gBoard);
+        wifiLog("nw_wifi_start returned %d", r);
+        if (r != 0) goto done;
+    }
+    wifiWorker(nullptr, THREAD_UNINT);
+done:
+    thread_terminate(current_thread());
+    thread_block(THREAD_CONTINUE_NULL);
 }
 
 /* The kernel's entry: the late display probe calls this (weakly) after the PCIe bring-up when the
  * boot argument alioth-wifi=1 is set. Failure is logged and leaves the rest of the boot alone. */
 extern "C" void alioth_wifi_start(void) {
     const int r = alioth_wifi_board_start();
-    wifiLog("start returned %d\n", r);
+    wifiLog("start returned %d; the runtime starts on its own thread once the firmware is there", r);
+    if (r != 0) return;
+    thread_t thread = nullptr;
+    if (kernel_thread_start(wifiStart, nullptr, &thread) == KERN_SUCCESS) thread_deallocate(thread);
+    else wifiLog("the wifi start thread did not start");
 }
