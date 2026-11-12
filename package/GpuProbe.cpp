@@ -30,7 +30,7 @@
 //      rounds of the user-client path from the kernel (open, BOs, an IB of three CP_MEM_WRITEs, its fence, close); then a row
 //      every 2 s with the interrupts, fence waits, submissions and user clients, and the CP's state once it stops moving.
 //  12  as 11, then the staged accelerator for the original Metal discovery (UniXNU-sheng's publishMetal, UniXNU-tb128fu's
-//      naMetal); the Metal plugin and Turnip come from the GPU addon (sheng-gpu-addon=1) and the owner trust module.
+//      naMetal); the Metal plugin and Turnip come from the GPU addon (gpu-addon=1) and the owner trust module.
 // The rows below go to the kernel log whenever they change (BootRamoops.c). The sequence starts 5 s after the late probe, so the
 // display and the log thread already run if a read hangs the bus. Modes 1-12 ran on the tablet on 2026-10-24; until APRIV was set
 // every UCHE read ended in UCHE_OOB_ACCESS and Metal's frames were all zero (see the README).
@@ -1724,7 +1724,7 @@ bool selfTest() {
 }
 
 // Mode 12: the staged AGXAccelerator for the original Metal discovery (sheng publishMetal, UniXNU-tb128fu naMetal). The plugin
-// bundle arrives through the boot-time addon mount (sheng-gpu-addon=1) and the owner trust module; the render server is the one
+// bundle arrives through the boot-time addon mount (gpu-addon=1) and the owner trust module; the render server is the one
 // process granted its client, with the two that crashed in CoreImage's OpenGL ES path without a Metal device on UniXNU-tb128fu.
 #if PIPA_GPU_ACCELERATOR
 bool metal() {

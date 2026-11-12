@@ -2797,17 +2797,15 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
       }
       // The Metal bridge's own telemetry table, on the console. It lives in the UFS slot ([metal table]),
       // and the slot is what a boot that stops early never writes — but this table is filled by the render
-      // server's scanout loop, which is running on exactly those boots. Print the rows that have text,
-      // every tenth second, so the pipeline, pass, draw and dispatch counts and the refusal texts are
-      // readable without a reader.
+      // server's scanout loop, which is running on exactly those boots. Print every row that has text,
+      // every tenth second. The table's first rows are the memory counters; the compile, prime, cache,
+      // pass and draw rows follow them, so a fixed count of six would never reach the shader readings.
       if (&native_adreno_metal_rows && elapsed % 10 == 0 && &qcom_usb_debug_write) {
-        unsigned printed = 0;
-        for (unsigned r = 0; r < 48 && printed < 6; ++r)
+        for (unsigned r = 0; r < 48; ++r)
           if (native_adreno_metal_rows[r][0]) {
             char s[112];
             const int sn = snprintf(s, sizeof s, "MT%d %.94s\n", r, (const char *)native_adreno_metal_rows[r]);
             if (sn > 0) qcom_usb_debug_write(s, (size_t)sn < sizeof s ? (size_t)sn : sizeof s - 1);
-            ++printed;
           }
       }
       // Owned qualification reserves rows 18..47; emit raw bytes as well as its verdict.

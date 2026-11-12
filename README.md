@@ -83,6 +83,16 @@ sh scripts/run-host-tests.sh
 The record cites each one as host evidence, so a change to a header those tests cover should keep
 this script green before the change reaches a device round.
 
+## Shader inspection
+
+`scripts/metallib.py` lists the functions of a `.metallib` and can dump each LLVM bitcode module.
+It is ported from the MIT-licensed iOS alioth port and keeps its copyright notice:
+
+```sh
+python3 scripts/metallib.py list /path/to/default.metallib
+python3 scripts/metallib.py dump /path/to/default.metallib /tmp/metallib-dump
+```
+
 ## Layout
 
 | Path | Contents |

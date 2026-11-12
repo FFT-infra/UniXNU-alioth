@@ -29,8 +29,8 @@ __attribute__((weak)) void boot_progress_poll(void)
 // static kernel link, so CONFIG_XNU_OWNER_DATA_MOUNT does not link until this name resolves.
 // libRamBlock.a owns the real definition, but alioth leaves CONFIG_XNU_NATIVE_RAM_BLOCK unset: the
 // Data mount reads the DarwinBoot RAMDisk through mdevlookup(0), not a virtio provider.
-// The hook runs only on sheng-gpu-addon=1, which board.toml does not pass. Weak here, so
-// selecting the RamBlock transport later keeps the real definition.
+// The hook runs only on gpu-addon=1, which board.toml now passes. The weak definition
+// stays because RamBlock is unset; selecting that transport later keeps the real definition.
 __attribute__((weak)) int native_ram_block_gpu_addon(const unsigned char **, unsigned long long *);
 __attribute__((weak)) int native_ram_block_gpu_addon(const unsigned char **addon, unsigned long long *bytes)
 {

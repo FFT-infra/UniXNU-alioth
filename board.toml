@@ -626,7 +626,7 @@ kernel_args = [
   # seven, with two distinct failure shapes (tf frozen at 840/841 with the display never owned; and a boot that
   # stayed alive to 260 s with own=0). The 400 rounds before it read askers 5-8 with sw climbing. One variable
   # changed against sy5, so this round measures the reset deadline and nothing else.
-  "sheng-autoreset=600",
+  "sheng-autoreset=240",
   # The physical keys and the panel brightness are both compiled in and both called from
   # LegacyDisplayProbe (alioth_buttons_probe and alioth_backlight_probe, :951-954), but each
   # returns on its first line unless its own boot argument is present, so until these two
@@ -808,7 +808,7 @@ kernel_args = [
   # clock proven on at the moment of the read; gColdOk && gx_on only proves the GX rail is up.
   # The PCIe controller steps; step 1 only reads, criterion gcc pcie_0_gdscr = 0x22f001.
   # Mounts the payload addon; the wallpaper overlay arrives through it.
-  "sheng-gpu-addon=1",
+  "gpu-addon=1",
   # sheng-wallpaper-reset=1 was a default from 2026-11-02 18:45 (b0b1be9) to fix186, and it stopped
   # the desktop from compositing: it removes com.apple.PosterBoard.plist on every boot, PosterBoard
   # then rebuilds the poster each time, its two extensions fault with SIGBUS, and SpringBoard waits
@@ -960,6 +960,10 @@ kernel_args = [
   # The official frame diagnostics documented in zh/porting/gpu-diagnostics.md. They are
   # defaults again now that the one-off wallpaper and synthetic-touch arguments are gone.
   "sheng-diag-export=240",
+  # Shader telemetry: diag=1 writes the AdrenoMetal table every six seconds; log-gpu=1
+  # sends that table to the kernel log, where the USB console can read it.
+  "diag=1",
+  "log-gpu=1",
   # Four processes sampled for stacks (BootProcessProbe.c). The GPU stack is up and waiting for a
   # swap while the compositor submits none, so the open question is where the render server sits:
   # with these four the answer is a stack, not a guess. BootLog prints two rows per role to the
