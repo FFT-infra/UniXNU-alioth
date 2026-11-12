@@ -105,3 +105,47 @@ the library that holds the refused function before the MPS batch.
 `tmp/boot-prime2.img`
 (sha256 `c2671b6b239c900fc3b5025637d53bef8425d6e3159b023364aeed349a4e0888`)
 carries that order and the same 1800 s deadline.
+
+## prime2: the pass finishes, the panel does not change
+
+```
+MT26 PR compiling=0 libs=159/159 made=638 resumed=158
+MT24 SC fn 6723/641 cp 4974/637 rp 0/1401 rej 0 rd-fail 0
+MT25 SCb wr 1274 ... 24609K wfail 0 evict 0 qhit 0
+PANEL nonblack=28/1000 luma=6 sum=4d40fa56
+```
+
+All 159 on-board libraries finished. The panel sum is byte-identical to
+prime1's last row, and the two `fixed_frag_lph_cph` refusals are still the
+last problems. The shader cache was not the missing piece.
+
+## af1: the archive fallback makes the pipeline, the wall stays black
+
+`metal-archive-fallback=1` makes the render server retry a
+`BinaryArchiveMiss` without the archive and without the fail bit. The af1
+round logs:
+
+```
+MT30 P0 native-metal: archive fallback made frag TimgA2S1Xhf_IalpCcl -> ok
+MT31 P1 native-metal: archive fallback made frag TmuaA2Xhf_Isrc_Isqr -> ok
+PANEL nonblack=33/1000 luma=7 sum=aaf0080e
+```
+
+So the refused pipeline is now compiled, and the wallpaper still does not
+draw. The layer is absent, not the shader.
+
+## The remaining lead
+
+The u276 sandbox log names the provider directly:
+
+```
+Sandbox: CollectionsPoster(216) deny(1) iokit-open-user-client AGXDeviceUserClient
+```
+
+No current round prints `GPUOPEN` for `CollectionsPoster`, while
+`GradientPosterExten`, `PosterBoard`, `PhotosPosterProvide`, `SpringBoard`,
+`WidgetRenderer_Defa`, `mediaserverd` and `backboardd` all open it. The
+WallpaperKit provider reads `MetalPluginName` and never gets a GPU client, so
+the default wallpaper's layer has no renderer. Changing that is a sandbox or
+entitlement decision and needs a deliberate choice; it is not a shader or
+cache change.

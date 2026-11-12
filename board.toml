@@ -327,7 +327,7 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # plus the same two original modules byte for byte, which the script verifies against
 # build/original-static-system-trust before writing.
 trust_cache_sha256 = [
-  "f958efd82ce025f44b6dfc543911f64ccff1454859f287049b545475c6799c10",
+  "687d21c7bf6d7580cded52dbf1a8f9206f3ffcb7ffd631ebeef462b680e4760a",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -964,6 +964,11 @@ kernel_args = [
   # sends that table to the kernel log, where the USB console can read it.
   "diag=1",
   "log-gpu=1",
+  # QuartzCore asks for its screen-size "lph" pipelines with MTLPipelineOptionFailOnBinaryArchiveMiss.
+  # The archive holds Apple GPU binaries, which this driver cannot use, so every lookup misses and the
+  # pass that needs the pipeline is empty. Compile the descriptor instead (the same call without the
+  # archive and the fail bit).
+  "metal-archive-fallback=1",
   # Four processes sampled for stacks (BootProcessProbe.c). The GPU stack is up and waiting for a
   # swap while the compositor submits none, so the open question is where the render server sits:
   # with these four the answer is a stack, not a guess. BootLog prints two rows per role to the
