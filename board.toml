@@ -528,7 +528,7 @@ kernel_args = [
   #                              validated swap is never transferred, so no frame reaches memory.
   #   offline-legacy-cpu-present=1 retires the swap after the copy. Without it the client's wait
   #                              never completes and the compositor stops after one frame.
-  #   sheng-vsync=60             arms the work-loop refresh tick. The GOP scanout has no vblank
+  #   vsync=60             arms the work-loop refresh tick. The GOP scanout has no vblank
   #                              interrupt, and no platform subclass calls the original vsync
   #                              sender, so without this the render server never receives a vsync
   #                              message and CoreAnimation cannot present its first frame. 60 is
@@ -586,7 +586,7 @@ kernel_args = [
   # offline-legacy-dump-at is gone. It gated native_legacy_dump_state(), which was removed when
   # the cell painter replaced the panic dump, so the argument had been a dead key: present on the
   # command line, read by nothing. The text channel below replaces it properly.
-  "sheng-vsync=120",
+  "vsync=120",
   # sheng-lite and sheng-disable-watchdogd come from the working port. Both are parsed by
   # package/BootWatchdogPolicy.c, whose only call site is inside `#if XNU_BOOT_PROGRESS` in
   # load_init_program, so they did nothing until alioth_defconfig turned that option on.
@@ -820,12 +820,12 @@ kernel_args = [
   # the privileged GPU client instead of being copied by the CPU. The live row's swap counter
   # (sc) has not moved without it, so the desktop may be compositing and never presenting.
   # The tag is shortened to u208 because the command line is at 983 of its 1000 bytes.
-  # 2026-11-04 cpupath round measured sheng-fb-gpu=0: NativeGOPPresenter only publishes itself as the
+  # 2026-11-04 cpupath round measured fb-gpu=0: NativeGOPPresenter only publishes itself as the
   # hand-off service when this is 1 (NativeGOPPresenter.cpp:104 `if(gpuMode)gHandoff=this`), so with 0 the
   # scanout client's NGP_METHOD_MODE call fails and it stops at marker 6711 before it can report anything.
-  # The CPU copy path is selected by sheng-dpu-scanout=0 instead, which leaves the hand-off service up.
+  # The CPU copy path is selected by dpu-scanout=0 instead, which leaves the hand-off service up.
   # Back to the CPU copy, the path the desktop was seen on. Measured 2026-11-04 (m18, round mp1): with
-  # sheng-fb-gpu=1 the scanout client fills the whole scanout with 0xFF through the GPU, reports the command
+  # fb-gpu=1 the scanout client fills the whole scanout with 0xFF through the GPU, reports the command
   # buffer complete (MT4 f1), and the kernel's PANEL row — an uncached mapping of the same physical page
   # 0x9c000000 the presenter maps — does not change by one byte. newBufferWithBytesNoCopy therefore does not
   # alias the caller's pages in this runtime: metal2vulkan falls back to a private copy (buffer_descriptor.rs,
@@ -838,7 +838,7 @@ kernel_args = [
   # client (GpuScanoutClient.h, kScanoutFillProbe), which exists only while this is 1. The panel will not
   # update on that round; the readings are MT4 f<result>/<per-mille seen> against the PANEL row.
   # 1 from 2026-11-06, following the reference board. UniXNU-sheng/board.toml passes
-  # sheng-fb-gpu=1 together with offline-legacy-cpu-present=1, so its composited frame is offered to
+  # fb-gpu=1 together with offline-legacy-cpu-present=1, so its composited frame is offered to
   # the privileged GPU client instead of being copied by the CPU; this board passes the same gate
   # through offline-legacy-retire=1 (NativeLegacyDisplay.cpp:920-923, one condition).
   # The two entries above that kept this at 0 are older than the no-copy import work: mp1 measured a
@@ -851,10 +851,10 @@ kernel_args = [
   # removes the CPU copy when gpuMode is set, so turning it on now would trade a working display
   # for the probe. The probe round is queued: with 1 the only judge is the PANEL row, because a
   # GPU that cannot write 0x9c000000 leaves it at 911 and there is no frame either way.
-  # "sheng-fb-gpu=1",
+  # "fb-gpu=1",
   #
-  # The known-image colour check (porting/gpu.md step 3) is held back: sheng-swaptest=1 plus
-  # sheng-gpu-trace=1 and sheng-diag-export=200 is 52 bytes, and the line is already at its limit.
+  # The known-image colour check (porting/gpu.md step 3) is held back: swaptest=1 plus
+  # gpu-trace=1 and sheng-diag-export=200 is 52 bytes, and the line is already at its limit.
   # It also runs a Metal pass of its own in the render server, which is a second variable in a
   # round whose only question is whether the boot reaches the desktop. Add it once a boot reaches
   # the desktop every time; the sequence is recorded in progress/2026-11-06-turnip-patch-set.md.
@@ -868,7 +868,7 @@ kernel_args = [
   # kernel with these two arguments, reached the desktop and answered touch. They were dropped
   # from the round script when the commands moved to unixnu build payload, and every image from
   # fix156 to fix159 lost touch with them.
-  "sheng-fb-bgra=1",
+  "fb-bgra=1",
   # 2026-11-04 dpu0 round: 2 takes the direct path as soon as NativeUfs has installed the display
   # bank's stage-1 window (native_ufs_dpu_state bit 31) and flips the VIG pipes straight onto the
   # compositor's surface; 0 leaves the display on the buffer the firmware is already scanning and
@@ -889,7 +889,7 @@ kernel_args = [
   # "stage=4 branch=0 flips=0 mapped=0 refused=0": the path armed and then nothing was ever offered.
   # Direct scanout stays the target; it needs its own round that finds how stage 4 stops the supervisor.
   # Set to 0 on 2026-11-06, which is what the entry above already said to do and what the upstream
-  # display page documents: "直接扫描输出（`sheng-dpu-scanout=2`）为实验功能，默认关闭", and the
+  # display page documents: "直接扫描输出（`dpu-scanout=2`）为实验功能，默认关闭", and the
   # porting order it gives is to validate the CPU presentation path first (pixel layout, stride,
   # allocation size, cache handling) and only then enable GPU presentation. Every boot since
   # 2026-11-04 has run the experimental path (VSYNC ds=4, "mapped and taken"), so the desktop's
@@ -1006,7 +1006,7 @@ kernel_args = [
   # 2026-11-06: zero-copy is the chosen direction. PLAN_NEW.md phase A keeps this on until
   # the official GPU §3/§4/§5 evidence is complete. The lower frame count is a measurement
   # target, not a reason to fall back to the CPU copy.
-  "sheng-fb-gpu=1",
+  "fb-gpu=1",
   # boot-usb99 was the first image that passed this pair, and it faulted in the writer's
   # read-back of the previous run: the header struct was handed straight to a block-addressed
   # read, which copied 4096 bytes into a 152-byte stack object and ran into the guard page

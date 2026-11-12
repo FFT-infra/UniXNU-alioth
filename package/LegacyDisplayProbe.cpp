@@ -1489,7 +1489,8 @@ void native_legacy_display_late_probe(void) {
 					 * display's node: a presenter attached under the display made SpringBoard find no
 					 * display and crash (sheng recorded that), so the placement is deliberate. */
 					unsigned gpu = 0;
-					if (PE_parse_boot_argn("sheng-fb-gpu", &gpu, sizeof gpu) && gpu == 1 && &native_gop_presenter_create) {
+					if (!PE_parse_boot_argn("fb-gpu", &gpu, sizeof gpu)) PE_parse_boot_argn("sheng-fb-gpu", &gpu, sizeof gpu);
+					if (gpu == 1 && &native_gop_presenter_create) {
 						IOService *handoff = native_gop_presenter_create();
 						IOService *home = IOService::getResourceService();
 						bool attached = false;
