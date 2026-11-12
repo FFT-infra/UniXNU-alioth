@@ -463,7 +463,7 @@ kernel_args = [
   # domain CPU counts are this board's own (kona.dtsi:325-330). The probe reports its state on
   # panel row 39 (native_cpufreq_row); mode 3 votes every domain that reads enabled.
   "sheng-cpufreq=3",
-  "sheng-pmgr=2",
+  "pmgr=2",
   "-no_slto_panic",
   # ml-timeout-lock-panic-scale=40 is dropped for now: it only scales how long a lock
   # timeout waits before panicking, nothing in this tree reads it, and the command line
