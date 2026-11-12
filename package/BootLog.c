@@ -1717,7 +1717,7 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              native_gop_wait_stats[5] / 1000, native_gop_wait_stats[1] ? native_gop_wait_stats[6] / native_gop_wait_stats[1] / 1000 : 0);
     at = put(out, at, cap, row, sizeof row);
   }
-  /* Direct scanout, the zero-copy path. Absent when the display never entered it (startDirect needs sheng-dpu-scanout>=2 and a display
+  /* Direct scanout, the zero-copy path. Absent when the display never entered it (startDirect needs dpu-scanout>=2 and a display
    * bank window), so this row's presence is itself the answer to "did the direct path run". The upstream display guide asks for a
    * "[direct scanout]" row carrying flips, mapped surfaces, latch time and the wait for the GPU; this is that row. */
   // Print when either path moved at all: with no flip the counters are the evidence, and a

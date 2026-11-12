@@ -719,7 +719,7 @@ static void ls_grep_text(const char *path, const char *needle, const char *tag, 
   vnode_close(vp, FREAD, ctx);
 }
 
-// The GPU trace's problem records (event 65): the GMEM colour-order test (sheng-swaptest=1) reports
+// The GPU trace's problem records (event 65): the GMEM colour-order test (swaptest=1) reports
 // each of its A/B/C/D regions through this event, and the trace ring is otherwise only readable
 // from the persistent log through a TWRP round. Copying the newest records here puts the lines on
 // the USB console in the same boot. The snapshot returns the newest records that fit, so it is

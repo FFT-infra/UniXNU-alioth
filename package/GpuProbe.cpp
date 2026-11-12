@@ -1774,7 +1774,7 @@ bool metal() {
     accelerator->setProperty("MetalPluginClassName", "NativeAdrenoMetalDevice");
     // Turnip's options for this board. The plugin sets TU_DEBUG=nocb for every process (NativeAdrenoMetalPlugin.mm); "nocb" is a
     // no-op on the A650, which has no concurrent binning, and keeps the variable non-empty. The system-memory path that
-    // sheng-fb-bgra=1 used to select writes no pixels (2026-11-05), so nothing selects it by default. This row prints what that
+    // fb-bgra=1 used to select writes no pixels (2026-11-05), so nothing selects it by default. This row prints what that
     // process will use: sheng-tu-debug=<options> overrides the plugin, pipa-turnip-debug=<options> records a round's choice here.
     // Nothing reads the NativeTurnipDebug property this becomes, so this row is a reading, not a switch.
     char turnip[64] = "nocb";

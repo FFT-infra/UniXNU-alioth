@@ -663,7 +663,7 @@ __attribute__((noinline)) void native_legacy_transfer_observed(IOReturn status, 
 
 // The raster hand-off: offer each swapped frame to the GOP presenter, which hands it to the GPU
 // client for the copy. This was a stub that declined every offer, so the display kept its CPU copy
-// path and GPUFRAME read "gpu offered 0" no matter what sheng-fb-gpu said. Note the arity: the
+// path and GPUFRAME read "gpu offered 0" no matter what fb-gpu said. Note the arity: the
 // display driver calls this with six arguments, so a five-argument stub still linked under C
 // linkage and silently dropped the format.
 extern "C" IOService *native_gop_presenter_create(void);
