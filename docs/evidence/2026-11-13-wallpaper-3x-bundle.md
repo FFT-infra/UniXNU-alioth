@@ -130,3 +130,45 @@ SURFACEG 11 |     =======+++++++     |
 ```
 
 This image is built from the rebased base; the wallpaper fix did not regress.
+
+## Unlock to the home screen
+
+`tmp/boot-unlock2.img` adds `sheng-touch-synth=4000 sheng-touch-synth-swipe=1` to the
+`wp3xbase` kernel and addon. Image sha256
+`93c7f2a3214474d48c6221df6814920dfd965b0636b92887812894113f20477e`; kernel
+`ba8496cc89dabbc315b16bdaab579a54e7c81f53b4e8b01e748e0fe04e8fec7c`.
+
+The first two boots lost the GPU path (`own=0`, `clients=0`). The third boot reached the
+home screen:
+
+```
+TOUCHSYNTH cfg hold=4000 at=60000 swipe=1 repeat=0
+TOUCHTAP down n=1 x=25160 y=19211
+SUPER t=190s runs=190 calls=191 mon=191 sw=230/230/0 own=1 prep=230 data=2 ...
+SURFACEL n=1/7/13 nonblack=995/1000 luma=245 mx=252/2/116 sp=250
+SURFACEL n=2..6 nonblack=984/1000 luma=206 mx=253/3/114
+PANEL nonblack=984/1000 luma=206 rgb=244/188/203
+GPUCLI clients=4 ... askers=5[mediaserverd,backboardd,SpringBoard,WidgetRenderer_Defa,CollectionsPoster]
+txt=... SpringBoard:device-ok | WidgetRenderer_Defa:device-ok | CollectionsPoster:device-ok
+```
+
+The post-swipe `SURFACEG` is full:
+
+```
+SURFACEG 00 |@@@@@@@@@@@@@@@@@@@@@@@@|
+SURFACEG 01 |@@@@@@@@@@@@@@@@@@@@@@@@|
+SURFACEG 02 |@@@@@@@@@@@@@@@@@@@@@@@@|
+SURFACEG 03 |@@@@@@@@@@@@@@@@@@@@@@@@|
+SURFACEG 04 |@@@@@@@@@@@@@@@@@@@@@@@@|
+SURFACEG 05 |@@@@@@@@@@@@@@@@@@@@@@@@|
+SURFACEG 06 |@@@@@@@@@@@@@@@@@@@@@%--|
+SURFACEG 07 |@@@@@@@@@@@@@@@@@@@@@===|
+SURFACEG 08 |@@@@@@@@@@@@@@@@@@@@@=++|
+SURFACEG 09 |@@@@@@@@@@@@@@@@@@@@@+++|
+SURFACEG 10 |@@@@@@@@@@@@@@@@@@@@@+++|
+SURFACEG 11 |@@@@@@@@@@@@@@@@@@@%%#  |
+```
+
+`sw` moves from 0 to 230 after the synthetic swipe, so the compositor consumed the gesture and
+the J120 wallpaper remains on the home screen. `WidgetRenderer_Defa` has a GPU client, but this
+serial capture has no descriptor or widget-pixel row; widget appearance is not claimed here.
