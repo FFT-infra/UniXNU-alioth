@@ -7,7 +7,7 @@ This record covers the wp3xbundle board run. It shows the J120 wallpaper on the 
 | Item | Value |
 | --- | --- |
 | Device repository | `0373d0000dea8f496e4cb674cfc653345aba0992` |
-| Base repository | `88fa155f2ff7d8e507f9480ab864b6be3da220fd` |
+| Base repository | `e0ee2ad9a2654309480c8b0cc725d0dc09186cd4` (rebased from `88fa155` after the run) |
 | Kernel | `683a17a8cd3d9a705f1e23f11ac31a98ea6479db59861c028d8e2fde723a3474`, 126,443,520 bytes |
 | Boot image `wp3xbundle` | `bfabc684f36d5d7016dafa3640038b8d758408378d0e4d22797341bf78e5889f`, 191,277,056 bytes |
 | GPU addon | `fe1f4824d61f4c2e2d6f48952c8bd36772aac642a17d504f93e561755fdc74f8`, 24,236,624 bytes |
