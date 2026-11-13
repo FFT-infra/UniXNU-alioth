@@ -412,6 +412,10 @@ static unsigned bestPixelR, bestPixelG, bestPixelB, bestPixelSpread;
 // The share of samples that are near the widget placeholder colour, so a home screen that shows
 // three white platters is distinguishable from the pink J120 wallpaper.
 static unsigned surfaceWhite;
+// Pure white samples: the widget platters in the 2026-11-09 screenshot are 255,255,255, outside the
+// placeholder range above. J120's highlights are saturated, not neutral, so this is the meter for
+// "a white sheet or three widget blocks".
+static unsigned surfacePure;
 // A coarse picture of the same frame the row numbers come from: 12 rows by 24 columns of luma
 // levels, so the console shows the screen's shape (a status bar, a row of icons, a wall band)
 // instead of one average. Written by surfaceMeasure, printed by surfaceGridPrint.
@@ -429,7 +433,7 @@ static bool surfaceMeasure(IOMemoryDescriptor *memory, uint64_t stride, uint64_t
 	flush_dcache64((uint64_t)(uintptr_t)map->getVirtualAddress(), (unsigned)length, false);
 	const volatile uint32_t *base = (const volatile uint32_t *)(uintptr_t)map->getVirtualAddress();
 	const uint64_t dwords = length / 4;
-	uint64_t lit = 0, luma = 0, samples = 0, white = 0;
+	uint64_t lit = 0, luma = 0, samples = 0, white = 0, pure = 0;
 	uint32_t hash = 2166136261u;
 	// The most saturated sample, so one row answers "is the picture coloured at all, and which
 	// channel leads". A neutral grey frame leaves spread 0; red and blue exchanged swaps R and B here.
@@ -441,6 +445,7 @@ static bool surfaceMeasure(IOMemoryDescriptor *memory, uint64_t stride, uint64_t
 		// The widget placeholder is (242,242,247). A broad bright test counted the J120 highlights
 		// too (white=412 on the lock screen), so use the narrow neutral range instead.
 		if (r >= 238 && r <= 246 && g >= 238 && g <= 246 && b >= 243 && b <= 251) white = white + 1;
+		if (r >= 250 && g >= 250 && b >= 250) pure = pure + 1;
 		luma += (r * 299 + g * 587 + b * 114) / 1000;
 		const unsigned maxc = r > g ? (r > b ? r : b) : (g > b ? g : b);
 		const unsigned minc = r < g ? (r < b ? r : b) : (g < b ? g : b);
@@ -450,6 +455,7 @@ static bool surfaceMeasure(IOMemoryDescriptor *memory, uint64_t stride, uint64_t
 	}
 	bestPixelR = bestR; bestPixelG = bestG; bestPixelB = bestB; bestPixelSpread = bestSpread;
 	surfaceWhite = samples ? (unsigned)(white * 1000 / samples) : 0;
+	surfacePure = samples ? (unsigned)(pure * 1000 / samples) : 0;
 	// The coarse picture: one sample per cell, taken from the same flushed mapping.
 	{
 		const uint64_t pixelsPerRow = stride / 4;
@@ -609,11 +615,11 @@ extern "C" void surfaceLateObserved(void) {
 		OSSafeReleaseNULL(w);
 	}
 	char line[260];
-	const int n = snprintf(line, sizeof line, "SURFACEL n=%u nonblack=%u/1000 luma=%u sum=%08x pa=%llx seg=%llx bytes=%llu stride=%llu magic=%u mx=%u/%u/%u sp=%u white=%u\n",
+	const int n = snprintf(line, sizeof line, "SURFACEL n=%u nonblack=%u/1000 luma=%u sum=%08x pa=%llx seg=%llx bytes=%llu stride=%llu magic=%u mx=%u/%u/%u sp=%u white=%u pure=%u\n",
 	                      lateRows, lateLit, lateLuma, lateSum,
 	                      (unsigned long long)firstPhysical, (unsigned long long)segment,
 	                      (unsigned long long)memory->getLength(), (unsigned long long)stride, magic,
-	                      bestPixelR, bestPixelG, bestPixelB, bestPixelSpread, surfaceWhite);
+	                      bestPixelR, bestPixelG, bestPixelB, bestPixelSpread, surfaceWhite, surfacePure);
 	if (n > 0) qcom_usb_debug_write(line, (size_t)n < sizeof line ? (size_t)n : sizeof line - 1);
 }
 

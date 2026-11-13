@@ -587,6 +587,12 @@ kernel_args = [
   # the cell painter replaced the panic dump, so the argument had been a dead key: present on the
   # command line, read by nothing. The text channel below replaces it properly.
   "vsync=120",
+  # Upstream GopFramebuffer's fixed-rate switch (commit c99046a): the panel has one
+  # rate, but the original maximum refresh interval is 1/24 s, so the render server
+  # sees a 24..120 Hz range and may pace frames anywhere in it. With this, the
+  # maximum interval equals the minimum. Tested in the vsyncfix image; the frame
+  # gaps during an animation are the remaining measurement.
+  "vsync-fixed=1",
   # sheng-lite and sheng-disable-watchdogd come from the working port. Both are parsed by
   # package/BootWatchdogPolicy.c, whose only call site is inside `#if XNU_BOOT_PROGRESS` in
   # load_init_program, so they did nothing until alioth_defconfig turned that option on.
