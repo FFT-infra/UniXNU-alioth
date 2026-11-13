@@ -1,0 +1,31 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7681,6 +7681,28 @@
+ 	native_cryptex_os_view(p, scratch);
+ 	native_gestalt_cache_drop(p, scratch);
+ 	native_ls_store_drop(p, scratch);
++	/* The device reports logical screen class 1024w-1366h@3x~ipad while the sealed Flat bundle
++	 * declares @2x. Loading that bundle through "any" accepts it but gives it the generic square
++	 * view, so the wallpaper covered only the top of the 1080x2400 panel (wpclass1b: SURFACEL
++	 * nonblack=503/1000, SURFACEG rows 07..10 blank). Add a bundle that declares @3x: the owner
++	 * Wallpaper.plist and an empty @3x .ca are unioned into the collection, and the PNG overlay is
++	 * then mounted over that .ca. The sealed @2x bundle stays visible, so the lower check is real. */
++	static const char bundle_source[] = "/private/var/ngpu/wallpaper-bundle",
++	    wallpapers_point[] = "/Library/Wallpaper/Collections/iPadOS_17~ipad.wallpaperCollection/Wallpapers";
++	native_gpu_addon_mount(p, scratch, 0xA00, bundle_source, sizeof(bundle_source), wallpapers_point, sizeof(wallpapers_point),
++	    "/Library/Wallpaper/Collections/iPadOS_17~ipad.wallpaperCollection/Wallpapers/"
++	    "7570.iPadOS_17_Flat-1024w-1366h@2x~ipad.wallpaper/Wallpaper.plist",
++	    "/Library/Wallpaper/Collections/iPadOS_17~ipad.wallpaperCollection/Wallpapers/"
++	    "7570.iPadOS_17_Flat-1024w-1366h@3x~ipad.wallpaper/Wallpaper.plist",
++	    &native_gpu_addon3_stage, &native_gpu_addon3_status);
++	static const char animation_point[] = "/Library/Wallpaper/Collections/iPadOS_17~ipad.wallpaperCollection/Wallpapers/"
++	    "7570.iPadOS_17_Flat-1024w-1366h@3x~ipad.wallpaper/7570.iPadOS_17_Flat_Background-1024w-1366h@3x~ipad.ca";
++	native_gpu_addon_mount(p, scratch, 0xC00, wallpaper_source, sizeof(wallpaper_source), animation_point, sizeof(animation_point),
++	    "/Library/Wallpaper/Collections/iPadOS_17~ipad.wallpaperCollection/Wallpapers/"
++	    "7570.iPadOS_17_Flat-1024w-1366h@3x~ipad.wallpaper/7570.iPadOS_17_Flat_Background-1024w-1366h@3x~ipad.ca/.keep",
++	    "/Library/Wallpaper/Collections/iPadOS_17~ipad.wallpaperCollection/Wallpapers/"
++	    "7570.iPadOS_17_Flat-1024w-1366h@3x~ipad.wallpaper/7570.iPadOS_17_Flat_Background-1024w-1366h@3x~ipad.ca/J120.png",
++	    &native_gpu_addon2_stage, &native_gpu_addon2_status);
+ }
+ 
+ /* The deletable system apps (Weather, Notes, Calendar, ...) ship in the OS volume's /private/var/staged_system_apps. A restore copies

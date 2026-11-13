@@ -6,3 +6,4 @@ kernel-map-owner.patch
 kernel-object-owner.patch
 zone-wait-name.patch
 native-init-trampoline.patch
+zzz-native-wallpaper-bundle.patch

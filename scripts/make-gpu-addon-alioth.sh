@@ -39,4 +39,10 @@ fi
 if [ -n "$WALLPAPER" ]; then
     set -- "$@" --wallpaper "$WALLPAPER"
 fi
+# WALLPAPER_BUNDLE carries the owner @3x wallpaper bundle over the sealed collection. The device
+# reports @3x and the sealed bundle declares @2x, so WallpaperKit synthesizes a black wallpaper;
+# configs/wallpaper-bundle/ holds a bundle whose Wallpaper.plist declares @3x and whose .ca is
+# filled by the PNG overlay.
+WALLPAPER_BUNDLE=${WALLPAPER_BUNDLE:-"$HERE/../configs/wallpaper-bundle"}
+set -- "$@" --wallpaper-bundle "$WALLPAPER_BUNDLE"
 /opt/homebrew/bin/python3.13 "$HERE/../../UniXNU/scripts/make-gpu-addon.py" "$@" "$OUT"
