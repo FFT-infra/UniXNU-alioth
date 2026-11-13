@@ -218,6 +218,28 @@ extern volatile uint32_t native_gpu_freq[9] __attribute__((weak_import));
  * for display stream k. */
 extern volatile uint32_t native_ufs_dpu_state __attribute__((weak_import));
 extern volatile uint32_t native_ufs_dpu_smmu[24] __attribute__((weak_import));
+// One console row for the direct path, kept out of boot_log_tick: that function is large enough that one more inlined
+// snprintf chain made clang-24 abort while compiling it.
+static void direct_console_row(void);
+static void direct_console_row(void)
+{
+  if (!&native_legacy_direct || !&native_ufs_dpu_state || !(native_ufs_dpu_state >> 31)) return;
+  char d[240];
+  const volatile uint32_t *dc = native_legacy_direct;
+  int dn = snprintf(d, sizeof d,
+                    "DIRECT step=%u flips=%u mapped=%u refused=%u noslot=%u boot=%u wait=%u gaveup=%u latch=%u/%uus",
+                    &native_legacy_direct_flip_stage ? native_legacy_direct_flip_stage : 0,
+                    dc[0], dc[1], dc[2], dc[7], dc[8], dc[9], dc[12], dc[3], dc[4]);
+  if (&native_legacy_swapstat && dn > 0 && (size_t)dn < sizeof d - 80)
+    dn += snprintf(d + dn, sizeof d - (size_t)dn, " | q=%u/%u/%u/%u/%u/%u/%u",
+                   native_legacy_swapstat[0], native_legacy_swapstat[1], native_legacy_swapstat[2],
+                   native_legacy_swapstat[3], native_legacy_swapstat[4], native_legacy_swapstat[9],
+                   native_legacy_swapstat[11]);
+  if (dn > 0 && &qcom_usb_debug_write) {
+    d[dn++] = '\n';
+    qcom_usb_debug_write(d, (size_t)dn);
+  }
+}
 extern volatile uint32_t native_touch_jitter[3] __attribute__((weak_import));
 extern volatile uint32_t native_touch_hold[14] __attribute__((weak_import));
 extern char native_lookup_log[160][112] __attribute__((weak_import));
@@ -2517,6 +2539,7 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
                                 &native_legacy_direct_stage ? native_legacy_direct_stage : 0u);
         if (rn > 0 && &qcom_usb_debug_write)
           qcom_usb_debug_write(r, (size_t)rn < sizeof r ? (size_t)rn : sizeof r - 1);
+        direct_console_row();
       }
       // What the panel's buffer holds right now, sampled here rather than in the monitor loop that stops early.
       // nonblack/1000 and luma are the same measure the GPUFB row uses, so a black screen and a drawn desktop differ
