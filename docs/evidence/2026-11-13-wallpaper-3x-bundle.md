@@ -89,3 +89,44 @@ SURFACEG 11 |  +*******************  |
 The first boot of the same image (`wp3xbundle1228231`) lost the GPU path: `own=0 sw=0`,
 `GPUCLI clients=0`, `PANEL 914`. The second boot is the reading above. This is the known
 one-bad-boot form of this board; it is not a wallpaper result.
+
+## Rebased base
+
+After the Rebase-First sync, the same addon was built on base `e0ee2ad`. The image is
+`tmp/boot-wp3xbase.img`, sha256
+`e2962e142b60b8d0191e434887297129bc615eb69bf7d4b5da0f21e0ebb02589`; its kernel is
+`ba8496cc89dabbc315b16bdaab579a54e7c81f53b4e8b01e748e0fe04e8fec7c`.
+
+The first boot reached the wallpaper:
+
+```
+[addon] 1=5/0 2=5/0 3=5/0
+WALLPAPER stage=5 status=0
+SUPER t=190s runs=190 calls=191 mon=191 sw=8/8/0 own=1 prep=8 data=2 ...
+SURFACEL n=12..13 nonblack=918/1000 luma=111/110 mx=250/3/113 sp=247
+PANEL nonblack=916/1000 luma=112 rgb=147/99/93
+GPUCLI clients=5 askers=7[mediaserverd,backboardd,SpringBoard,WidgetRenderer_Defa,
+  CollectionsPoster,PhotosPosterProvide,PosterBoard]
+txt=... SpringBoard:device-ok | WidgetRenderer_Defa:device-ok |
+  PhotosPosterProvide:device-ok | PosterBoard:device-ok
+RESULT t=190 own=1 sw=8 data=2 lit=918 pa=1837c3000 ds=0 panel=916 frame=8 askers=7 -> desktop
+```
+
+`mx=250/3/113` is again the J120 pink maximum, and the twelve-row dump is full:
+
+```
+SURFACEG 00 |         ..........     |
+SURFACEG 01 |    *#@:=  ...%@%%:::::-|
+SURFACEG 02 |             .....::::--|
+SURFACEG 03 |.................:--====|
+SURFACEG 04 |:***********************|
+SURFACEG 05 |*########*********######|
+SURFACEG 06 |#######*******+#%%%%%%--|
+SURFACEG 07 |+*******######%%%%%--===|
+SURFACEG 08 |++++++++=============+++|
+SURFACEG 09 |=============+++++++++++|
+SURFACEG 10 |=========+++++++++++++++|
+SURFACEG 11 |     =======+++++++     |
+```
+
+This image is built from the rebased base; the wallpaper fix did not regress.
