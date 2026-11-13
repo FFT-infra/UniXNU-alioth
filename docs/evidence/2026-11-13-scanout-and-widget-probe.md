@@ -44,7 +44,9 @@ bus. `dsflip` (`tmp/boot-dsflip.img`, sha256
 `flips=0 mapped=1 wait=1` with no progress.
 
 `dsctl` fixes the CTL offsets to `0x1018`/`0x1218` and takes the boot scanout address and stride
-from `PE_Video`. Image `tmp/boot-dsctl.img`, sha256
+from `PE_Video`. Source revisions: `NativeUfs-alioth` `9a1f75bec3d8937736eecd96cbef19cc81265f24`
+(accepts `dpu-scanout`) and `GopFramebuffer` `6dc063c1da59376a7acb1d06a824fcac1a79c86c`.
+Image `tmp/boot-dsctl.img`, sha256
 `1496c71bd95453b41b95379ebf7ac0dd7229a3129cd66eaee2f23fc162fbe86c`; kernel
 `433e899a7ed47d08b1e53de7e9775d0c44c3cc4fbfced0012fffdaf75232276f`. The same boot reads:
 
