@@ -4,7 +4,7 @@ schema_version = 1
 name = "alioth"
 soc = "SM8250"
 os_profile = "ipados-17.7.11-21H461"
-summary = "UFS root with launchd, touch input, the J120 @3x wallpaper bundle and a published GPU device; direct scanout flips and vsync-fixed=1 is configured. Wi-Fi endpoint setup is source-integrated and reached its setup-only endpoint in one c1 short round, but no full Wi-Fi stack is verified. The 2026-11-17 c1 short round returned no-desktop; brightness mode 5 reached service registration and one OS request, but no visible per-level control or DCS 0x52 read-back is verified. Mode 4, widget repair, firmware-stage log export and USB stack runtime remain unverified."
+summary = "UFS root with launchd, touch input, the J120 @3x wallpaper bundle and a published GPU device; direct scanout flips and vsync-fixed=1 is configured. Wi-Fi endpoint setup is source-integrated and reached its setup-only endpoint in one c1 short round, but no full Wi-Fi stack is verified. The 2026-11-17 c1 short round with alioth-init=2 returned no-desktop; the 2026-11-20 rename1 round with alioth-init=1 returned the desktop and the J120 wallpaper (SURFACEL 918/1000, PANEL 916, WALLPAPER stage=5, GPUCLI clients=8 askers=11) and the pkd shim is the c1 no-desktop cause. Brightness mode 5 reached service registration and one OS request, but no visible per-level control or DCS 0x52 read-back is verified. Mode 4, widget repair, firmware-stage log export and USB stack runtime remain unverified."
 
 [[area]]
 id = "configuration"
@@ -678,3 +678,17 @@ completion = ["The GNSS firmware source and hash are recorded, the engine reache
 limits = ["No GNSS firmware, no ADT node, no component, no transport owner and no OS-facing service interface are selected. Whether the stock design depends on the modem or ADSP is unresolved."]
 next_action = ["Read the stock GNSS firmware and configuration files, then record source, SHA-256, transport dependency and memory owner in one host evidence entry before any board test."]
 evidence = []
+
+[[area]]
+id = "rename1"
+status = "device-verified"
+components = ["Adreno650", "AdrenoMetal", "ShengHidInput", "NativeUfs", "QcomXnuUsbDebug", "ArmCpu"]
+paths = ["board.toml", "package/**", "drivers/**", "kits/**", "scripts/build-round.sh", "scripts/build-qcom-usb-debug.py", "porting.toml", "docs/evidence/**"]
+inputs = ["The 2026-11-20 rename1 payload over the rebuilt kernel: boot sha 9cb9f917d89ecc0a2912775a4c195af79e4b562de95313352b1c7b9abc1ff8ae, kernel aee321769f35f97fcf413fff1b7d3e298ebb61944152a02af0cd3440e2895204, addon 7e10819ce70d6294. The board line is 51 args / 888 bytes; the round args are alioth-init=1 lsfix=120 alioth-diag-export=130 alioth-autoreset=180."]
+configuration = ["alioth-init=1 (the init trampoline) is the working boot. alioth-init=2 (the pkd shim) is the c1 no-desktop path and is not the default. Shared arguments use the upstream names; board-private arguments use alioth-."]
+procedure = ["sh tmp/rounds-count2.sh tmp/boot-rename1.img rename1 1 200; read tmp/console-rename12238341.txt; sh tmp/read-log.sh --diag; read build/sheng-logs/rename1-00000003c23169e3."]
+findings = ["The 2026-11-20 rename1 round returned the desktop: SUPER sw=8/8/0 own=1 data=2 tf=24299, SURFACEL 918/1000, PANEL 916, WALLPAPER stage=5, FRAME 8, GPUCLI clients=8 askers=11, GPUFRAME 6 done, GPUROW24 METAL ok, GPUROW25 LIVE, GPUHANG 0, CORES deaf=00, TOUCHSTAT 25581. The c1 alioth-init=2 round was no-desktop with askers=2 and 39 LSPKD rows; the rename1 alioth-init=1 round has 11 askers and 13 LSPKD rows with no PKDSHIM. The pkd shim is the c1 no-desktop cause.", "WIDGET is still 0 and LSINITLOG WIDGET reads done=-1 pk=0 ok=0; widget repair remains open. mountfail=1/e00002d5/2 is the kernel-client two-open self-test, not a user refusal."]
+completion = ["The rename1 round is a desktop and wallpaper result; the init trampoline path is verified on hardware."]
+limits = ["WIDGET is not a pixel result; the LSINITLOG WIDGET done=-1 remains. The read-log set the active slot to b; the next fastboot boot needs a manual power cycle and sh tmp/power-cycle-done.sh."]
+next_action = ["Power cycle and clear tmp/needs-power-cycle. Then verify the widget path with alioth-init=1 and read WIDGET, LSINITLOG, LSPKD and the alioth-touch-synth rows; do not use alioth-init=2 as the default."]
+evidence = [{ kind = "device", reference = "docs/evidence/2026-11-20-rename1-desktop.md", command = "sh tmp/rounds-count2.sh tmp/boot-rename1.img rename1 1 200; read tmp/console-rename12238341.txt; sh tmp/read-log.sh --diag; read build/sheng-logs/rename1-00000003c23169e3", revision = "0a17a5f66d96534d4092eb9c2a46c44f997ba22f", result = "Desktop: SUPER sw=8/8/0 own=1 data=2 tf=24299, SURFACEL 918/1000, PANEL 916, WALLPAPER stage=5, GPUCLI clients=8 askers=11, GPUFRAME 6 done, CORES deaf=00, TOUCHSTAT 25581; LSPKD 13, PKDSHIM 0, WIDGET 0, LSINITLOG WIDGET done=-1. The c1 alioth-init=2 was no-desktop with askers=2. The read-log set active slot b; power cycle required." }]
