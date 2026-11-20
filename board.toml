@@ -412,18 +412,18 @@ kernel_args = [
   "debug=0x14e",
   "kt_fixed_zones=120",
   # Secondary CPUs. Without these the kernel runs uniprocessor: ArmCpu.cpp only issues a PSCI
-  # CPU_ON when sheng-smp is non-zero, and the panel has been reporting
+  # CPU_ON when smp is non-zero, and the panel has been reporting
   # "SMP req=0 run=0 cond=0 boot=0" on every boot so far, so all 146 processes of the startup
   # queue on one core. The reference board (UniXNU-sheng/board.toml) passes both of these and
   # boots with eight cores. armcpu-spi-ipi routes inter-processor interrupts through the GIC's
-  # SPI, which is what that board needs; it is added here with sheng-smp together because they
+  # SPI, which is what that board needs; it is added here with smp together because they
   # were qualified as a pair, and armcpu-diagnostics stays on so the SMP step counters report
   # each stage of the bring-up on the panel and the console.
   # Secondary cores, per the reference board's own arguments (UniXNU-sheng/board.toml).
   # Re-enabled 2026-10-28: the only earlier attempt (boot-usb47) stalled, which was first
   # misread as a KPP panic and then traced to the second RPMh vote blocking 83 s in
   # IODelay -- a stall the spin fix in AliothRpmhPort has since removed. ArmCpu is already
-  # a selected component and sheng-smp is its documented boot argument, so no porting is
+  # a selected component and smp is its documented boot argument, so no porting is
   # involved. armcpu-diagnostics stays on so the SMP step counters report on the panel.
   # On 2026-10-28 two independent runs froze at the same point: boot-usb47 (SMP plus the
   # RPMh/touch path) and boot-usb63 (SMP plus CPU frequency and the touch health check) both
@@ -445,7 +445,7 @@ kernel_args = [
   # signal itself. It is a component argument, not one of the documented boot arguments, and is
   # recorded as such in porting.toml.
   # Back to 1 on 2026-11-06: the single-core control does not run. Three boots of sy803101/321/631,
-  # same image with only sheng-smp set to 0, produced 133 lines of console each, ending at
+  # same image with only smp set to 0, produced 133 lines of console each, ending at
   # "BOOTLOG beat 0 phase 5" with no SUPER row at all -- the board never reached the supervisor.
   # So "run on one core and see whether the coin becomes a constant" cannot be asked this way, and
   # the SMP hypothesis has no cheap A/B. Reading ArmCpu.cpp and the XNU side, the three ways a
@@ -455,7 +455,7 @@ kernel_args = [
   # them is a slowdown, not a boot that renders a dozen batches and then never presents. The
   # counters that would settle it exist and are printed nowhere: armcpu_core_timer[],
   # armcpu_core_sgi[], armcpu_spi_ipi_check[], armcpu_timer_short[] (ArmCpu.cpp:28-31).
-  "sheng-smp=1",
+  "smp=1",
   "armcpu-spi-ipi=1",
   "armcpu-self-ipi=1",
 
@@ -463,13 +463,13 @@ kernel_args = [
   # the same qcom-cpufreq-hw-epss one the reference board uses; the kona addresses and the 4/3/1
   # domain CPU counts are this board's own (kona.dtsi:325-330). The probe reports its state on
   # panel row 39 (native_cpufreq_row); mode 3 votes every domain that reads enabled.
-  "sheng-cpufreq=3",
+  "cpufreq=3",
   "pmgr=2",
   "-no_slto_panic",
   # ml-timeout-lock-panic-scale=40 is dropped for now: it only scales how long a lock
-  # timeout waits before panicking, nothing in this tree reads it, and the official joined
-  # command-line limit is 1000 bytes. The current 51 args join to 927 bytes. It comes back
-  # when something else frees the room.
+  # timeout waits before panicking, nothing in this tree reads it, and payload.py's hard
+  # bound is 1023 bytes (the project keeps 1000 as its budget). The current 51 args join
+  # to 888 bytes. It comes back when something else frees the room.
   # NativeUfs defaults to stream 0x60, which is sheng's board. SM8250 routes the
   # UFS host through 0x0e0 and 0x4e0.
   "native-ufs-stream=0xe0",
@@ -594,15 +594,15 @@ kernel_args = [
   # maximum interval equals the minimum. Tested in the vsyncfix image; the frame
   # gaps during an animation are the remaining measurement.
   "vsync-fixed=1",
-  # sheng-lite and sheng-disable-watchdogd come from the working port. Both are parsed by
+  # lite and disable-watchdogd come from the working port. Both are parsed by
   # package/BootWatchdogPolicy.c, whose only call site is inside `#if XNU_BOOT_PROGRESS` in
   # load_init_program, so they did nothing until alioth_defconfig turned that option on.
-  # sheng-lite stops the jobs that only reach for the network, iCloud or the photo library and
-  # have nothing to do on a tablet with no radios and no accounts; sheng-disable-watchdogd stops
+  # lite stops the jobs that only reach for the network, iCloud or the photo library and
+  # have nothing to do on a tablet with no radios and no accounts; disable-watchdogd stops
   # watchdogd, which on this board asserts because the Data volume has no role. A 2026-10-26
   # measurement found processes dying with libsystem faults and fewer than ten alive, which is
   # the shape a daemon asserting on a missing service takes.
-  "sheng-lite=1",
+  "lite=1",
   # liveactivitiesd is the one service that still fails deterministically: measured
   # 2026-10-27 on boot-usb31, 6 aborts with BRK #1 inside CalendarUIKit. There are no
   # accounts and no network here, so live activities have nothing to do. cryptexd was
@@ -611,13 +611,13 @@ kernel_args = [
   # routined keeps aborting here: measured 2026-10-27, SIGABRT (status=6 ns=2) and several
   # successive pids in one window. It drives location and routine learning, and this board has
   # no GNSS and no accounts, so it has nothing to do.
-  "sheng-disable-jobs=com.apple.liveactivitiesd,com.apple.routined",
+  "disable-jobs=com.apple.liveactivitiesd,com.apple.routined",
   # Unattended loop, on for the return-path round. Measured 2026-10-27 in an earlier round:
   # Unattended loop. The reset returns to fastboot, measured on u276 and u277 (198 s and
   # 201 s), so an earlier note here claiming it came back to the kernel instead is withdrawn:
   # the address, the value and the medium are all right, and the IMEM write plus PS_HOLD
   # reaches the bootloader as intended.
-  # The timer lives in the writer thread, so it needs sheng-log=1 further down this list.
+  # The timer lives in the writer thread, so it needs alioth-log=1 further down this list.
   # 120 s, not 150: measured on boot-usb102 the desktop is up well before 150, and an
   # unattended run has nobody to touch the panel, so the reset should not wait past the
   # desktop. The timer counts from the writer's own start, a few seconds after boot.
@@ -633,7 +633,7 @@ kernel_args = [
   # seven, with two distinct failure shapes (tf frozen at 840/841 with the display never owned; and a boot that
   # stayed alive to 260 s with own=0). The 400 rounds before it read askers 5-8 with sw climbing. One variable
   # changed against sy5, so this round measures the reset deadline and nothing else.
-  "sheng-autoreset=240",
+  "alioth-autoreset=240",
   # The physical keys and the panel brightness are both compiled in. LegacyDisplayProbe.cpp calls
   # both through weak symbols. Each returns on its first line unless its own boot argument is
   # present. Only alioth-bl=1 is active in this list; the historical key argument and boot-ui-trace
@@ -650,18 +650,18 @@ kernel_args = [
   # sw=0, no desktop. That is one variable group and two rounds; it does not identify which
   # argument matters. Do not trade the current bytes away without a round that adds them back.
   "alioth-bl=1",
-  # sheng-data-persist=2 opens the Data store read-write. Without it the seed is what the kernel
+  # data-persist=2 opens the Data store read-write. Without it the seed is what the kernel
   # calls a big volume (3 GiB) and the ram-block driver has no volatile mode for one: it serves
   # reads from the seed and does not complete writes until a store is attached, and the store
   # only attaches when this argument is non-zero (NativeRamBlock.cpp:86,111,261). APFS then
   # pages out into a disk that never accepts the write, and the kernel's own log shows it:
   # "apfs_vnop_pageout ... returned 16", then "disk1: device is not ready" for the rest of the
   # boot. Mode 2 is the store-backed direct path; mode 1 only proves the window.
-  # u243 removes sheng-data-reset for one round: u242 (with it) drew 355 frames, and the boot
+  # u243 removes data-reset for one round: u242 (with it) drew 355 frames, and the boot
   # before it (without it, same mode) drew none. That is one variable and one round, and it
   # separates "the resumed overlay was the blocker" from "the earlier zero was the log window's
   # attribution problem".
-  # Reverted to 0 with sheng-data-reset=1 for one round. u241 (mode 2) removed the not-ready
+  # Reverted to 0 with data-reset=1 for one round. u241 (mode 2) removed the not-ready
   # storm, but the very next boot stopped about 5 s in, before launchd, and the one thing that
   # changed is that u241 was the first boot to write the Data overlay: this boot is the first
   # that has to mount an overlay that was written. reset=1 discards it, so if the mount was the
@@ -669,13 +669,13 @@ kernel_args = [
   # Mode must stay 2 for reset to do anything: NativeRamBlock.cpp:79 reads the argument, but the
   # discard only happens inside the `if (mode && ...)` block, so with mode 0 the overlay written
   # by u241 would simply stay.
-  "sheng-data-persist=2",
+  "data-persist=2",
   # 2026-11-07: the overlay is kept this round on purpose. Every boot that resumed one stopped
   # inside sheng_boot_watchdog_policy, before launchd: the persistent log's breadcrumbs end at
   # "temporary watchdog launch policy enter" and never reach "ready". This round carries a
   # breadcrumb for each step of that function's policy write, so the next stalled boot names
-  # the statement that does not return. sheng-data-reset=1 is the workaround, not the fix.
-  # sheng-touch-edge=1 makes a contact that starts within ~3 mm of the bottom edge carry
+  # the statement that does not return. data-reset=1 is the workaround, not the fix.
+  # alioth-touch-edge=1 makes a contact that starts within ~3 mm of the bottom edge carry
   # kIOHIDDigitizerEventFromEdgeTip, which is the only thing UIKit reads to classify an edge
   # touch; without it the home-swipe and the switcher gestures are type 0 and never recognise.
   # Only the bottom edge is marked and an unfilled begin position is skipped (NativeHidInput.cpp).
@@ -683,13 +683,13 @@ kernel_args = [
   # NativeHidInput.cpp:173 is `applyEdge = PE_parse_boot_argn(...) && e==1`, so absent and 0 are both
   # OFF - the boot arg is the whole switch. e4e3bed disabled it on 2026-11-02 and the home swipe and
   # the switcher have been dead since; 28aa098 had turned it on and u244 confirmed it on the board.
-  "sheng-touch-edge=1",
-  # sheng-gpu-clients=2 refuses every GPU client after the first two. The desktop has only ever come
+  "alioth-touch-edge=1",
+  # alioth-gpu-clients=2 refuses every GPU client after the first two. The desktop has only ever come
   # up in boots where the client open failed (ok1, hh19312: SpringBoard no-device, compositor falls
   # back to software); every boot that handed out a device stayed on the boot frame. That state used
   # to arrive by luck, as a side effect of a poisoned submit. This asks for it on purpose, so the
   # tablet is usable while the GPU path is still being fixed. Set it to a large number to undo.
-  # "sheng-gpu-clients=2",   # off for the 11-03 restore round: this round needs clients ON the GPU.
+  # "alioth-gpu-clients=2",   # off for the 11-03 restore round: this round needs clients ON the GPU.
   # boot-progress=2 is the text channel this board has been missing. package/BootProgress.c
   # binds the frame buffer returned by PE_current_console and draws a 48-row by 120-column text
   # page on it; opt 2 means continuous, so the page keeps updating instead of stopping after the
@@ -706,14 +706,14 @@ kernel_args = [
   # the persistent log carry the same rows.
   # 0 was tried on 2026-10-29 to stop the page being a third writer of the framebuffer: the console
   # went silent and the board stopped answering, so the page stays on. The third writer has to be
-  # dealt with from the page's own side (sheng-banner=0 already stops the banner).
+  # dealt with from the page's own side (alioth-banner=0 already stops the banner).
   "boot-progress=3",
   # boot-diag-resume=<seconds> let the diagnostic page take the panel back that long after
   # scanout stopped. Measured 2026-10-27 on boot-usb33: SpringBoard reached the lock screen, but
   # this page took the panel back every time the renderer paused for ten seconds, so the desktop
   # appeared and vanished in alternation. Dropped on 2026-10-29: resume_after is file-scope zero
   # and BootProgress.c:635 only writes it when the argument is present and in range, so the
-  # argument repeated the default and the command line needed the room for sheng-banner=0.
+  # argument repeated the default and the command line needed the room for alioth-banner=0.
   # qcom-usb-debug=1 starts the CDC-ACM console over the board's DWC3 controller. It tees
   # printf, IOLog, kprintf and the panic drain onto a USB serial port, so the log can be read
   # live on the host instead of photographed off the panel. The firmware already brings the
@@ -727,7 +727,7 @@ kernel_args = [
   # path it served answered ENXIO on every boot, and the panel copy now comes from the diagnostic
   # export's screen.bgrx. Off by default, so leaving it out costs nothing but 15 bytes.
   # "qcom-usb-ctl=1",
-  "sheng-disable-watchdogd=1",
+  "disable-watchdogd=1",
   # native-touch=1 starts the FocalTech FT5652 probe from
   # native_legacy_display_late_probe(). The driver is compiled into every image; this argument
   # only decides whether it runs. It maps six register windows, votes the GCC clocks and starts
@@ -738,7 +738,7 @@ kernel_args = [
   # the USB PHY rail down? The CDC device leaves the bus at t~5 s, which is when that vote runs.
   # Touch is off for this round only.
   "native-touch=1",
-  # sheng-touch-synth and the wallpaper store probes are one-off diagnostics, not release
+  # alioth-touch-synth and the wallpaper store probes are one-off diagnostics, not release
   # defaults. Pass them with --kernel-arg in a dedicated round; the baseline keeps the line
   # for the official GPU diagnostics instead.
 
@@ -752,7 +752,7 @@ kernel_args = [
   # drops them, because publish() finds no sink. Measured 2026-10-28 on boot-usb57: the probe
   # started (TOUCH start=1) and the desktop came up, but nothing reached the system.
   # The reference board passes the same argument.
-  "sheng-touch-hid=1",
+  "touch-hid=1",
   # Publishes the digitizer as its own IOHIDDevice, the way the reference board does. The
   # combined device has never reached the window server here: reports are attempted (hid
   # rises), handleReport refuses them (hres=1), and edge still counts real touches. The
@@ -762,23 +762,23 @@ kernel_args = [
   # splitting here creates a second Touch Screen while the sink is a global singleton, so the
   # merged device stops publishing and whichever one the window server bound to may be the dead
   # one. The merged device now has the per-driver edge hook and the area filter.
-  # "sheng-touch-split=1",
-  # pipa-gpu=<mode>: the A650 probe. Mode 1 only reads -- the GPU's clock sources in the
+  # "alioth-touch-split=1",
+  # alioth-gpu=<mode>: the A650 probe. Mode 1 only reads -- the GPU's clock sources in the
   # global clock controller and the fuses that say which part this is -- so a wrong address
   # cannot wedge the kernel and the route can be checked before anything is written.
   # Mode 6 adds CX power-on, the GPU SMMU clock and the 200 MHz GMU clock. Judgement line:
   # "GPU m1 gcc=ok cc=ok smmu=ok gpu=ok io=0".
   # 2026-11-07: ZAP is not optional. A round without it (acc1) started the poster extensions and
   # then hung the ring: GPUHANG h=1349 with r=0 over one boot, DeviceLost in WidgetRenderer_Defa
-  # and CollectionsPoster, and nothing drew. Every earlier boot read h=0. With sheng-gpu-norestart=1
+  # and CollectionsPoster, and nothing drew. Every earlier boot read h=0. With alioth-gpu-norestart=1
   # one hang is counted every 500 ms and never restarted, so a single missing ZAP poisons the boot.
-  "pipa-gpu=12",
-  "pipa-gpu-zap=1",
+  "alioth-gpu=12",
+  "alioth-gpu-zap=1",
   # Restoring the configuration the GPU actually consumed a ring under. 11-01 and 11-03 both ran
   # with write-combining off, the zap/secure-mode handshake done, and the hangcheck disabled; today
   # all three are the other way. One round with all three back answers "is any of them the cause"
   # before bisecting them one at a time (progress/2026-11-05-why-it-worked.md).
-  "sheng-gpu-wc=0",
+  "alioth-gpu-wc=0",
   # The zap PAS sequence stays ON, and three measured rounds say why it has to.
   # Its segment copy reads pil_gpu_region, which TrustZone owns after authentication. On some
   # boots that read stalls and the whole GPU probe never runs (2026-11-06 of3: one
@@ -795,15 +795,15 @@ kernel_args = [
   # (GPUFRAME gpu offered 59 done 59). So the boot-to-boot stall is the fault to fix in source,
   # not the sequence to drop. The fix belongs in zapLoad: bound the region read and take the
   # mainline no-zap branch (RBBM_SECVID_TRUST_CNTL, a6xx_gpu.c:1516) instead of stalling.
-  # sheng-gpu-norestart is a one-off hang counter; the baseline lets the driver restart.
+  # alioth-gpu-norestart is a one-off hang counter; the baseline lets the driver restart.
   # The GPU busy-counter poll in GpuProbe.cpp hangs the core it runs on, so it is off. It is off in
   # code, not here: native_gpu_freq_tick now returns unless its caller declares the GPU powered
   # (native_gpu_freq_powered), no caller does, and the old 1 Hz call from boot_log_tick is gone.
-  # The boot argument sheng-gpu-dynfreq still exists and still defaults to 0 in GpuProbe.cpp.
+  # The boot argument alioth-gpu-dynfreq still exists and still defaults to 0 in GpuProbe.cpp.
   #
-  # Why not a line here: unixnu.com/zh/xnu/boot-arguments caps the merged command line at 1000
-  # bytes, and this board's line measures 1008 with sheng-gpu-dynfreq=0 present and 987 without
-  # it. The switch costs 21 bytes, so it lives in the default instead.
+  # Why not a line here: payload.py's hard bound is 1023 bytes and the project keeps 1000 as
+  # its budget. The current line is 888 bytes; alioth-gpu-dynfreq=0 costs 21 and would make
+  # 909. The switch is still kept in the default, not on the line.
   #
   # What it cost while it was on (2026-11-02 to 2026-11-06): every boot lost one core about seven
   # seconds in, that core never took its timer interrupt again, and every thread asleep on it was
@@ -815,17 +815,17 @@ kernel_args = [
   # The PCIe controller steps; step 1 only reads, criterion gcc pcie_0_gdscr = 0x22f001.
   # Mounts the payload addon; the wallpaper overlay arrives through it.
   "gpu-addon=1",
-  # sheng-wallpaper-reset=1 was a default from 2026-11-02 18:45 (b0b1be9) to fix186, and it stopped
+  # alioth-wallpaper-reset=1 was a default from 2026-11-02 18:45 (b0b1be9) to fix186, and it stopped
   # the desktop from compositing: it removes com.apple.PosterBoard.plist on every boot, PosterBoard
   # then rebuilds the poster each time, its two extensions fault with SIGBUS, and SpringBoard waits
   # on the wallpaper and submits no frame. Measured with the same board in one night: fix160 (no
   # reset) flipped 136 frames, fix184 (reset) flipped 0, fix187 (reset removed) flipped 9 and mapped
   # 3 surfaces. Keep it out of the defaults. Pass it as a one-off maintenance action
-  # (--kernel-arg sheng-wallpaper-reset=1) when the stored poster must be rebuilt.
+  # (--kernel-arg alioth-wallpaper-reset=1) when the stored poster must be rebuilt.
   # The display hand-off (NativeGOPPresenter.cpp:94): with it the composited frame is offered to
   # the privileged GPU client instead of being copied by the CPU. The live row's swap counter
   # (sc) has not moved without it, so the desktop may be compositing and never presenting.
-  # The tag is shortened to u208 because the command line is at 983 of its 1000 bytes.
+  # The tag was shortened to u208 because the line was at 983 of its 1000-byte budget.
   # 2026-11-04 cpupath round measured fb-gpu=0: NativeGOPPresenter only publishes itself as the
   # hand-off service when this is 1 (NativeGOPPresenter.cpp:104 `if(gpuMode)gHandoff=this`), so with 0 the
   # scanout client's NGP_METHOD_MODE call fails and it stops at marker 6711 before it can report anything.
@@ -860,7 +860,7 @@ kernel_args = [
   # "fb-gpu=1",
   #
   # The known-image colour check (porting/gpu.md step 3) is held back: swaptest=1 plus
-  # gpu-trace=1 and sheng-diag-export=200 is 52 bytes, and the line is already at its limit.
+  # gpu-trace=1 and alioth-diag-export=200 is 52 bytes, and the line is already at its limit.
   # It also runs a Metal pass of its own in the render server, which is a second variable in a
   # round whose only question is whether the boot reaches the desktop. Add it once a boot reaches
   # the desktop every time; the sequence is recorded in progress/2026-11-06-turnip-patch-set.md.
@@ -913,15 +913,15 @@ kernel_args = [
   # This reverses what this file said before: three boots with 0 measured ds=1, own=0, sw=0 and no
   # SURFACEL row, which read as "the CPU path cannot present here". Those boots were losing a core
   # about seven seconds in, and the render server never started on them for that reason. With the
-  # GPU busy-counter poll off (see sheng-gpu-dynfreq) the CPU path presents.
+  # GPU busy-counter poll off (see alioth-gpu-dynfreq) the CPU path presents.
   # The argument itself is gone, not the choice: NativeLegacyDisplay.cpp:341 parses it into
   # `unsigned mode = 0`, so absent and =0 are the same CPU-copy path this file selects above.
-  # 2026-11-07 it was dropped to make room for sheng-touch-synth-swipe=1. The official joined
-  # command-line limit is 1000 bytes, not 1023.
-  # pipa-metal-withhold=none was tried on 2026-10-29: SpringBoard stops trapping but the
+  # 2026-11-07 it was dropped to make room for alioth-touch-synth-swipe=1. The project budget is
+  # 1000 bytes; payload.py's hard bound is 1023. The current line is 888 bytes.
+  # alioth-metal-withhold=none was tried on 2026-10-29: SpringBoard stops trapping but the
   # compositor then sends swaps with no surface (reason 1), so nothing draws. The default
   # withholds the Apple GPU families, which is the configuration where the desktop appears.
-  # "pipa-metal-withhold=none",
+  # "alioth-metal-withhold=none",
   # Starts the HID publisher itself. The publisher is an IOHIDDevice compiled into this kernel,
   # so IOKit has no personality for it and nothing matches it; the board calls it from
   # native_legacy_display_late_probe, the second of the two start paths the driver adaption
@@ -935,16 +935,16 @@ kernel_args = [
   # "offline-screenshot=1",
   # The AppleKeyStore stand-in and its key-event path. Without a keybag the post-restart lock
   # screen asks for a passcode nothing can satisfy; this pair makes the owned AppleKeyStore
-  # answer "no passcode, nothing locked". Add sheng-aks-sls=3 only if the prompt survives.
+  # answer "no passcode, nothing locked". Add aks-sls=3 only if the prompt survives.
   "offline-key-events=1",
-  "sheng-aks=1",
+  "aks=1",
   # Measurement round for the unattended loop: the whole scheme depends on the board returning
   # to fastboot by itself, and nothing has ever confirmed that it does. Sixty seconds is short
   # enough to stand in front of the phone and long enough to be past the console coming up.
   # On for the return-path test. boot_reset_mark_bootloader(), the watchdog and the timed
   # reset all sit behind this one argument, so with it commented out there was nothing to
   # observe: "no reset at 150 s" was never evidence.
-  # "sheng-autoreset=150",  # gated behind sheng-log
+  # "alioth-autoreset=150",  # gated behind alioth-log
   # One measurement round before any frame is trusted. Every frame read so far returned a
   # payload of all 0xFF with a matching CRC, which is the part's "no valid data" answer, and
   # GPIO 39 has never gone low. That leaves two very different causes: the sensor sees no
@@ -960,13 +960,13 @@ kernel_args = [
   # kern.bootargs. probe-keybag-bypass.py qualifies the same argument offline.
   "-apfs_shared_datavolume",
   # The timed reset and the reset probe both live inside the persistent-log writer thread, and
-  # that thread only starts when sheng-log=1. With sheng-autoreset alone nothing watches the
+  # that thread only starts when alioth-log=1. With alioth-autoreset alone nothing watches the
   # deadline: "no reset at 150 s" was the writer never having started, not the reset path
   # failing. The official unattended example passes both arguments together.
-  "sheng-log=1",
+  "alioth-log=1",
   # The official frame diagnostics documented in zh/porting/gpu-diagnostics.md. They are
   # defaults again now that the one-off wallpaper and synthetic-touch arguments are gone.
-  "sheng-diag-export=240",
+  "alioth-diag-export=240",
   # Shader telemetry: diag=1 writes the AdrenoMetal table every six seconds; log-gpu=1
   # sends that table to the kernel log, where the USB console can read it.
   "diag=1",
@@ -981,15 +981,15 @@ kernel_args = [
   # with these four the answer is a stack, not a guess. BootLog prints two rows per role to the
   # console every 30 s, because the slot that carries [stacks] is exactly what freezes.
   # The tracer is opt-in (BootProcessProbe.c:104, and docs/zh/porting/log-capture.md gives
-  # "sheng-log=1 boot-ui-trace=1" as the usage). Without it the probe returns before recording
+  # "alioth-log=1 boot-ui-trace=1" as the usage). Without it the probe returns before recording
   # anything, which is why every STK row was empty. It captures on its 44th..48th call (~90 s).
   # On from 2026-11-06: the upstream display page's own next step for a boot that never presents is
   # "先抓取显示服务和 SpringBoard 的等待链" (porting/display), and this is the documented tool. Slots 1
   # and 2 are backboardd and SpringBoard by default (BootProcessProbe.c:35 trace_slot[]={0,1,1}), so
   # the argument alone traces both. The capture runs on the 44th..48th call of the worker, about 90 s,
   # which is after the point where a bad boot stops submitting and inside the stall.
-  # Restored 2026-11-07. It was removed the same day to make room for sheng-diag-export and
-  # sheng-wallpaper-db, and the two rounds without it (of12b, of13) both read `deaf=1e` with c4
+  # Restored 2026-11-07. It was removed the same day to make room for alioth-diag-export and
+  # alioth-wallpaper-db, and the two rounds without it (of12b, of13) both read `deaf=1e` with c4
   # frozen at 15143/15967 from t=10 s on, while of11 with it read `deaf=00` and c4 climbing
   # 428660 -> 3125522. That is one variable and three rounds, so it is a correlation, not a
   # cause; it is back because of11 is the only round that reached sw=231 unattended, and this
@@ -1006,9 +1006,9 @@ kernel_args = [
   # Until the GPU composites, nothing else draws, so it was the only live view; with the GPU
   # publishing and a wallpaper to judge, it paints over the frames it is meant to help read and
   # costs CPU on a machine with no acceleration yet. The rows still reach the serial console and
-  # the persistent log (sheng-log=1 above), so nothing is lost. boot-progress=0 is not the
+  # the persistent log (alioth-log=1 above), so nothing is lost. boot-progress=0 is not the
   # switch for this: it turns the page and the log thread off together.
-  # sheng-banner=0: the region probe and the nozap round took its slot; both are one-off
+  # alioth-banner=0: the region probe and the nozap round took its slot; both are one-off
   # diagnostics, so the banner switch is back for every normal image.
   # The queued GPU experiment ran on 2026-11-06 (boot-g1) and both halves answered.
   # It works: gpu offered 59 done 59 fail 0 against offered 0 with this off, backboardd opens the
@@ -1028,12 +1028,13 @@ kernel_args = [
   # read, which copied 4096 bytes into a 152-byte stack object and ran into the guard page
   # (pc in memcpy, lr in hostRead4k, far = sp + 0x3b0). The read-back now goes through
   # native_ufs_log_read_bytes, so the boot below is the first that can reach the timed reset.
-  # "sheng-autoreset=180",
+  # "alioth-autoreset=180",
   #
   # The per-process render summary (what each Metal process completes, draws, dispatches, blits and
   # the largest surface it stores) has no boot argument. A 2026-11-07 line was 1006 bytes.
-  # The official joined limit is 1000 bytes; the current 51 arguments join to 927 bytes. A tagged
-  # build adds "sheng-build-tag=<tag>" on top, so a switch of its own does not fit. The frontend therefore sends that row always, and only while the process has
+  # The project budget is 1000 bytes and payload.py's hard bound is 1023; the current 51
+  # arguments join to 888 bytes. A tagged build adds "alioth-build-tag=<tag>", so there is
+  # room, but the summary stays off. The frontend therefore sends that row always, and only while the process has
   # reported no real problem, so a client's failure text still wins its own row.
 ]
 

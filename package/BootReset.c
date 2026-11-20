@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Board glue for BootResetCore.h on alioth: map the IMEM restart-reason window, write
 // "bootloader" into it, read it back, then PSCI SYSTEM_RESET. Nothing here runs without
-// BootLog's boot arguments (sheng-autoreset=<seconds>, see BootLog.c).
+// BootLog's boot arguments (alioth-autoreset=<seconds>, see BootLog.c).
 //
 // Why IMEM and not the SPMI PMIC arbiter that the sheng board uses: alioth's devicetree
 // puts the reason cell at qcom,msm-imem@146bf000 + 0x65c = 0x146bf65c, and the phone was

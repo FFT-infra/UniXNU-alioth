@@ -133,8 +133,8 @@ fw_obj = OUT / 'AdspFirmware.o'
 fw_command = [str(fw_source) if arg == str(policy_source) else str(fw_obj) if arg == str(policy_obj) else arg for arg in policy_command]
 subprocess.run(fw_command, cwd=policy_record['directory'], check=True, timeout=90)
 
-# The UFS diagnostic log writer (boot argument sheng-log=1) and the guarded fastboot reset
-# (sheng-autoreset=<seconds>). BootLog.c reaches the board only through weak imports, so the
+# The UFS diagnostic log writer (boot argument alioth-log=1) and the guarded fastboot reset
+# (alioth-autoreset=<seconds>). BootLog.c reaches the board only through weak imports, so the
 # sheng copy is used unchanged; BootReset.c is this board's own (IMEM, not the SPMI arbiter).
 log_source = PACKAGE / 'BootLog.c'
 log_obj = OUT / 'BootLog.o'
@@ -148,7 +148,7 @@ subprocess.run(reset_command, cwd=record['directory'], check=True, timeout=90)
 # starts a worker that calls boot_process_capture() every two seconds and reads
 # boot_process_rows; with only the weak stubs in LinkStubs.c those rows are empty, which is why
 # every earlier log's [stacks] section was bare. These two objects are the implementation the
-# porting guide names (log-capture.md: sheng-log=1 plus boot-ui-trace=1 starts a separate capture
+# porting guide names (log-capture.md: alioth-log=1 plus boot-ui-trace=1 starts a separate capture
 # worker; boot-ui-focus3=chronod adds a third process), copied unchanged from UniXNU-sheng.
 process_source = PACKAGE / 'BootProcessProbe.c'
 process_obj = OUT / 'BootProcessProbe.o'

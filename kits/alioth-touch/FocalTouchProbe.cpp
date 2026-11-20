@@ -316,11 +316,11 @@ void panelStage(void *ctx, const char *name, unsigned value, int result) {
 // Also declared below for the register dump; a weak_import keeps a build without the USB console
 // linking, and the &-test is what decides whether the row can be written.
 extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
-/* sheng-ls-report=<s>: the LaunchServices store readout runs on this thread, not the boot monitor's.
+/* alioth-ls-report=<s>: the LaunchServices store readout runs on this thread, not the boot monitor's.
  * A lookup that blocks here costs touch; the same block on the monitor thread ended two boots
  * (hdp9, hdp10). Weak, so a build without that package still links. */
 extern "C" void boot_diag_ls_report_ms(unsigned) __attribute__((weak_import));
-/* sheng-ls-dump=<s>: the same readout plus the store's own strings, on the same thread. */
+/* alioth-ls-dump=<s>: the same readout plus the store's own strings, on the same thread. */
 extern "C" void boot_diag_ls_dump_ms(unsigned) __attribute__((weak_import));
 /* lsfix=<seconds>: dump the owner repair logs on this thread. The clock is the first
  * publish() call's mach_absolute_time(), not BootLog's SUPER t=. */
@@ -332,13 +332,13 @@ extern "C" void boot_diag_lsfix_ms(unsigned) __attribute__((weak_import));
  * (of1 9 taps, of1b 27, of3 21, g1 8); the three unattended rounds stopped near black.
  * reference.md:3350 already recorded the same shape with native-touch=0 (prep=11 sw=11).
  *
- * sheng-touch-synth=<ms> publishes one contact for <ms> and then releases it, once per boot,
+ * alioth-touch-synth=<ms> publishes one contact for <ms> and then releases it, once per boot,
  * after a short settle. It goes through the same publish() path as a real contact, so the HID
  * report, the seqlock and the sink notification are the ones the system already trusts; nothing
  * here fabricates a report or bypasses the driver. Off unless the argument is given. */
 static uint32_t synthHoldMs, synthAtMs = 60000, synthState, synthStartMs, synthEndMs;
 static unsigned synthLog;
-/* sheng-synth-repeat=<s>: after the contact is released, wait this many seconds and perform the
+/* alioth-synth-repeat=<s>: after the contact is released, wait this many seconds and perform the
  * same gesture again, for as long as the boot lasts. One contact per boot leaves a single chance:
  * if it lands while the system is still setting the display up, or while the screen is being
  * woken, nothing moves and the round cannot say whether the gesture was refused or never seen.
@@ -351,12 +351,12 @@ static uint32_t synthRepeatS;
  * grouped table background of a settings page and not the wallpaper. A swipe up from the bottom
  * edge asks for the home screen and changes nothing else, which is what an unattended round wants:
  * the display keeps drawing (the compositor draws on input) and the surface stays the home screen.
- * sheng-touch-synth-swipe=1 selects it; the default stays the centre press. */
+ * alioth-touch-synth-swipe=1 selects it; the default stays the centre press. */
 static unsigned synthSwipe;
 static uint32_t synthSwipeMs = 300;
 /* The settle is counted from the first frame this probe publishes, not from the platform counter.
  * Measured on of8: absolutetime_to_nanoseconds(mach_absolute_time()) already read 550,420,918 us
- * at the first publish(), so comparing it against sheng-touch-synth-at=60000 fired the contact on
+ * at the first publish(), so comparing it against alioth-touch-synth-at=60000 fired the contact on
  * the very first frame instead of 60 s into the boot, and the tap landed while the lock screen
  * still owned the display. */
 static uint32_t synthFirstMs;
@@ -780,21 +780,21 @@ static Session gTouchSession;
 
 bool touchProbeStart(void) {
     Session &s = gTouchSession;
-    /* sheng-touch-synth=<ms>: hold one synthetic contact for <ms>, once per boot, at
-     * sheng-touch-synth-at=<ms> counted from the first published frame (default 60 s, after the
-     * desktop is up). sheng-touch-synth-swipe=1 makes the contact a swipe up from the bottom edge
-     * instead of a press held at the centre. sheng-synth-repeat=<s> repeats the same gesture every
+    /* alioth-touch-synth=<ms>: hold one synthetic contact for <ms>, once per boot, at
+     * alioth-touch-synth-at=<ms> counted from the first published frame (default 60 s, after the
+     * desktop is up). alioth-touch-synth-swipe=1 makes the contact a swipe up from the bottom edge
+     * instead of a press held at the centre. alioth-synth-repeat=<s> repeats the same gesture every
      * <s> seconds after the first one lifts. See synthTap(). */
     {
         unsigned hold = 0;
-        if (PE_parse_boot_argn("sheng-touch-synth", &hold, sizeof hold) && hold) {
+        if (PE_parse_boot_argn("alioth-touch-synth", &hold, sizeof hold) && hold) {
             synthHoldMs = hold;
             unsigned at = 0;
-            if (PE_parse_boot_argn("sheng-touch-synth-at", &at, sizeof at) && at) synthAtMs = at;
+            if (PE_parse_boot_argn("alioth-touch-synth-at", &at, sizeof at) && at) synthAtMs = at;
             unsigned swipe = 0;
-            if (PE_parse_boot_argn("sheng-touch-synth-swipe", &swipe, sizeof swipe) && swipe) synthSwipe = 1;
+            if (PE_parse_boot_argn("alioth-touch-synth-swipe", &swipe, sizeof swipe) && swipe) synthSwipe = 1;
             unsigned repeat = 0;
-            if (PE_parse_boot_argn("sheng-synth-repeat", &repeat, sizeof repeat) && repeat) synthRepeatS = repeat;
+            if (PE_parse_boot_argn("alioth-synth-repeat", &repeat, sizeof repeat) && repeat) synthRepeatS = repeat;
             if (&qcom_usb_debug_write) {
                 char text[96];
                 int n = snprintf(text, sizeof text, "TOUCHSYNTH cfg hold=%u at=%u swipe=%u repeat=%u\n", synthHoldMs, synthAtMs, synthSwipe, synthRepeatS);

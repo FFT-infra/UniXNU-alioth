@@ -96,7 +96,7 @@ void boot_process_capture(void) {
  // long time. Measured 2026-11-03: with the worker running every boot, three boots in a row
  // stopped the persistent log at its first round and drew no frame; before the port the same
  // image reached 59 and 68 rounds and drew. The porting guide's own usage is opt-in
- // (docs/zh/porting/log-capture.md: sheng-log=1 boot-ui-trace=1), so take a trace only when the
+ // (docs/zh/porting/log-capture.md: alioth-log=1 boot-ui-trace=1), so take a trace only when the
  // argument asks for one.
  static int trace_enabled = -1;
  if (trace_enabled < 0) {

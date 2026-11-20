@@ -16,7 +16,7 @@
 set -u
 
 IMG=${1:?usage: run-sheng-unattended.sh <test.img> [timeout]}
-# 240, not 180: sheng-autoreset is 180 s, and the record requires the wait to exceed the checkpoint
+# 240, not 180: alioth-autoreset is 180 s, and the record requires the wait to exceed the checkpoint
 # plus the log sync (porting/log-capture) -- a default equal to the deadline can declare a stage
 # failed while the reset it is waiting for is still inside its log-sync grace.
 TIMEOUT=${2:-240}
@@ -28,7 +28,7 @@ TIMEOUT=${2:-240}
 AUTORESET=180
 FLOOR=$((AUTORESET + 60))
 if [ "$TIMEOUT" -lt "$FLOOR" ]; then
-    printf 'run-sheng-unattended: timeout %ss is below the floor of %ss (sheng-autoreset %ss plus 60s log-sync grace).\n' \
+    printf 'run-sheng-unattended: timeout %ss is below the floor of %ss (alioth-autoreset %ss plus 60s log-sync grace).\n' \
         "$TIMEOUT" "$FLOOR" "$AUTORESET" >&2
     printf 'A round that returns at the deadline cannot tell a slow boot from a hung kernel.\n' >&2
     exit 2

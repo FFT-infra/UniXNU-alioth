@@ -87,14 +87,14 @@ stat -c "%s bytes" "$WORK/kernel/kernel.macho"
   --unique-chip-id 0xe835c44a614a1914 \
   --trust-cache "$BASE/UniXNU/build/adreno-metal-plugin/owner-trust.bundle" \
   --data-ramdisk "$WORKSPACE/tmp/scratch-data-3g.dbr" \
-  --gpu-addon "$WORKSPACE/tmp/${ADDON:-gpuaddon-align.gpuaddon}" --kernel-arg sheng-build-tag=$TAG $EXTRA_ARGS || exit 1
+  --gpu-addon "$WORKSPACE/tmp/${ADDON:-gpuaddon-align.gpuaddon}" --kernel-arg alioth-build-tag=$TAG $EXTRA_ARGS || exit 1
 
 ./unixnu bootimg -D "$DEV" $DRV --uefi "$BASE/uefi-alioth" \
   --dtb "$BASE/uefi-alioth/Resources/DTBs/alioth.dtb" -o "$OUT" || exit 1
 echo BOOTIMG_SHA
 sha256sum "$OUT"
 # sha changing only says the file changed; this says whose kernel is inside it.
-strings "$OUT" | grep -o "sheng-build-tag=[a-z0-9]*" | head -1
+strings "$OUT" | grep -o "alioth-build-tag=[a-z0-9]*" | head -1
 # Which addon went in, by name and hash. Without this the console of a stale-addon build reads
 # exactly like a lost race (askers>0, marks=0) and a whole round batch gets spent on it.
 echo "ADDON ${ADDON:-gpuaddon-align.gpuaddon} $(sha256sum "$WORKSPACE/tmp/${ADDON:-gpuaddon-align.gpuaddon}" 2>/dev/null | cut -c1-16)"

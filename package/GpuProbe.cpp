@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // Default-off staged bring-up of pipa's Adreno 650 power and clocks, after UniXNU-sheng's GpuPowerProbe.cpp (Adreno 740).
-// `pipa-gpu=<n>`:
+// `alioth-gpu=<n>`:
 //   1  read the GCC GPU branches, GPUCC (GDSCs and branches), the GPU SMMU's global space 0 and RBBM_STATUS, each only when the
 //      previous stage showed its prerequisite on (GpuPowerBoard.h gpb_run); no register is written
 //   2  as 1, plus the gcc-sm8250 probe's one write: gcc_gpu_cfg_ahb_clk's enable bit, if clear
@@ -15,7 +15,7 @@
 //      two exact routes, 5 on SMR 2 and 0x405 on SMR 3), a write-combined CPU view of its five regions, and the A650 cold start
 //      (package/A650Gmu.c) with the embedded a650_gmu.bin and the HFI tables built from the command DB. GX stays off.
 //   8  as 7, then, only after a complete cold start: GX power through the GMU (A650GmuPowerGx: the GX_BW_PERF_VOTE for the GPU
-//      level `pipa-gpu-perf=<1..7>`, default 7 = 670 MHz, the top one, where Linux starts too; then the OOB GPU_SET request), and
+//      level `alioth-gpu-perf=<1..7>`, default 7 = 670 MHz, the top one, where Linux starts too; then the OOB GPU_SET request), and
 //      with GX on the GX GDSC, RBBM_STATUS and both GBIF halt registers, read only.
 //   9  as 8, then, with GX on, the first GPU command, after UniXNU-tb128fu's GPU probe mode 7 (naContext, naHwInit, naCp): the
 //      GPU's own SMMU context through NativeAdreno (bank 0 / ASID 2, the GPU's streams 0, 1, 0x400 and 0x401 of its DT iommus
@@ -178,13 +178,13 @@ static void gpuMarkStep(const char *what, unsigned step) {
  * status bits, so it is mapped by default. It was skipped for a while because its map() call
  * never returned and the boot stopped there; that turned out to be the state of the Data volume,
  * not this window: with the persistent overlay reset, the same map completes in 15 us and the
- * accelerator registers again (GPUROW24 METAL, askers 5). pipa-gpu-rscc=0 skips it, which is
+ * accelerator registers again (GPUROW24 METAL, askers 5). alioth-gpu-rscc=0 skips it, which is
  * what makes a boot survive when the overlay is bad. */
 static bool rsccWanted() {
     static int wanted = -1;
     if (wanted < 0) {
         unsigned p = 0;
-        wanted = (PE_parse_boot_argn("pipa-gpu-rscc", &p, sizeof p) && p == 0) ? 0 : 1;
+        wanted = (PE_parse_boot_argn("alioth-gpu-rscc", &p, sizeof p) && p == 0) ? 0 : 1;
     }
     return wanted != 0;
 }
@@ -537,10 +537,10 @@ void gmuColdStart(const gpb_result &r, const gpb_gmu_clock_on &o) {
     gDevice.io = {nullptr, {A650_GMU_CORE_BYTES, A650_GMU_RSCC_BYTES, A650_GMU_PDC_BYTES}, gmuRead, gmuWrite, gmuBarrier};
     gDevice.services = {nullptr, gmuNow, gmuWait};
     gConfig = {A650_GMU_CHIP_ID, native_gpu_gmu_firmware, native_gpu_gmu_firmware_size, views[0], views[1], views[3], views[4], 100};
-    // The GMU's DDR vote for the GPU (A650Gmu.c A650GmuDdrVote): off unless pipa-gpu-bw=1 (2026-10-25: with it on, neither the GPU's
+    // The GMU's DDR vote for the GPU (A650Gmu.c A650GmuDdrVote): off unless alioth-gpu-bw=1 (2026-10-25: with it on, neither the GPU's
     // frame times nor the scanout copy changed, so the DDR was not what held them back).
     unsigned ddrVote = 0;
-    PE_parse_boot_argn("pipa-gpu-bw", &ddrVote, sizeof ddrVote);
+    PE_parse_boot_argn("alioth-gpu-bw", &ddrVote, sizeof ddrVote);
     A650GmuDdrVote = ddrVote ? 1 : 0;
     const AdrenoHfiStartupStatus built = A650GmuBuildStartup(gDbFound[0].aux, gDbFound[0].aux_bytes, gDbFound[1].aux,
         gDbFound[1].aux_bytes, gDbFound[2].aux, gDbFound[2].aux_bytes, gDbFound[5].address, gDbFound[4].address,
@@ -593,12 +593,12 @@ uint32_t gpuRead(uint32_t dword) {
 // qcom,tcs-offset 0xd00, tcs-config ACTIVE 2, SLEEP 3, WAKE 3, CONTROL 1), waiting for each command's completion. On the tablet
 // (2026-10-25, round 223524) all three completed in 0.3 ms and the scanout copy went from 2.69 to 1.66 ms, a full-screen pass from
 // 2.40 to 1.91 ms, the render thread's frame from 13.3 to 10.8 ms of CPU, an app's opening from 38 to 44 frames a second. On by
-// default (the DDR stays at its top level: more power while the tablet idles); pipa-ddr-vote=0 leaves the UEFI's level. The result
+// default (the DDR stays at its top level: more power while the tablet idles); alioth-ddr-vote=0 leaves the UEFI's level. The result
 // goes to the row after the CP's state (kRowHang2), which a hang would reuse.
 extern "C" uint64_t ml_io_map(uint64_t phys_addr, uint64_t size);
 void rpmhVoteDdr() {
     unsigned vote = 1;
-    PE_parse_boot_argn("pipa-ddr-vote", &vote, sizeof vote);
+    PE_parse_boot_argn("alioth-ddr-vote", &vote, sizeof vote);
     if (!vote) return;
     char *row = native_gpu_rows[kRowHang2];
     const size_t cap = sizeof native_gpu_rows[0];
@@ -651,8 +651,8 @@ void rpmhVoteDdr() {
 }
 
 void gxOn() {
-    unsigned perf = 7;   // 670 MHz, the top level (it was board.toml's pipa-gpu-perf=7 until 2026-10-25)
-    PE_parse_boot_argn("pipa-gpu-perf", &perf, sizeof perf);
+    unsigned perf = 7;   // 670 MHz, the top level (it was board.toml's alioth-gpu-perf=7 until 2026-10-25)
+    PE_parse_boot_argn("alioth-gpu-perf", &perf, sizeof perf);
     if (perf < 1 || perf > 7) perf = 7;
     native_gpu_step = 100;
     A650GmuGxResult &g = native_gpu_gx;
@@ -677,7 +677,7 @@ void gxOn() {
 // Mode 9. GPU register access for NativeAdreno (dword indices) through the GPU window.
 // The switches this driver reads are the ones the pinned source defines. feat/ipados27-gpu-parity
 // removed the fixed BO pool and replaced the write-combined/coherence switches with
-// native_adreno_owned_coherent (behind sheng-gpu-owned-coherent); there is no pool to size and no
+// native_adreno_owned_coherent (behind alioth-gpu-owned-coherent); there is no pool to size and no
 // per-class import ownership to declare, so those knobs are gone rather than renamed.
 extern "C" {
 extern volatile uint32_t native_adreno_wc_enabled, native_adreno_owned_coherent, native_adreno_io_coherent;
@@ -747,7 +747,7 @@ extern "C" void native_gpu_freq_set_powered(int on) {
 extern "C" void native_gpu_freq_tick(unsigned now) {
     (void)now;
     static int on = -1;
-    if (on < 0) {unsigned v = 0; PE_parse_boot_argn("sheng-gpu-dynfreq", &v, sizeof v); on = v ? 1 : 0;}
+    if (on < 0) {unsigned v = 0; PE_parse_boot_argn("alioth-gpu-dynfreq", &v, sizeof v); on = v ? 1 : 0;}
     if (!on) return;
     if (!__atomic_load_n(&native_gpu_freq_powered, __ATOMIC_ACQUIRE)) return;
     if (!gColdOk || !native_gpu_gx.gx_on) return;
@@ -854,13 +854,13 @@ bool gpuContext() {
     // a0ff4a7 set this to 0 on 2026-11-01 "to flush user BO caches", and fix119 (wc on) then failed -- but fix119 still carried the
     // NO_UPDATE bit and the unconditional set_pagetable prologue, so the ring never drained and almost nothing reached the GPU. Its
     // "rbbm 00800005 / tgt 0 0 0 0" says nothing about write-combining. Those two are fixed as of fix125 (8 clients, Submit 0 failures),
-    // so this is the first clean test. sheng-gpu-wc=0 restores the maintained-every-submission path.
+    // so this is the first clean test. alioth-gpu-wc=0 restores the maintained-every-submission path.
     unsigned wc = 1;
-    PE_parse_boot_argn("sheng-gpu-wc", &wc, sizeof wc);
+    PE_parse_boot_argn("alioth-gpu-wc", &wc, sizeof wc);
     native_adreno_wc_enabled = wc ? 1 : 0;
     native_adreno_owned_coherent = 0;
     // There is no fixed BO pool on this pin: user BOs come from the system and fall back to pageable pages, so
-    // pipa-gpu-pool and pipa-gpu-ro-own no longer exist as knobs. The Metal frontend still cleans the read-only
+    // gpu-pool and alioth-gpu-ro-own no longer exist as knobs. The Metal frontend still cleans the read-only
     // imports it owns; that is now the frontend's own behaviour, not a kernel switch.
     /* Same normalisation the GMU slots get: the kit's free-slot test compares the whole S2CR
      * word, and this unit's unused slots carry CBNDX 0xff beside a FAULT type. Rewrite only
@@ -910,7 +910,7 @@ constexpr uint32_t kProtect[] = {
 constexpr unsigned kProtectCount = sizeof kProtect / sizeof kProtect[0];
 static_assert(kProtectCount == 39, "a650_protect has 39 entries");
 
-// pipa-gpu-gmem16m=1: the UCHE GMEM window at 16 MiB and reported there (the rounds before this), instead of Linux's base 0.
+// alioth-gpu-gmem16m=1: the UCHE GMEM window at 16 MiB and reported there (the rounds before this), instead of Linux's base 0.
 bool gUcheGmem16M;
 
 // Linux v6.6 a650_hwcg (a6xx_gpu.c), as register offsets of a6xx.xml.
@@ -934,11 +934,11 @@ static_assert(sizeof kHwcg / sizeof kHwcg[0] == 49, "a650_hwcg has 49 entries");
 // a6xx_set_hwcg of Linux v6.6: with the SP clock off (GPU_GMU_GX_SPTPRAC_CLOCK_CONTROL bit 0), the table or zeros, then the SP clock
 // on and RBBM_CLOCK_CNTL. Without it (2026-10-24, before this) nothing that runs a shader wrote anything: the plugin's Turnip check
 // filled a buffer correctly (no shader) but its compute shader wrote no word and its triangle no pixel ("T s0 r0 v512 c0 g0/4096"),
-// and the UI's frames were all zero. pipa-gpu-hwcg=0 writes zeros (no gating, the clocks run) instead of the table.
+// and the UI's frames were all zero. alioth-gpu-hwcg=0 writes zeros (no gating, the clocks run) instead of the table.
 void setHwcg() {
     uint32_t *n = native_gpu_cp;
     unsigned on = 1;
-    PE_parse_boot_argn("pipa-gpu-hwcg", &on, sizeof on);
+    PE_parse_boot_argn("alioth-gpu-hwcg", &on, sizeof on);
     n[9] = gpuRead(0x00ae);                                             // RBBM_CLOCK_CNTL as found
     gmuRead(nullptr, A650GmuCore, 0x80 * 4, &n[10]);                     // GPU_GMU_GX_SPTPRAC_CLOCK_CONTROL as found
     gmuWrite(nullptr, A650GmuCore, 0x80 * 4, n[10] & ~1u);
@@ -952,7 +952,7 @@ void setHwcg() {
 }
 
 // hw_init of Linux v6.6 a6xx_gpu.c for the A650 (a650 family, with a GMU); register offsets from a6xx.xml / a6xx_gmu.xml.
-// Hardware clock gating as Linux (setHwcg), and APRIV (pipa-gpu-apriv=0 leaves it off; the ring uses NO_UPDATE either way).
+// Hardware clock gating as Linux (setHwcg), and APRIV (alioth-gpu-apriv=0 leaves it off; the ring uses NO_UPDATE either way).
 void hwInit() {
     gw(0x3C45, 0); (void)gpuRead(0x3C45);                               // GBIF_HALT
     gw(0x0016, 0); (void)gpuRead(0x0016);                               // RBBM_GBIF_HALT
@@ -962,7 +962,7 @@ void hwInit() {
     for (uint32_t reg : addrMode) gw(reg, 1);                           // *_ADDR_MODE_CNTL: 64-bit
     setHwcg();
     unsigned gmem16m = 0;
-    PE_parse_boot_argn("pipa-gpu-gmem16m", &gmem16m, sizeof gmem16m);
+    PE_parse_boot_argn("alioth-gpu-gmem16m", &gmem16m, sizeof gmem16m);
     gUcheGmem16M = gmem16m != 0;
     for (uint32_t reg = 0x3C03; reg <= 0x3C06; ++reg) gw(reg, 0x00071620);   // GBIF_QSB_SIDE0..3 (a650 family)
     gw(0x0011, 0x3);                                                    // RBBM_GBIF_CLIENT_QOS_CNTL
@@ -1005,7 +1005,7 @@ void hwInit() {
     // read) but its compute shader wrote nothing and its image copy nothing ("T s0 r0 v512 c0 g0/4096"), and Metal's frames were
     // all zero; with it (and linux-firmware's SQE) the same check passed ("T s0 r0 v1024 c1024 g512/0").
     unsigned apriv = 1;
-    PE_parse_boot_argn("pipa-gpu-apriv", &apriv, sizeof apriv);
+    PE_parse_boot_argn("alioth-gpu-apriv", &apriv, sizeof apriv);
     if (apriv) gw(0x844, (1u << 6) | (1u << 5) | (1u << 3) | (1u << 2) | (1u << 1));
     gw(0x038, NativeAdrenoIrq::maskA6xx());                             // RBBM_INT_0_MASK: A6XX_INT_MASK
 }
@@ -1316,13 +1316,13 @@ bool zapLoad() {
     // The row is written here, not only before the SCM calls: a boot that stops inside this copy left the
     // previous text ("in mem_setup step 4") standing, which reads as a hung mem_setup and is not one.
     z[0] = 5; native_gpu_step = 133;
-    /* pipa-gpu-zap-reuse=1: skip the copy and go straight to auth_and_reset. The region is not
+    /* alioth-gpu-zap-reuse=1: skip the copy and go straight to auth_and_reset. The region is not
      * reachable from the AP on a boot after the first since power-on (measured 2026-11-03 12:28:
      * 'enter copy' with no read line after it, so the load itself hangs), and on those boots the
      * image from the previous boot may still be in place. If auth accepts it, the copy is not
      * needed at all after the first boot. */
     unsigned reuse = 0;
-    PE_parse_boot_argn("pipa-gpu-zap-reuse", &reuse, sizeof reuse);
+    PE_parse_boot_argn("alioth-gpu-zap-reuse", &reuse, sizeof reuse);
     zapRow(reuse ? "copy skipped" : "in copy");
     scmEnter(reuse ? "copy-skipped" : "copy");
     if (!reuse) {
@@ -1371,14 +1371,14 @@ bool leaveSecure() {
      * its segment copy into pil_gpu_region is what stalls the GPU thread on the boots where
      * TrustZone already owns that region (2026-11-03 13:53: 'ZAPREG start before', no line after
      * it, before any GPU step had run). Skipping it removes the whole failure mode.
-     * pipa-gpu-zap=1 runs the sequence from here instead, which is how it was reached before.
-     * pipa-gpu-nozap=2/3 keep the two no-zap variants mainline and the vendor use, for measurement:
+     * alioth-gpu-zap=1 runs the sequence from here instead, which is how it was reached before.
+     * alioth-gpu-nozap=2/3 keep the two no-zap variants mainline and the vendor use, for measurement:
      *   2  clear RBBM_SECVID_TRUST_CNTL (a6xx_gpu.c:1515, adreno.c:2046). The offset is the
      *      vendor's own, so 0xf400 is A6XX_RBBM_SECVID_TRUST_CNTL unchanged.
      *   3  send CP_SET_SECURE_MODE(0) even though no zap was loaded. */
     unsigned zap = 0, mode = 0;
-    PE_parse_boot_argn("pipa-gpu-zap", &zap, sizeof zap);
-    PE_parse_boot_argn("pipa-gpu-nozap", &mode, sizeof mode);
+    PE_parse_boot_argn("alioth-gpu-zap", &zap, sizeof zap);
+    PE_parse_boot_argn("alioth-gpu-nozap", &mode, sizeof mode);
     if (zap) {
         if (!zapLoad()) return false;
     } else if (mode == 2) {
@@ -1446,7 +1446,7 @@ bool gpuInterrupt() {
 
 // Mode 11. Facts for the Vulkan driver: chip id 0x06050002 (Linux adreno_device.c; Turnip's Darwin backend makes GPU id 650 of
 // it), GMEM 1 MiB + 128 KiB at base 0 as Linux reports it for the a650 family (Turnip reads input attachments through it in GMEM
-// passes; 16 MiB with pipa-gpu-gmem16m=1), the UCHE trap base hw_init writes, the client VA window above the kernel buffers and
+// passes; 16 MiB with alioth-gpu-gmem16m=1), the UCHE trap base hw_init writes, the client VA window above the kernel buffers and
 // below the 2 GiB aperture, and the UBWC facts hw_init programs (highest bank bit 16; swizzle levels 2 and 3, as Linux's default
 // for every A6XX but the A610; eight-channel macrotiles: RBBM_NC_MODE_CNTL reads 1 at reset here (2026-10-24), and Linux's
 // ubwc_config for the SM8250 has macrotile_mode set; UBWC 4.0 of the SM8250).
@@ -1542,12 +1542,12 @@ int ucRound(IOService *svc) {
     IOMemoryDescriptor *desc[2] = {};
     IOMemoryMap *maps[2] = {};
     if (step(ucCall(uc, NativeAdrenoMethodBoAlloc, &alloc, &ib)) && step(ucCall(uc, NativeAdrenoMethodBoAlloc, &alloc, &tgt))) {
-        /* fix70: the default is the client window kDeviceInfo advertises. pipa-gpu-lowiova=1 moves both into the
+        /* fix70: the default is the client window kDeviceInfo advertises. alioth-gpu-lowiova=1 moves both into the
          * range the kernel context already proved reachable: cpStart's own CP_MEM_WRITE lands at 0x302000 and
          * completes every round (GPUROW19 marker a6500c0d), so 0x300000 is inside the table the CP actually uses.
          * Same IB, same writes, only the address changes: if this completes, the stop was page-table coverage. */
         unsigned lowIova = 0;
-        PE_parse_boot_argn("pipa-gpu-lowiova", &lowIova, sizeof lowIova);
+        PE_parse_boot_argn("alioth-gpu-lowiova", &lowIova, sizeof lowIova);
         /* 0x310000, not 0x300000: 0x300000..0x302fff are the GPU context's own memptrs/pwrup/scratch buffers, so a
          * BO mapped there is refused as Busy (fix70 measured e00002d5 at step 7). 0x310000 is the first free page
          * above them and still inside the range cpStart's CP_MEM_WRITE reaches. */
@@ -1595,12 +1595,12 @@ int ucRound(IOService *svc) {
                     words[i * 4 + 1] = uint32_t(tgtIova + i * 4); words[i * 4 + 2] = uint32_t(tgtIova >> 32);
                     words[i * 4 + 3] = values[i];
                 }
-                /* pipa-gpu-nop=1 sends a single CP_NOP instead of the three writes. fix56d read scr=5
+                /* alioth-gpu-nop=1 sends a single CP_NOP instead of the three writes. fix56d read scr=5
                  * (fence-1) on a hung round: the CP never reached the fence packet, so it stopped inside
                  * this IB. A NOP-only IB that still hangs means the stop is on fetching the IB; one that
                  * completes means the stop is on the writes the IB makes. */
                 unsigned nopOnly = 0;
-                PE_parse_boot_argn("pipa-gpu-nop", &nopOnly, sizeof nopOnly);
+                PE_parse_boot_argn("alioth-gpu-nop", &nopOnly, sizeof nopOnly);
                 if (gReplayWords && gReplayWords <= 192) {
                     for (unsigned i = 0; i < gReplayWords; ++i) iw[i] = gReplayIb[i];
                 } else if (nopOnly) {
@@ -1663,10 +1663,10 @@ int ucRound(IOService *svc) {
     mark("round done");
     return matched;
 }
-// Two rounds: the second proves the client slot and the IOVAs recycle after clientClose. pipa-gpu-selftest=0 skips them.
+// Two rounds: the second proves the client slot and the IOVAs recycle after clientClose. alioth-gpu-selftest=0 skips them.
 bool selfTest() {
     unsigned on = 1;
-    PE_parse_boot_argn("pipa-gpu-selftest", &on, sizeof on);
+    PE_parse_boot_argn("alioth-gpu-selftest", &on, sizeof on);
     if (!on) return true;
     native_gpu_step = 155;
     IOService *svc = native_adreno_published_service();
@@ -1775,15 +1775,15 @@ bool metal() {
     // Turnip's options for this board. The plugin sets TU_DEBUG=nocb for every process (NativeAdrenoMetalPlugin.mm); "nocb" is a
     // no-op on the A650, which has no concurrent binning, and keeps the variable non-empty. The system-memory path that
     // fb-bgra=1 used to select writes no pixels (2026-11-05), so nothing selects it by default. This row prints what that
-    // process will use: sheng-tu-debug=<options> overrides the plugin, pipa-turnip-debug=<options> records a round's choice here.
+    // process will use: alioth-tu-debug=<options> overrides the plugin, alioth-turnip-debug=<options> records a round's choice here.
     // Nothing reads the NativeTurnipDebug property this becomes, so this row is a reading, not a switch.
     char turnip[64] = "nocb";
-    PE_parse_boot_arg_str("sheng-tu-debug", turnip, sizeof turnip);
-    PE_parse_boot_arg_str("pipa-turnip-debug", turnip, sizeof turnip);
+    PE_parse_boot_arg_str("alioth-tu-debug", turnip, sizeof turnip);
+    PE_parse_boot_arg_str("alioth-turnip-debug", turnip, sizeof turnip);
     // Canned Turnip option sets for a round, so an A/B on the GMEM input attachment bug (HANDOFF-pipa.md 10.14) fits in the
-    // 1000-byte command line: pipa-tu=1..5 (8 bytes) instead of pipa-turnip-debug=<46 bytes>.
+    // 1000-byte command line: alioth-tu=1..5 (8 bytes) instead of alioth-turnip-debug=<46 bytes>.
     unsigned canned = 0;
-    if (PE_parse_boot_argn("pipa-tu", &canned, sizeof canned) && canned) {
+    if (PE_parse_boot_argn("alioth-tu", &canned, sizeof canned) && canned) {
         static const char *const sets[] = {"",
             "pipa_gmemin",                       // 1 GMEM for input attachments, the corner bug on display
             "pipa_gmemin,pipa_iaflush",          // 2 invalidate the UCHE before every draw that reads GMEM
@@ -1800,14 +1800,14 @@ bool metal() {
         if (canned < sizeof sets / sizeof sets[0]) snprintf(turnip, sizeof turnip, "%s", sets[canned]);
     }
     accelerator->setProperty("NativeTurnipDebug", turnip);
-    // Device capabilities the Metal frontend withholds in every process (NativeMetalWithhold, as NMB_WITHHOLD): pipa-metal-withhold=
+    // Device capabilities the Metal frontend withholds in every process (NativeMetalWithhold, as NMB_WITHHOLD): alioth-metal-withhold=
     // apple-families answers no to every Apple GPU family, as UniXNU-tb128fu does (Core Animation blends by framebuffer fetch on an
     // Apple1 device, NativeBridgeMetalFrontend.mm). With the families reported, the home screen's widget platters had their rounded
     // corners drawn in 4 x 4 pixel blocks with holes (2026-10-24).
     // apple-families is the default since 2026-10-25 (it was board.toml's argument, 35 bytes of the 1000-byte command line);
-    // pipa-metal-withhold=none reports the families again.
+    // alioth-metal-withhold=none reports the families again.
     char withhold[64] = "apple-families";
-    PE_parse_boot_arg_str("pipa-metal-withhold", withhold, sizeof withhold);
+    PE_parse_boot_arg_str("alioth-metal-withhold", withhold, sizeof withhold);
     if (withhold[0] && strcmp(withhold, "none"))
         accelerator->setProperty("NativeMetalWithhold", withhold);
     stage = 4;
@@ -2031,8 +2031,8 @@ void gpuThread(void *, wait_result_t) {
      * 2026-11-08 it stopped returning: every boot after 06:55 printed `enter` and `woke` and never
      * `bench`, so the GPU firmware load that follows never ran and no boot reached the desktop.
      * It measures memset and memcpy and feeds no decision, so it no longer runs unless asked for
-     * with pipa-gpu-membench=1. */
-    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-membench", &p, sizeof p) && p) memBench(); }
+     * with alioth-gpu-membench=1. */
+    { unsigned p = 0; if (PE_parse_boot_argn("alioth-gpu-membench", &p, sizeof p) && p) memBench(); }
     gpuMark("bench");
     native_gpu_step = 1;
     unsigned have = 0;
@@ -2044,12 +2044,12 @@ void gpuThread(void *, wait_result_t) {
     const gpb_io io = {nullptr, rd, wr, delayUs};
     gpb_result &r = native_gpu_result;
     native_gpu_step = 10;
-    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("start"); }
+    { unsigned p = 0; if (PE_parse_boot_argn("alioth-gpu-region-probe", &p, sizeof p) && p) touchRegion("start"); }
     gpb_run(&io, gMode, have, &r);
     gpuMark("ran");
     rowsBasic(r);
     gpuMark("rows");
-    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-power"); }
+    { unsigned p = 0; if (PE_parse_boot_argn("alioth-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-power"); }
     if (gMode < 5) {native_gpu_step = 99; return;}
     commandDb();
     uint32_t cx_gmu = r.cc_gmu, ahb = r.cc_ahb;
@@ -2069,13 +2069,13 @@ void gpuThread(void *, wait_result_t) {
     gpuMark("gmustate");
     if (gMode >= 7) gmuColdStart(r, native_gpu_clocks);
     gpuMark("gmucold");
-    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-gmu"); }
+    { unsigned p = 0; if (PE_parse_boot_argn("alioth-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-gmu"); }
     if (gMode >= 8 && gColdOk) gxOn();
-    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-gx"); }
+    { unsigned p = 0; if (PE_parse_boot_argn("alioth-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-gx"); }
     gpuMark("gx");
     const bool cp = gMode >= 9 && native_gpu_gx.gx_on && gpuContext() && cpStart();
     gpuMark("cp");
-    { unsigned p = 0; if (PE_parse_boot_argn("pipa-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-cp"); }
+    { unsigned p = 0; if (PE_parse_boot_argn("alioth-gpu-region-probe", &p, sizeof p) && p) touchRegion("after-cp"); }
     const bool irq = gMode >= 10 && cp && leaveSecure() && gpuInterrupt();
     gpuMark("irq");
     if (irq) regDump("init");
@@ -2091,7 +2091,7 @@ void gpuThread(void *, wait_result_t) {
     if (gMode >= 11 && irq && publish()) {
         /* The reference board (UniXNU-sheng/package/GpuPowerProbe.cpp:1561-1565) runs the
          * user-client self-test only as an opt-in diagnostic and still publishes Metal when
-         * sheng-gpu-metal=1. Mode 12 is this board's equivalent. Keep the self-test rows for
+         * gpu-metal=1. Mode 12 is this board's equivalent. Keep the self-test rows for
          * diagnosis, but do not let a failed first round gate service registration. */
         (void)selfTest();
         if (gMode >= 12) metal();
@@ -2175,7 +2175,7 @@ extern "C" void native_gpu_probe(void) {
      * hook, never brings the GPU back: every later submission then runs on a stopped CP. */
     native_adreno_set_restart(nativeGpuRestart, nullptr);
     unsigned mode = 0;
-    const boolean_t parsed = PE_parse_boot_argn("pipa-gpu", &mode, sizeof mode);
+    const boolean_t parsed = PE_parse_boot_argn("alioth-gpu", &mode, sizeof mode);
     // Before the early return, so this prints whichever path the call takes: a boot that reports
     // m7 and a boot that reports m12 differ here, and every row-based attempt was overwritten
     // before the 15 s scan could see it. It also says how many times this entry point ran, which
@@ -2185,13 +2185,13 @@ extern "C" void native_gpu_probe(void) {
         extern size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak_import));
         static unsigned calls;
         char line[96];
-        int n = snprintf(line, sizeof line, "GPUARG call %u pipa-gpu=%u parsed=%d gMode=%u\n",
+        int n = snprintf(line, sizeof line, "GPUARG call %u alioth-gpu=%u parsed=%d gMode=%u\n",
                          ++calls, mode, parsed ? 1 : 0, gMode);
         if (&qcom_usb_debug_write && n > 0) qcom_usb_debug_write(line, (size_t)n);
     }
     // The same three numbers in the row the 15 s scan prints, because the direct write above is
     // lost when the USB console has not enumerated yet (the cperr1 boot printed no GPUARG line
-    // and then reported m7 for an image whose args carry pipa-gpu=12). A CP error overwrites this
+    // and then reported m7 for an image whose args carry alioth-gpu=12). A CP error overwrites this
     // row with its own decode, which is the wanted behaviour.
     snprintf(native_gpu_rows[kRowCpErr], sizeof native_gpu_rows[0], "GPUPARSE arg=%u parsed=%d gMode=%u", mode,
              parsed ? 1 : 0, gMode);
@@ -2199,7 +2199,7 @@ extern "C" void native_gpu_probe(void) {
     if (gMode || !parsed || !mode) return;
     gMode = mode > 12 ? 12 : mode;
     // The row that says which mode the probe runs in is written after gpb_run(), and on
-    // 2026-10-31 09:07 it said m7 for an image whose command line carries pipa-gpu=12. This row
+    // 2026-10-31 09:07 it said m7 for an image whose command line carries alioth-gpu=12. This row
     // records what was *parsed*, so the next boot separates "the argument differs" from "gMode
     // was changed after this". It goes in kRowAfter, which the cold start overwrites later and
     // which no other step touches before that; kRowContext was tried first and was overwritten

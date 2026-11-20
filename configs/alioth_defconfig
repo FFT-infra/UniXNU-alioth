@@ -79,8 +79,8 @@ CONFIG_XNU_BOOT_PROGRESS=y
 # force-loads libQcomXnuUsbDebug.a when this is 1. The firmware already brings the controller
 # up and this kernel has no other USB driver, so nothing competes for it.
 CONFIG_XNU_QCOM_USB_DEBUG=y
-# Was unset. It is on now because BootWatchdogPolicy.c, which reads sheng-lite and
-# sheng-disable-watchdogd, is called only from inside `#if XNU_BOOT_PROGRESS` in
+# Was unset. It is on now because BootWatchdogPolicy.c, which reads lite and
+# disable-watchdogd, is called only from inside `#if XNU_BOOT_PROGRESS` in
 # load_init_program, so those arguments were dead keys while this stayed off. sheng sets both and
 # reaches the desktop; alioth does not, and a 2026-10-26 measurement found processes dying with
 # libsystem faults, fewer than ten alive.

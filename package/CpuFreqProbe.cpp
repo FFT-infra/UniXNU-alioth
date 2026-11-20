@@ -4,11 +4,11 @@
 // layout is the same qcom-cpufreq-hw-epss interface, and the SM8250 addresses and domain CPU
 // counts come from this board's own device tree (kona.dtsi:325-330) and the same SoC's pipa
 // port, which votes the identical hardware. This board's device tree declares no EPSS L3, so
-// the L3 window the SM8550 version maps is absent here. `sheng-cpufreq=<n>`:
+// the L3 window the SM8550 version maps is absent here. `cpufreq=<n>`:
 //   1  read-only: report each domain's enable bit, current/requested level and its highest LUT entry
 //   2  additionally request that highest non-turbo level in domain 0 (the boot CPU's cluster)
 //   3  the same in every domain once it reads enabled, and the highest L3 level
-// Optional `sheng-cpufreq-cap=<MHz>`: mode 3 requests the highest non-turbo level at or below it (domains and L3).
+// Optional `alioth-cpufreq-cap=<MHz>`: mode 3 requests the highest non-turbo level at or below it (domains and L3).
 // Register layout is the qcom-cpufreq-hw "epss" data of the pinned mainline tree (reg_enable 0x0, reg_domain_state 0x20,
 // reg_dcvs_ctrl 0xb0, reg_freq_lut 0x100 with 4-byte rows, reg_perf_state 0x320, per-core perf_state rows +4*i for the
 // policy's other CPUs when dcvs_ctrl bit 0 is set); the three domain windows come from the cpufreq@17d91000 node of
@@ -130,8 +130,8 @@ extern "C" void sheng_cpufreq_poll(void) {
 
 extern "C" void sheng_cpufreq_probe(void) {
     unsigned mode = 0, capMHz = 0;
-    PE_parse_boot_argn("sheng-cpufreq", &mode, sizeof(mode));
-    PE_parse_boot_argn("sheng-cpufreq-cap", &capMHz, sizeof(capMHz));
+    PE_parse_boot_argn("cpufreq", &mode, sizeof(mode));
+    PE_parse_boot_argn("alioth-cpufreq-cap", &capMHz, sizeof(capMHz));
     if (!mode || gLock) return;
     gLock = IOLockAlloc();
     if (!gLock) return;

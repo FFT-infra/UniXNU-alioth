@@ -49,7 +49,7 @@ DEFAULT_COUNT = 8192
 
 
 def read_via_adb(serial, skip, count, path):
-    target = '/tmp/sheng-log.bin'
+    target = '/tmp/alioth-log.bin'
     cmd = ['adb']
     if serial:
         cmd += ['-s', serial]
@@ -119,7 +119,7 @@ DIAG_STREAM_MAGIC = b'M2VCACH1'
 
 
 def read_diag_via_adb(serial, skip, count, path):
-    target = '/tmp/sheng-diag.bin'
+    target = '/tmp/diag.bin'
     cmd = ['adb']
     if serial:
         cmd += ['-s', serial]
@@ -168,7 +168,7 @@ def unpack_diag(blob, dest):
     """SHEXR001, then the M2VCACH1 stream BootDiagExport.c streams: the blob header's second word
     is the stream length, and the stream is the same shape the pipeline-cache export uses."""
     if len(blob) < 16 or blob[0:8] != DIAG_MAGIC:
-        return None, 'no SHEXR001 header (the boot did not run sheng-diag-export, or the region moved)'
+        return None, 'no SHEXR001 header (the boot did not run alioth-diag-export, or the region moved)'
     stream_bytes, = struct.unpack_from('<I', blob, 8)
     stream = blob[16:16 + stream_bytes]
     if len(stream) < stream_bytes:

@@ -10,12 +10,12 @@
 +	 * /System/Library/LaunchDaemons -- even through the addon's union mount -- is never loaded; lx1
 +	 * (2026-11-09) measured exactly that: the owner plists were visible and the daemon never ran.
 +	 * The helper keeps the environment this exec gives init (none here: the SystemOS union keeps the
-+	 * cache at its normal path) and execs /sbin/launchd itself. Off unless sheng-init=1 or
-+	 * sheng-init=2; the marker /private/var/ngpu/lsfix.ok, written once the registration ran,
++	 * cache at its normal path) and execs /sbin/launchd itself. Off unless alioth-init=1 or
++	 * alioth-init=2; the marker /private/var/ngpu/lsfix.ok, written once the registration ran,
 +	 * skips it on later boots; any failure falls through to launchd below. */
 +	{
 +		int sheng_init = 0;
-+		if (PE_parse_boot_argn("sheng-init", &sheng_init, sizeof(sheng_init)) &&
++		if (PE_parse_boot_argn("alioth-init", &sheng_init, sizeof(sheng_init)) &&
 +		    (sheng_init == 1 || sheng_init == 2)) {
 +			vnode_t probe_vp = NULLVP;
 +			int done = vnode_lookup("/private/var/ngpu/lsfix.ok", 0, &probe_vp, vfs_context_current()) == 0;

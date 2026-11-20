@@ -100,7 +100,7 @@ enum {GPB_WIN_GCC_GPU = 0, GPB_WIN_GCC_VOTE = 1, GPB_WIN_GPUCC = 2, GPB_WIN_SMMU
       GPB_WIN_RSCC = 6, GPB_WINDOWS = 7};
 
 struct gpb_result {
-    unsigned mode;                       // pipa-gpu=<mode>: 1 read only, 2 + cfg AHB, 3 + CX power, 5 + cmd-db, 6 + GMU clocks
+    unsigned mode;                       // alioth-gpu=<mode>: 1 read only, 2 + cfg AHB, 3 + CX power, 5 + cmd-db, 6 + GMU clocks
     enum gpb_state gcc, cc, smmu, gpu;
     uint32_t cfg_ahb, cfg_ahb_after, memnoc, dvm, misc, pll_vote;
     uint32_t cx_gdscr, gx_gdscr, cc_ahb, cc_smmu, cc_gmu;

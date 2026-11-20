@@ -1,6 +1,6 @@
 [submodule "drivers/ShengHidInput"]
 	path = drivers/ShengHidInput
-	url = https://github.com/UniXNU/ShengHidInput.git
+	url = https://github.com/FFT-infra/ShengHidInput.git
 [submodule "drivers/ArmCpu"]
 	path = drivers/ArmCpu
 	url = https://github.com/FFT-infra/ArmCpu.git

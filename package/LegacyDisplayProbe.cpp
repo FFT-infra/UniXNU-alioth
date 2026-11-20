@@ -1254,7 +1254,7 @@ void native_legacy_display_late_probe(void) {
 	// "the kernel stopped earlier", which the panel otherwise cannot tell apart, because both
 	// leave the DarwinBoot frame in place.
 	native_legacy_paint_reached_band();
-	// sheng-ls-reset=1: empty the LaunchServices store before userland starts (BootDiagExport.c).
+	// alioth-ls-reset=1: empty the LaunchServices store before userland starts (BootDiagExport.c).
 	// pkd rejects every /Applications plugin because the containing app has no LS record, and its
 	// own message names 'mobile_install rebuild system user' as the remedy; there is no shell on
 	// this board, so the store is invalidated instead and lsd builds a new one.
@@ -1268,7 +1268,7 @@ void native_legacy_display_late_probe(void) {
 	extern int native_hid_input_probe(void);
 	native_hid_input_probe();
 
-	// The A650 probe, at the point the reference board calls it. Opt-in through pipa-gpu=<mode>.
+	// The A650 probe, at the point the reference board calls it. Opt-in through alioth-gpu=<mode>.
 	extern void native_gpu_probe(void);
 	native_gpu_probe();
 
@@ -1298,7 +1298,7 @@ void native_legacy_display_late_probe(void) {
 	// answer the post-restart passcode prompt. Opt-in through offline-key-events=1.
 	extern void native_keystore_probe(void);
 	native_keystore_probe();
-	// The CPU frequency vote (sheng-cpufreq=<n>) maps the EPSS domains and votes the top
+	// The CPU frequency vote (cpufreq=<n>) maps the EPSS domains and votes the top
 	// non-turbo level; it reports its state through native_cpufreq_row on the panel.
 	/* This file sits inside an extern "C" block to the end, so the declaration must not repeat
 	 * the linkage specifier: an extern "C" inside a function body there is a syntax error. */
@@ -1502,7 +1502,7 @@ void native_legacy_display_late_probe(void) {
 					 * display's node: a presenter attached under the display made SpringBoard find no
 					 * display and crash (sheng recorded that), so the placement is deliberate. */
 					unsigned gpu = 0;
-					if (!PE_parse_boot_argn("fb-gpu", &gpu, sizeof gpu)) PE_parse_boot_argn("sheng-fb-gpu", &gpu, sizeof gpu);
+					if (!PE_parse_boot_argn("fb-gpu", &gpu, sizeof gpu)) PE_parse_boot_argn("fb-gpu", &gpu, sizeof gpu);
 					if (gpu == 1 && &native_gop_presenter_create) {
 						IOService *handoff = native_gop_presenter_create();
 						IOService *home = IOService::getResourceService();

@@ -20,9 +20,9 @@ static const char policy_head[] =
 static const char policy_watchdogd[]="<key>com.apple.watchdogd</key><true/>";
 // Bring-up isolation: hardware stacks show identityservicesd, contextstored and locationd in a
 // cycle of synchronous XPC waits. A disabled job makes its Mach service lookups fail instead of hang.
-// sheng-disable-jobs=<label>[,<label>...] (restricted label characters, bounded length).
+// disable-jobs=<label>[,<label>...] (restricted label characters, bounded length).
 static const char policy_tail[]="</dict></plist>\n";
-// sheng-lite=1: jobs that only reach for the network, iCloud or the photo library and have nothing to do on this tablet (no radios, no accounts),
+// lite=1: jobs that only reach for the network, iCloud or the photo library and have nothing to do on this tablet (no radios, no accounts),
 // all of which start at the first boot of a fresh Data and compete with SpringBoard for the CPU and for memory. The first four are the
 // cycle of synchronous XPC waits the isolation work found. Labels are the ones in the target's own LaunchDaemons.
 static const char lite_jobs[]=
@@ -41,7 +41,7 @@ static const char lite_jobs[]=
  // names nothing disables nothing (b0c316f did exactly that and the crash stayed).
  "com.apple.fairplayd.A2,com.apple.passd,com.apple.mobile.obliteration";
 
-// The two wallpaper extensions, kept apart from the list above because sheng-wallpaper-posters=1 puts
+// The two wallpaper extensions, kept apart from the list above because alioth-wallpaper-posters=1 puts
 // them back on their own. They faulted with SIGBUS (ESR 0x82000007) on a userspace pointer every boot
 // when the list above was written; that was 2026-11-06 and every boot then lost a core about seven
 // seconds in, so they are worth one round with the core loss fixed before they are written off.
@@ -49,7 +49,7 @@ static const char lite_posters[]="com.apple.NanoUniverse.AegirProxyApp.AegirPost
 static char policy[2048],jobs[200];
 volatile int sheng_watchdog_policy_status=-1;
 
-// sheng-setup=1 or sheng-data-reset=2 (the install entry's "show Hello" choice): remove Setup's completion flags once, so this boot shows the Hello page.
+// setup=1 or data-reset=2 (the install entry's "show Hello" choice): remove Setup's completion flags once, so this boot shows the Hello page.
 // iPadOS writes them again when Setup finishes, so later boots do not show it. Absent files are fine.
 static int sheng_boot_setup_reset(proc_t p,uint64_t scratch) {
  static const char *const files[]={
@@ -70,7 +70,7 @@ static int sheng_boot_setup_reset(proc_t p,uint64_t scratch) {
  * snapshot in its own container and reuses them. This board's Data volume has been carried since before the wallpaper overlay
  * existed, so a snapshot taken while the images could not be decoded outlives every later change to them. fix142 is that state:
  * a solid red 2732x2732 J120.png was written into the mounted .ca (A files=15 wr=2, mount3=5/0) and the picture did not change.
- * sheng-wallpaper-reset=1 removes the stored configuration once, so this boot builds it again from the collection and the overlay.
+ * alioth-wallpaper-reset=1 removes the stored configuration once, so this boot builds it again from the collection and the overlay.
  * [0] is how many candidates there are; [i+1] records the unlink of candidate i: 0 removed, ENOENT (2) absent, else the errno. */
 volatile int32_t sheng_wallpaper_reset[8] = {0};
 // The container scan's own reading: [0] vnode_lookup result, [1] last VNOP_READDIR result, [2] directory entries walked, [3] candidate
@@ -79,14 +79,14 @@ volatile int32_t sheng_wallpaper_scan[4] = {0};
 // The container the last walk matched. The configuration read builds its path from this instead of
 // a UUID baked into the source, which read ENOENT once the container had been recreated.
 char sheng_wallpaper_container[192];
-// sheng-wp=<1|2>: the entry names under the directories that can hold a chosen poster. 1 is the
+// alioth-wp=<1|2>: the entry names under the directories that can hold a chosen poster. 1 is the
 // Data container, 2 the system volume's wallpaper collections. The name is short because the
 // merged command line is capped at 1000 bytes and this argument competes with the board's own.
 // The plist in Library/Preferences turned out to be CoreAnimation settings, so the next thing to
 // look at is the directory listing rather than another guessed file.
 volatile int32_t sheng_wallpaper_list_ran = 0;
 char sheng_wallpaper_names[256];
-// sheng-wallpaper-db=1: the printable runs in the first page of the poster store's SQLite file.
+// alioth-wallpaper-db=1: the printable runs in the first page of the poster store's SQLite file.
 // SQLite keeps its schema in page 1, so the CREATE TABLE names come out without a SQLite reader.
 volatile int32_t sheng_wallpaper_db_ran = 0;
 char sheng_wallpaper_db[400];
@@ -328,13 +328,13 @@ static int sheng_wallpaper_reset_files(proc_t p, uint64_t scratch) {
 /* Which wallpaper the desktop actually picks. PosterBoard stores its choice in this plist, so its bytes name the collection and
  * the variant without any guesswork. [0] status (0 read, else the errno, -1 no open), [1] bytes read, [2..] the bytes, four to a
  * word, little endian as they sit in the file. A binary plist keeps its strings verbatim, so the identifier is readable in the
- * dump. sheng-wallpaper-probe=1. */
+ * dump. alioth-wallpaper-probe=1. */
 volatile int32_t sheng_wallpaper_cfg[2 + 128] = {0};
 // 0 until sheng_wallpaper_read_cfg is entered, so a probe that never ran and one that read nothing
 // stop looking the same on the console. The path it opens carries a container UUID that changes
 // when the app's container is recreated, which is a silent failure otherwise.
 volatile int32_t sheng_wallpaper_probe_ran = 0;
-// sheng-wallpaper-scan=1: how many containers carry PosterBoard in their metadata plist, walked from
+// alioth-wallpaper-scan=1: how many containers carry PosterBoard in their metadata plist, walked from
 // the two container roots. The configuration probe opens a path with a container UUID baked in and now
 // reads ENOENT, so the first question is whether a PosterBoard container exists at all.
 volatile int32_t sheng_wallpaper_scan_ran = 0;
@@ -427,14 +427,14 @@ static int append_job(const char **cursor) {
 int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  proc_t p=process;
  int enabled=0,error=0,fd=-1;int32_t result=0;
- PE_parse_boot_argn("sheng-disable-watchdogd",&enabled,sizeof(enabled));
- if(!PE_parse_boot_argn("sheng-disable-jobs",jobs,sizeof(jobs)))jobs[0]=0;jobs[sizeof(jobs)-1]=0;
- int lite=0;PE_parse_boot_argn("sheng-lite",&lite,sizeof(lite));if(lite!=1)lite=0;
+ PE_parse_boot_argn("disable-watchdogd",&enabled,sizeof(enabled));
+ if(!PE_parse_boot_argn("disable-jobs",jobs,sizeof(jobs)))jobs[0]=0;jobs[sizeof(jobs)-1]=0;
+ int lite=0;PE_parse_boot_argn("lite",&lite,sizeof(lite));if(lite!=1)lite=0;
  if(enabled!=1)enabled=0;
  for(const char *c=jobs;*c;++c)if(!((*c>='a'&&*c<='z')||(*c>='A'&&*c<='Z')||(*c>='0'&&*c<='9')||*c=='.'||*c=='-'||*c==','))return EINVAL;
  int setup=0,reset=0;
- PE_parse_boot_argn("sheng-setup",&setup,sizeof(setup));
- PE_parse_boot_argn("sheng-data-reset",&reset,sizeof(reset));   // 2 = erase Data and show the Hello page; 1 = erase Data, Setup stays skipped
+ PE_parse_boot_argn("setup",&setup,sizeof(setup));
+ PE_parse_boot_argn("data-reset",&reset,sizeof(reset));   // 2 = erase Data and show the Hello page; 1 = erase Data, Setup stays skipped
  if(reset==2)setup=1;
  if(setup==1 && (error=sheng_boot_setup_reset(p,scratch))) {
   sheng_watchdog_policy_status=error;
@@ -444,13 +444,13 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  if(setup==1)printf("sheng setup flags reset: Hello page on this boot\n");
  {
   int wallpaper=0;
-  PE_parse_boot_argn("sheng-wallpaper-reset",&wallpaper,sizeof(wallpaper));
+  PE_parse_boot_argn("alioth-wallpaper-reset",&wallpaper,sizeof(wallpaper));
   if(wallpaper==1) {
    if((error=sheng_wallpaper_reset_files(p,scratch))) sheng_watchdog_policy_status=error;
    else printf("sheng wallpaper configuration reset\n");
   }
   int wscan=0;
-  PE_parse_boot_argn("sheng-wallpaper-scan",&wscan,sizeof(wscan));
+  PE_parse_boot_argn("alioth-wallpaper-scan",&wscan,sizeof(wscan));
   // This function runs on every exec, and the walk reads a metadata plist in every container under
   // two roots, so it cannot run every time. It also cannot run only once: the first exec is far too
   // early for PosterBoard to have a container. Every two hundredth exec is late enough to see one and
@@ -462,7 +462,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
    sheng_wallpaper_scan_group=(int32_t)sheng_wallpaper_containers(p,scratch,"/private/var/mobile/Containers/Shared/AppGroup");
   }
   int wdb=0;
-  PE_parse_boot_argn("sheng-wallpaper-db",&wdb,sizeof(wdb));
+  PE_parse_boot_argn("alioth-wallpaper-db",&wdb,sizeof(wdb));
   /* Run once at the same 200-exec cadence as the poster-store listing. A boot that
    * stops before the desktop still has to say whether PosterBoard has ever stored a
    * selection; leaving this behind an extra command-line argument loses that reading. */
@@ -470,7 +470,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
   /* A container that does not exist yet is not a zero-row store. More important, this probe
    * must not run on launchd's first exec: it walks the Data container and reads a SQLite page
    * there, and norm1 measured that boot with addon 5/0 then no userland. Run it only after 200
-   * execs, or when sheng-wallpaper-db=1 asks for it explicitly, and keep retrying until a
+   * execs, or when alioth-wallpaper-db=1 asks for it explicitly, and keep retrying until a
    * container and a non-empty database page were actually read. */
   const int db_ok = sheng_wallpaper_db_ran && sheng_wallpaper_db_status[0] > 0 && sheng_wallpaper_db_status[2] > 0;
   const int db_due = (wdb == 1) || (db_tick++ > 200 && (db_tick % 200) == 0);
@@ -529,7 +529,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
    }
   }
   int wlist=0;
-  PE_parse_boot_argn("sheng-wp",&wlist,sizeof(wlist));
+  PE_parse_boot_argn("alioth-wp",&wlist,sizeof(wlist));
   if(wlist==2 && !sheng_wallpaper_list_ran) {
    /* The system volume, not the Data container: which wallpaper collections and which variants
     * this image really carries. The overlay mount targets a path inside one of these. */
@@ -537,7 +537,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
    sheng_wallpaper_list(p,scratch,"/Library/Wallpaper/Collections",'C');
    sheng_wallpaper_list(p,scratch,"/Library/Wallpaper/Collections/iPadOS_17~ipad.wallpaperCollection/Wallpapers",'W');
   }
-  /* sheng-wp=1 lists the same directories on the first exec; without it the listing runs once at the
+  /* alioth-wp=1 lists the same directories on the first exec; without it the listing runs once at the
    * scan's cadence instead, so a boot that shows no wallpaper can say whether a stored poster exists
    * without spending 12 bytes of the command line on it. The tick is not advanced once the listing
    * has run, and sheng_wallpaper_list_ran keeps it to one pass. */
@@ -563,7 +563,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
    }
   }
   int wprobe=0;
-  PE_parse_boot_argn("sheng-wallpaper-probe",&wprobe,sizeof(wprobe));
+  PE_parse_boot_argn("alioth-wallpaper-probe",&wprobe,sizeof(wprobe));
   if(wprobe==1) {
    if((error=sheng_wallpaper_read_cfg(p,scratch))) sheng_watchdog_policy_status=error;
   }
@@ -572,7 +572,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  policy[0]=0;strlcat(policy,policy_head,sizeof(policy));
  if(enabled)strlcat(policy,policy_watchdogd,sizeof(policy));
  if(lite)for(const char *c=lite_jobs;*c;) {if((error=append_job(&c)))return error;}
- {int posters=0;PE_parse_boot_argn("sheng-wallpaper-posters",&posters,sizeof posters);
+ {int posters=0;PE_parse_boot_argn("alioth-wallpaper-posters",&posters,sizeof posters);
   /* The full name costs 26 bytes and the command line has 1023 for everything; wp-poster is the
    * short form for a round that needs the two wallpaper extensions and nothing else changed. */
   if(!posters)PE_parse_boot_argn("wp-poster",&posters,sizeof posters);

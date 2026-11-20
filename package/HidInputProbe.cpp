@@ -117,12 +117,12 @@ extern "C" int native_hid_input_probe(void) {
   // whatever the touch core hands it, and on this board that has never reached the window
   // server: reports are attempted (hid rises) and handleReport refuses them (hres=1), while
   // edge keeps counting real touches. sheng publishes the digitizer as its own service when
-  // sheng-touch-split=1, and the driver already carries both halves
+  // alioth-touch-split=1, and the driver already carries both halves
   // (NativeHidInput.cpp:267 setTouchOnly / :320 native_hid_touch_allocate); only the call was
-  // missing here. Gated on the same sheng-touch-hid=1 the reference requires.
+  // missing here. Gated on the same touch-hid=1 the reference requires.
   unsigned split = 0, touchHid = 0;
-  if (PE_parse_boot_argn("sheng-touch-split", &split, sizeof split) && split == 1 &&
-      PE_parse_boot_argn("sheng-touch-hid", &touchHid, sizeof touchHid) && touchHid == 1) {
+  if (PE_parse_boot_argn("alioth-touch-split", &split, sizeof split) && split == 1 &&
+      PE_parse_boot_argn("touch-hid", &touchHid, sizeof touchHid) && touchHid == 1) {
     IOService *touch = native_hid_touch_allocate();
     native_hid_touch_object = (uintptr_t) touch;
     bool touchStarted = touch && touch->metaCast("IOHIDDevice") && touch->init() &&

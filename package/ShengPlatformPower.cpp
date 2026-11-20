@@ -67,7 +67,7 @@ static const OSMetaClass *lookup(const char *text)
 extern "C" void sheng_pmgr_run(void)
 {
   unsigned mode = 0;
-  if (!PE_parse_boot_argn("pmgr", &mode, sizeof(mode))) PE_parse_boot_argn("sheng-pmgr", &mode, sizeof(mode));
+  if (!PE_parse_boot_argn("pmgr", &mode, sizeof(mode))) PE_parse_boot_argn("pmgr", &mode, sizeof(mode));
   if (!mode) return;
   sheng_pmgr_observation[15] = mode;
   sheng_pmgr_observation[1] = static_cast<uint32_t>(kIOReturnError);

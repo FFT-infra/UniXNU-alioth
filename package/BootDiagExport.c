@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Diagnostic file export (int-217): the unified log that logd persisted (/private/var/db/diagnostics, with the format strings in
 // /private/var/db/uuidtext) and the crash reports, read by the kernel itself, so neither a sandbox nor a launchd job that never runs
-// (adrenoprobed) stands in the way. BootLog.c asks for the stream once (sheng-diag-export=<seconds>) and writes it into the half of the
+// (adrenoprobed) stands in the way. BootLog.c asks for the stream once (alioth-diag-export=<seconds>) and writes it into the half of the
 // export region the pipeline-cache blob does not hold; scripts/read-sheng-log.py unpacks it into the run's diag/ directory.
 // Stream: "SHEXR001", u32 stream bytes, u32 0, then the cache export's stream (drivers/AdrenoMetal/CacheExport.h, "M2VCACH1") with root
 // "/" and every path relative to it. The scan lists every file first and spends the budget in the order of worth (the dyld shared
@@ -193,7 +193,7 @@ static int worth(const void *a, const void *b) {
   return -strcmp(x->path, y->path);
 }
 
-// sheng-ls-reset=1: empty the LaunchServices store before userland starts.
+// alioth-ls-reset=1: empty the LaunchServices store before userland starts.
 //
 // 2026-11-09: the home screen's three widget slots are blank because pkd rejects every
 // /Applications/<App>.app/PlugIns/*.appex with "plug-ins outside containing apps must be in
@@ -215,7 +215,7 @@ static void ls_reset_note(const char *path, int error) {
 
 // Report mode (the default) reads a store file and prints its size and mtime: whether lsd rebuilt
 // the store since the last boot is the whole question a poking round leaves behind. Only
-// sheng-ls-reset=1 empties what it finds; the late tick must not touch the store it measures.
+// alioth-ls-reset=1 empties what it finds; the late tick must not touch the store it measures.
 static int ls_reset_poke;
 static int ls_reset_one(const char *path, vfs_context_t ctx) {
   vnode_t vp = NULLVP;
@@ -297,7 +297,7 @@ static void ls_reset_walk(const char *path, unsigned depth, vfs_context_t ctx) {
 void boot_diag_ls_reset(void) {
   unsigned on = 0;
   if (ls_reset_logged) return;
-  if (!PE_parse_boot_argn("sheng-ls-reset", &on, sizeof on) || on != 1) return;
+  if (!PE_parse_boot_argn("alioth-ls-reset", &on, sizeof on) || on != 1) return;
   ls_reset_logged = 1;
   ls_reset_poke = 1;
   vfs_context_t ctx = vfs_context_kernel();
@@ -310,7 +310,7 @@ void boot_diag_ls_reset(void) {
   }
 }
 
-// sheng-ls-report=<seconds>: the store's size and the root mount's read-only bit, run from the
+// alioth-ls-report=<seconds>: the store's size and the root mount's read-only bit, run from the
 // touch loop instead of the boot monitor. hdp9 (a directory walk at t=80) and hdp10 (one lookup at
 // t=240) both stopped the monitor thread for the rest of the boot while lsd was rewriting the
 // store; the touch loop is a thread whose stall costs touch and nothing else. One directory level
@@ -421,7 +421,7 @@ static unsigned ls_store_candidates(char (*paths)[DiagPath], unsigned max, vfs_c
 static uint32_t ls_report_at, ls_report_done, ls_report_first_ms;
 void boot_diag_ls_report_ms(unsigned now_ms) {
   if (ls_report_done) return;
-  if (!ls_report_at && (!PE_parse_boot_argn("sheng-ls-report", &ls_report_at, sizeof ls_report_at) || !ls_report_at)) {
+  if (!ls_report_at && (!PE_parse_boot_argn("alioth-ls-report", &ls_report_at, sizeof ls_report_at) || !ls_report_at)) {
     ls_report_done = 1;
     return;
   }
@@ -467,7 +467,7 @@ void boot_diag_ls_report_ms(unsigned now_ms) {
   }
 }
 
-// sheng-ls-dump=<seconds>: print the printable strings of the store itself, so what the database
+// alioth-ls-dump=<seconds>: print the printable strings of the store itself, so what the database
 // holds is readable on the host without a shell. Same thread as the report, bounded to the first
 // 8 MiB read and 96 KiB printed. A 6,295,552-byte store (hdp13) answered "is it fresh or empty";
 // only its strings can say which applications and plugins it carries, and the first round of this
@@ -555,7 +555,7 @@ static void ls_dump_file(const char *path, vfs_context_t ctx) {
 static uint32_t ls_dump_at, ls_dump_done, ls_dump_first_ms;
 void boot_diag_ls_dump_ms(unsigned now_ms) {
   if (ls_dump_done) return;
-  if (!ls_dump_at && (!PE_parse_boot_argn("sheng-ls-dump", &ls_dump_at, sizeof ls_dump_at) || !ls_dump_at)) {
+  if (!ls_dump_at && (!PE_parse_boot_argn("alioth-ls-dump", &ls_dump_at, sizeof ls_dump_at) || !ls_dump_at)) {
     ls_dump_done = 1;
     return;
   }
@@ -849,14 +849,14 @@ void boot_diag_lsfix_ms(unsigned now_ms) {
 static uint32_t ls_late_at, ls_late_done;
 void boot_diag_ls_reset_tick(unsigned now) {
   if (ls_late_done) return;
-  if (!ls_late_at && (!PE_parse_boot_argn("sheng-ls-late", &ls_late_at, sizeof ls_late_at) || !ls_late_at)) {
+  if (!ls_late_at && (!PE_parse_boot_argn("alioth-ls-late", &ls_late_at, sizeof ls_late_at) || !ls_late_at)) {
     ls_late_done = 1;
     return;
   }
   if (now < ls_late_at) return;
   ls_late_done = 1;
   {
-    /* sheng-ls-late was written before the container UUID was known to change: its two baked-in
+    /* alioth-ls-late was written before the container UUID was known to change: its two baked-in
      * paths read ENOENT on every volume created after the first (hdp18 printed rc=2 for both and
      * truncated nothing). Read the containers first and poke the store in whichever one carries it. */
     vfs_context_t ctx = vfs_context_kernel();

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Diagnostic log on UFS (boot argument sheng-log=1): every 2 s the text the board page would show (the diagnostic page, the live
+// Diagnostic log on UFS (boot argument alioth-log=1): every 2 s the text the board page would show (the diagnostic page, the live
 // banner, the GPU rows, a caught panic message) and the kernel message buffer are written to the last 32 MiB of userdata through
 // NativeUfs's bounded log window, so a run can be read back afterwards (scripts/read-sheng-log.py over the Linux log reader).
 //
@@ -769,7 +769,7 @@ static size_t compose(char *out, size_t cap, uint32_t slot, unsigned now) {
              &native_gpu_addon3_status ? native_gpu_addon3_status : 0);
     at = put(out, at, cap, row, sizeof row);
   }
-  // sheng-wallpaper-reset=1: how far removing PosterBoard's stored wallpaper configuration got. [0] candidates, [i+1] each unlink
+  // alioth-wallpaper-reset=1: how far removing PosterBoard's stored wallpaper configuration got. [0] candidates, [i+1] each unlink
   // (0 removed, 2 absent, else errno). A red test image in the mounted .ca changed nothing on screen (fix142), so the next question
   // is whether the desktop reuses a stored configuration instead of reading the collection.
   if (&sheng_wallpaper_reset && sheng_wallpaper_reset[0]) {
@@ -2002,9 +2002,9 @@ static void writer(void *arg, wait_result_t result) {
   // can stop (state 3 on three failed rounds, state 4 on a GPT change, or blocked in a UFS write,
   // measured on boot 43ba9162) and the board still has to come back. This loop only reports that a
   // round landed, through log_sync_seq.
-  // sheng-diag-export=<seconds of log time>: export the diagnostic files once then (set it shortly before sheng-autoreset).
+  // alioth-diag-export=<seconds of log time>: export the diagnostic files once then (set it shortly before alioth-autoreset).
   uint32_t diag_at = 0;
-  if (&boot_diag_scan && &boot_diag_stream) PE_parse_boot_argn("sheng-diag-export", &diag_at, sizeof diag_at);
+  if (&boot_diag_scan && &boot_diag_stream) PE_parse_boot_argn("alioth-diag-export", &diag_at, sizeof diag_at);
   uint32_t errors = 0;
   boot_log_state = 2;
   for (;;) {
@@ -2201,7 +2201,7 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
       const int bn = snprintf(b, sizeof b, "SUPRUN n=%u t=%us pre-pet\n", boot_log_super_runs, elapsed);
       if (bn > 0) qcom_usb_debug_write(b, (size_t)bn < sizeof b ? (size_t)bn : sizeof b - 1);
     }
-    /* The image's own name on the console, once. Until now sheng-build-tag reached only the
+    /* The image's own name on the console, once. Until now alioth-build-tag reached only the
        persistent-log header (BootProgress.c:947) and the boot page, so 0 of 298 saved console
        captures could say which image they came from, and the 2026-10-30 u268/u269 rounds ran an
        older slot image while the operators believed they were testing a new build. The Darwin
@@ -2209,7 +2209,7 @@ static void autoreset_supervisor(void *arg, wait_result_t result) {
        row sets. porting.toml's packaging area asks for exactly this reading. */
     if (boot_log_super_runs == 1 && &qcom_usb_debug_write) {
       char tag[32] = {0};
-      PE_parse_boot_argn("sheng-build-tag", tag, sizeof tag);
+      PE_parse_boot_argn("alioth-build-tag", tag, sizeof tag);
       tag[sizeof tag - 1] = 0;
       char b[64];
       const int bn = snprintf(b, sizeof b, "BUILD tag=%s\n", tag[0] ? tag : "none");
@@ -3225,7 +3225,7 @@ static void core_health_thread(void *arg, wait_result_t result)
   }
 }
 
-// Called by the board page's monitor once a second; starts the writer the first time when sheng-log=1.
+// Called by the board page's monitor once a second; starts the writer the first time when alioth-log=1.
 void boot_log_tick(unsigned now) {
   uint64_t f = 0; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); if (!f) f = 19200000;
   const uint64_t cur_ticks = log_ticks();
@@ -3233,7 +3233,7 @@ void boot_log_tick(unsigned now) {
   boot_log_tick_ctr = cur_ticks;
   boot_log_tick_calls = boot_log_tick_calls + 1;
   boot_log_tick_step = 1;
-  /* sheng-ls-late=<s>: BootDiagExport's LaunchServices reset, which has to run after the Data
+  /* alioth-ls-late=<s>: BootDiagExport's LaunchServices reset, which has to run after the Data
    * volume exists; the kernel's late display probe runs before that. */
   {
     extern void boot_diag_ls_reset_tick(unsigned) __attribute__((weak_import));
@@ -3245,7 +3245,7 @@ void boot_log_tick(unsigned now) {
     tick_seen_at = 0;
     // An unattended run must come back however it ends: on the desktop past its deadline (int-229 first suspected) or in a panic seconds
     // after the start, before UFS and this log exist (int-229: a duplicate class at PE_lockdown_iokit). So the first tick, independent of
-    // sheng-log, marks the cell (any restart is fastboot) and arms the hypervisor's watchdog, which bites half a minute after the pings stop:
+    // alioth-log, marks the cell (any restart is fastboot) and arms the hypervisor's watchdog, which bites half a minute after the pings stop:
     // after the autoreset deadline, or when a panic parks the cores.
     /* The core-health thread is independent of every switch: it is the only reading left on a boot
      * whose supervisor stalls, and it costs one sleeping thread that reads seven counters. */
@@ -3261,7 +3261,7 @@ void boot_log_tick(unsigned now) {
     // accepts, this handset leaves 0x4ab2b0e2 in it, so the mark, the PON write and the reset were
     // skipped on every boot (boot-usb101, 273 rounds, known=0). Whether the cell held an old reason
     // says nothing about whether it can be overwritten.
-    if (PE_parse_boot_argn("sheng-autoreset", &autoreset, sizeof autoreset) && autoreset) {
+    if (PE_parse_boot_argn("alioth-autoreset", &autoreset, sizeof autoreset) && autoreset) {
       tick_autoreset = autoreset;
       if (&boot_reset_probe) (void)boot_reset_probe(boot_log_reset_probe_text, sizeof boot_log_reset_probe_text);
       if (&boot_reset_mark_bootloader) boot_reset_mark_bootloader(boot_log_reset_mark, sizeof boot_log_reset_mark);
@@ -3282,7 +3282,7 @@ void boot_log_tick(unsigned now) {
       }
     }
     uint32_t mode = 0;
-    if (PE_parse_boot_argn("sheng-log", &mode, sizeof mode) && mode == 1 &&
+    if (PE_parse_boot_argn("alioth-log", &mode, sizeof mode) && mode == 1 &&
         &native_ufs_log_open && &native_ufs_log_write && &native_ufs_log_sync) {
       boot_log_buffer = (uint8_t *)IOMallocAligned(LogMsgBlocks * LogBlock, LogBlock);
       if (boot_log_buffer) {
