@@ -9,21 +9,28 @@ Device repository for the Xiaomi Redmi K40 (`alioth`, `M2012K11AC`, SM8250-AC).
 | [uefi-alioth](https://github.com/FFT-infra/uefi-alioth) | Mu-Silicium UEFI port |
 | [NativeUfs-alioth](https://github.com/FFT-infra/NativeUfs-alioth) | UFS driver fork carrying this board's stream configuration |
 
+Board driver forks are submodules of this repository: `drivers/Adreno650`
+(`FFT-infra/Adreno650`), `drivers/AdrenoMetal` (`FFT-infra/AdrenoMetal`),
+`drivers/ArmCpu` (`FFT-infra/ArmCpu`) and `drivers/ShengHidInput`
+(`FFT-infra/ShengHidInput`).
+
 Device page: <https://unixnu.com/zh/devices/alioth> (generated from `porting.toml`).
 Porting record: [`porting.toml`](porting.toml) — the authoritative statement of what
 is verified; read <https://unixnu.com/zh/porting/records> for its levels.
 
 ## State
 
-UFS root with `launchd` as PID 1, a stable lock screen, touch input and a published
-GPU device driving the staged Metal accelerator. The desktop draws on the
-`ipados27-gpu-parity` pin but stops at the client IOVA window: SpringBoard peaks at
-1727 MiB and slot 1 ends at 1706 MiB, so it loses its Metal device. No Wi-Fi: the
-QCA6390 is ath11k and the catalog's `Ath12kWifi` is ath12k, and PCIe step 10 takes
-the machine down at its first DBI access.
+UFS root with `launchd` as PID 1, touch input and a published GPU device driving the
+staged Metal accelerator. The 2026-11-20 `rename1` boot reaches the desktop and the
+J120 wallpaper: `SUPER sw=8/8/0 own=1`, `SURFACEL 918/1000`, `PANEL 916`,
+`WALLPAPER stage=5`, `GPUCLI clients=8 askers=11`. Widgets are not drawn
+(`WIDGET` absent, `LSINITLOG WIDGET done=-1`). No Wi-Fi: the QCA6390 is ath11k and
+the catalog's `Ath12kWifi` is ath12k, and PCIe step 10 takes the machine down at its
+first DBI access.
 
 `porting.toml` carries the per-area status and evidence; this paragraph is a
-summary of it, not a second source.
+summary of it, not a second source. Boot argument names are in
+[`docs/boot-arguments.md`](docs/boot-arguments.md).
 
 ## Prerequisites
 
@@ -105,5 +112,8 @@ python3 scripts/metallib.py dump /path/to/default.metallib /tmp/metallib-dump
 | `patches/xnu/series` | Board XNU patches in application order |
 | `porting.toml` | Porting record rendered by the documentation site |
 | `package/` | Board packaging, appears as `kits/alioth` |
+| `drivers/` | Board driver submodules: Adreno650, AdrenoMetal, ArmCpu, ShengHidInput |
 | `docs/evidence/` | Per-boot readings cited by `porting.toml` |
+| `docs/boot-arguments.md` | Boot argument names and the board-private prefix rule |
+| `local.toml.example` | Template for the Git-ignored local source overrides |
 | `proprietary-files.txt` | Firmware inputs and hashes |

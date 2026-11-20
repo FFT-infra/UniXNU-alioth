@@ -1,5 +1,13 @@
-# Copy to local.toml (ignored by Git) to point whole categories at local directories. Each
-# subdirectory is one module. The command line (--local, --local-drivers, ...) takes precedence.
+# Optional development overrides; leave local.toml absent for pinned builds.
+# Copy this file to local.toml (ignored by Git) to resolve a source from a local
+# checkout instead of feeds.toml and unixnu.lock. The command line
+# (--local-module, --local-drivers, ...) takes precedence over this file.
+
+# One entry per source that should come from a local checkout.
+# [[source]]
+# name = "ShengUfs"
+# kind = "driver"
+# local = "../NativeUfs-alioth"
+
 [local]
-drivers = "~/Code/dev/drivers"
-kits = "~/Code/dev/kits"
+drivers = "../UniXNU-alioth/drivers"
