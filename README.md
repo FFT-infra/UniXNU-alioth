@@ -15,8 +15,8 @@ Board driver forks are submodules of this repository: `drivers/Adreno650`
 (`FFT-infra/ShengHidInput`).
 
 Device page: <https://unixnu.com/zh/devices/alioth> (generated from `porting.toml`).
-Porting record: [`porting.toml`](porting.toml) — the authoritative statement of what
-is verified; read <https://unixnu.com/zh/porting/records> for its levels.
+Porting record: [`porting.toml`](porting.toml), the authoritative statement of what
+is verified. Read <https://unixnu.com/zh/porting/records> for its levels.
 
 ## State
 
