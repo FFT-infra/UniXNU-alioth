@@ -496,6 +496,42 @@ for service_name in ('BacklightProbe', 'ButtonProbe'):
                         '-I', str(record['directory']), '-I', str(ROOT / '.cache/xnu-work/osfmk'), '-I', str(OUT)]
     service_command += service_suppressions
     run(service_command, cwd=record['directory'])
+    if service_name == 'BacklightProbe':
+        # The kernel force-loads this archive, so a live __mod_init_func registers AliothBacklight
+        # before the board probe runs. The probe calls the same initializer between preModLoad and
+        # postModLoad for service modes; registering twice panics in OSMetaClass. Stage this class
+        # as a late object, exactly like NativeLegacyDisplay and NativeGOPPresenter above.
+        service_late = OUT / (service_name + '.late.o')
+        run([llvm / 'llvm-objcopy', '--remove-section=__DATA,__mod_init_func',
+             '--globalize-symbol=__GLOBAL__sub_I_BacklightProbe.cpp', service_obj, service_late])
+        service_raw = service_obj.read_bytes()
+        service_late_bytes = service_late.read_bytes()
+        require(any(s['name'] == '__mod_init_func' for g in macho(service_raw)['segments']
+                    for s in g['sections'])
+                and not any(s['name'] == '__mod_init_func' for g in macho(service_late_bytes)['segments']
+                            for s in g['sections']),
+                'BacklightProbe late object still has __mod_init_func')
+        initializer = '__GLOBAL__sub_I_BacklightProbe.cpp'
+        def initializer_address(data):
+            for command, at, _ in macho(data)['commands']:
+                if command != 2:
+                    continue
+                symoff, count, stroff, strsize = struct.unpack_from('<4I', data, at + 8)
+                strings = data[stroff:stroff + strsize]
+                for index in range(count):
+                    strx, _, _, _, value = struct.unpack_from('<IBBHQ', data, symoff + index * 16)
+                    end = strings.find(b'\0', strx) if strx < strsize else -1
+                    if end >= 0 and strings[strx:end].decode() == initializer:
+                        return value
+            require(False, 'BacklightProbe initializer symbol missing')
+        require(initializer not in exports(service_raw, macho(service_raw)).get(
+                    initializer_address(service_raw), []) and
+                initializer in exports(service_late_bytes, macho(service_late_bytes)).get(
+                    initializer_address(service_late_bytes), []),
+                'BacklightProbe initializer was not globalized')
+        require(code(service_raw, macho(service_raw)) == code(service_late_bytes, macho(service_late_bytes)),
+                'BacklightProbe instructions changed by late init staging')
+        service_obj = service_late
     service_objects.append(service_obj)
 
 # The owned presenter, staged the same way.

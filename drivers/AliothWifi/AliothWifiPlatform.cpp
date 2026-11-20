@@ -148,96 +148,175 @@ void *mapPhys(uint64_t pa, size_t n) {
 }
 
 /* ---- SMMU: the endpoint's stream ----------------------------------------------------------- */
-/* The first MHI boot uses stream bypass: the SMMUv2 model this board already runs in
- * src/NativeUfs-alioth/SmmuTakeover.h puts the stream count at GR0 0x20, SMR[n] at 0x800 + 4n,
- * S2CR[n] at 0xc00 + 4n, with an exact match written as 0x80000000 | sid. The endpoint is SID
- * 0x1c01 (requester 0x100).
+/* The endpoint is SID 0x1c01 (PCIe requester 0x100, kona-pcie.dtsi:92-93). It needs a
+ * pass-through stream: MHI hands the endpoint physical addresses and no page table exists here.
  *
- * 2026-11-09: this wrote S2CR = 0 and called it bypass. It is not. The vendor kernel's own
- * register header (reference/k40-kernel/drivers/iommu/arm-smmu-regs.h:119-128) gives type in
- * bits [17:16] as TRANS = 0, BYPASS = 1, FAULT = 2, and the shared kit agrees
- * (ArmSmmu4KStreams.c:3, FAULT = 2 << 16). Zero is TRANSLATE through the context bank in bits
- * [7:0], so every transaction from this stream was sent to CB 0, which nothing here configured,
- * and faulted. in32 rang MHI's BHI doorbell and then stopped on the next register read: a
- * non-posted read from the endpoint that never completes blocks the reads behind it.
+ * Do not write S2CR TYPE=BYPASS. On this firmware family the store reads back as FAULT, which is
+ * why the wifi5 boot lost all 80 free slots ("wrote 0x10000 read 0x20000"). The shape that works
+ * is the one UniXNU-sheng uses for the same apps SMMU (reference/repo/UniXNU-pipa/package/
+ * SmmuBypass.h, "a TYPE=BYPASS S2CR reads back as FAULT on this firmware"): keep one context bank
+ * as a pass-through bank - SCTLR.M=0 (stage 1 off), CBAR=0x10000 (TYPE=S1_TRANS_S2_BYPASS),
+ * CBA2R.VA64=1 - and point the stream at it with S2CR TYPE=TRANSLATE. Stage 1 disabled with
+ * stage 2 bypass makes the bank identity, and several streams may share it.
  *
- * Two more rules come from the same kit and are applied here. A matched stream needs
- * EXIDVALID (bit 10) when ID0 reports EXIDS, and S2CR is written before the SMR publishes the
- * match, so no window exists where the SMR matches and the S2CR is still the old one. A slot
- * whose SMR is invalid but whose S2CR still names a context bank is in use by something else and
- * is skipped (ArmSmmu4KStreams.c:47). */
+ * Geometry is the same as src/NativeUfs-alioth/SmmuTakeover.h: ID0[7:0] SMR groups, ID1[7:0]
+ * context banks, ID1[30:28] pages per bank. S2CR is written before the SMR publishes the match.
+ * A stream already on the bank is a reuse; an invalid SMR slot is a free slot. `refs` counts
+ * valid streams per bank so a bank that another stream uses is never reprogrammed. */
 constexpr uint64_t kSmmuBase = 0x15000000, kSmmuBytes = 0x100000;
 constexpr uint32_t kEndpointSid = 0x1c01;
-constexpr uint32_t kS2crTypeMask = 3u << 16, kS2crBypass = 1u << 16, kS2crFault = 2u << 16,
-                   kS2crExidValid = 1u << 10;
+constexpr uint32_t kS2crTypeMask = 3u << 16, kS2crCbndx = 0xffu;
 constexpr uint32_t kSmrValid = 1u << 31;
+constexpr uint32_t kCbarBypass = 0x10000;   /* CBAR.TYPE=1 (S1 trans, S2 bypass), CBNDX=0 */
+/* kona-pcie.dtsi:92-93 maps requester 0x0 to SID 0x1c00 and requester 0x100 to SID 0x1c01.
+ * The endpoint's own DMA should arrive as 0x100, but which requester ID the root complex stamps
+ * on an inbound read is a property of the controller, not of the device tree, so both are
+ * claimed. An unmatched SID faults here (sCR0.USFCFG is set), and a faulted non-posted read is
+ * exactly the shape that hangs the BHI_STATUS poll. */
+constexpr uint32_t kEndpointSids[] = {0x1c01, 0x1c00};
+constexpr uint32_t kPrimarySid = 0x1c01;
 Window gSmmu;
 /* What the stream claim found, for the console: [0] ID0, [1] sCR0, [2] GFSR before, [3] the
  * slot, [4] the S2CR readback, [5] the SMR readback, [6] GFSR after. */
 volatile uint32_t gStreamClaim[7];
 
+/* ---- PCIe TBU ------------------------------------------------------------------------------- */
+/* Inbound DMA from the endpoint crosses anoc_1_pcie_tbu (0x151a1000, SIDs 0x1c00..0x1c1f;
+ * msm-arm-smmu-kona.dtsi:348-353) before it reaches the apps SMMU. The vendor driver halts a TBU
+ * while it reprograms a domain and resumes it afterwards (arm-smmu.c:6031/6109); a TBU that the
+ * bootloader left halted stalls every inbound read. That is the shape of the BHI doorbell hang:
+ * the host's next read of the endpoint never completes while the endpoint waits for an image
+ * that cannot arrive. The halt bit is register 0x0 bit 16 and the acknowledgement is 0x20. */
+constexpr uint64_t kPcieTbuBase = 0x151a1000, kPcieTbuStatus = 0x15182238;
+constexpr uint32_t kTbuHaltBit = 1u << 16;
+
+void resumePcieTbu() {
+    Window tbu, status;
+    if (!tbu.open(kPcieTbuBase, 0x1000)) { wifiLog("pcie_tbu did not map"); return; }
+    const uint32_t haltBefore = tbu.r(0x0), ackBefore = tbu.r(0x20);
+    uint32_t statusA = 0, statusB = 0;
+    if (status.open(kPcieTbuStatus, 8)) { statusA = status.r(0); statusB = status.r(4); }
+    if (haltBefore & kTbuHaltBit) {
+        tbu.w(0x0, haltBefore & ~kTbuHaltBit);
+        __asm__ volatile("dsb sy" ::: "memory");
+    }
+    const uint32_t haltAfter = tbu.r(0x0), ackAfter = tbu.r(0x20);
+    wifiLog("pcie_tbu ctrl=%#x->%#x ack=%#x->%#x status=%#x/%#x", haltBefore, haltAfter,
+            ackBefore, ackAfter, statusA, statusB);
+}
+
+unsigned freeSmrSlot(unsigned groups) {
+    for (unsigned i = 0; i < groups; ++i)
+        if (!(gSmmu.r(0x800 + 4 * i) & kSmrValid)) return i;
+    return 0xffffffffu;
+}
+
+/* S2CR first, then the SMR that publishes the match. Readbacks are the only proof that the
+ * writes landed: this firmware stores a TYPE=BYPASS S2CR as FAULT (see the header comment), and a
+ * stream whose SMR looks right but whose S2CR did not land would still fault. */
+bool claimSid(uint32_t sid, unsigned bank, unsigned groups, bool exids, unsigned *outSlot,
+              uint32_t *outS2cr, uint32_t *outSmr) {
+    const unsigned slot = freeSmrSlot(groups);
+    if (slot == 0xffffffffu) { wifiLog("no free SMR slot for SID %#x", sid); return false; }
+    const uint32_t smrValue = exids ? sid : (kSmrValid | sid);
+    gSmmu.w(0xc00 + 4 * slot, bank);            /* TYPE=TRANSLATE into the pass-through bank */
+    const uint32_t s2cr = gSmmu.r(0xc00 + 4 * slot);
+    if (s2cr != bank) {
+        wifiLog("S2CR at slot %u did not take bank %u: read %#x", slot, bank, s2cr);
+        return false;
+    }
+    gSmmu.w(0x800 + 4 * slot, smrValue);
+    const uint32_t smr = gSmmu.r(0x800 + 4 * slot);
+    if (smr != smrValue) {
+        wifiLog("SMR at slot %u did not take %#x: read %#x", slot, smrValue, smr);
+        return false;
+    }
+    *outSlot = slot; *outS2cr = s2cr; *outSmr = smr;
+    return true;
+}
+
 bool claimStream() {
     if (!gSmmu.open(kSmmuBase, kSmmuBytes)) { wifiLog("apps_smmu did not map\n"); return false; }
-    const uint32_t id0 = gSmmu.r(0x20), scr0 = gSmmu.r(0x0), gfsrBefore = gSmmu.r(0x48);
+    const uint32_t id0 = gSmmu.r(0x20), id1 = gSmmu.r(0x24), id2 = gSmmu.r(0x28);
+    const uint32_t scr0 = gSmmu.r(0x0), sacr = gSmmu.r(0x10), gfsrBefore = gSmmu.r(0x48);
+    const unsigned groups = id0 & 0xff, banks = id1 & 0xff;
+    const unsigned pages = 1u << (((id1 >> 28) & 7) + 1);
     const bool exids = (id0 & (1u << 8)) != 0;
-    const uint32_t exid = exids ? kS2crExidValid : 0;
-    const uint32_t smrValue = exids ? kEndpointSid : (kSmrValid | kEndpointSid);
-    const unsigned count = id0 & 0xff;
     gStreamClaim[0] = id0; gStreamClaim[1] = scr0; gStreamClaim[2] = gfsrBefore;
-    if (!count || count > 128) { wifiLog("apps_smmu stream count %u (ID0 %#x)\n", count, id0); return false; }
-    /* A scan that finds nothing has to say why, or the next round cannot tell a full table from a
-     * wrong rule: these four counts are the whole picture in one line. */
-    unsigned smrValidCount = 0, faultCount = 0, translateCount = 0, bypassCount = 0;
-    for (unsigned slot = 0; slot < count; ++slot) {
-        if (gSmmu.r(0x800 + 4 * slot) & kSmrValid) { ++smrValidCount; continue; }
-        switch (gSmmu.r(0xc00 + 4 * slot) & kS2crTypeMask) {
-        case kS2crFault: ++faultCount; break;
-        case 0: ++translateCount; break;
-        default: ++bypassCount; break;
+    wifiLog("apps_smmu id0=%#x id1=%#x id2=%#x scr0=%#x sacr=%#x gfsr=%#x groups=%u banks=%u pages=%u exids=%u",
+            id0, id1, id2, scr0, sacr, gfsrBefore, groups, banks, pages, exids ? 1u : 0u);
+    if (!groups || groups > 128 || banks < 2 || banks > 128 || pages > 128 || (pages + banks) * 4096 > 0xd0000) {
+        wifiLog("unsupported apps_smmu geometry (ID0 %#x ID1 %#x)", id0, id1);
+        return false;
+    }
+    unsigned refs[128] = {};
+    for (unsigned i = 0; i < groups; ++i) {
+        const uint32_t smr = gSmmu.r(0x800 + 4 * i);
+        if (!(smr & kSmrValid)) continue;
+        const uint32_t s2cr = gSmmu.r(0xc00 + 4 * i);
+        if ((s2cr & kS2crTypeMask) == 0 && (s2cr & kS2crCbndx) < banks) ++refs[s2cr & kS2crCbndx];
+    }
+    /* Top bank first, as the sheng kit does. A bank is usable when stage 1 is off. Prefer one no
+     * valid stream references; a bank already in the pass-through shape may be shared. */
+    int chosen = -1; bool ready = false;
+    for (int bank = (int)banks - 1; bank >= 1; --bank) {
+        const uint32_t sctlr = gSmmu.r((pages + (unsigned)bank) * 4096);
+        if (sctlr & 1) continue;    /* stage 1 enabled: live */
+        const uint32_t cbar = gSmmu.r(0x1000 + 4 * (unsigned)bank);
+        const uint32_t cba2r = gSmmu.r(0x1800 + 4 * (unsigned)bank);
+        const bool isReady = sctlr == 0 && cbar == kCbarBypass && (cba2r & ~1u) == 0 && (cba2r & 1u);
+        if (!refs[bank]) { chosen = bank; ready = isReady; break; }
+        if (isReady && chosen < 0) { chosen = bank; ready = true; }
+    }
+    if (chosen < 0) {
+        wifiLog("no pass-through context bank for SID %#x: %u banks, no unreferenced bank with stage 1 off", kPrimarySid, banks);
+        return false;
+    }
+    const unsigned bank = (unsigned)chosen;
+    const uint32_t cb = (pages + bank) * 4096;
+    if (!ready) {
+        gSmmu.w(cb, 0);
+        gSmmu.w(0x1800 + 4 * bank, 1);          /* CBA2R.VA64: 64-bit pass-through addresses */
+        gSmmu.w(0x1000 + 4 * bank, kCbarBypass);
+        const uint32_t sctlr = gSmmu.r(cb), cbar = gSmmu.r(0x1000 + 4 * bank), cba2r = gSmmu.r(0x1800 + 4 * bank);
+        if (sctlr || cbar != kCbarBypass || cba2r != 1) {
+            wifiLog("bank %u did not take the pass-through shape: sctlr=%#x cbar=%#x cba2r=%#x", bank, sctlr, cbar, cba2r);
+            return false;
         }
     }
-    for (unsigned slot = 0; slot < count; ++slot) {
-        if (gSmmu.r(0x800 + 4 * slot) & kSmrValid) continue;
-        /* An invalid SMR is not on its own proof that the slot is free, but requiring FAULT is
-         * wrong here and would take no slot at all. This board's apps_smmu carries
-         * qcom,skip-init (msm-arm-smmu-kona.dtsi:76), so the driver never writes the reset table
-         * and whatever the bootloader left stands. The driver's own default for an idle slot is
-         * BYPASS, not FAULT (arm-smmu.c:137 disable_bypass = true is a module parameter, and
-         * arm-smmu.c:179 makes the initial type follow it), so a BYPASS slot with no valid SMR is
-         * the normal idle shape. FAULT and BYPASS both pass this stream through untranslated,
-         * which is exactly what the endpoint needs, so either is taken. TRANSLATE is the only
-         * type that would send the endpoint into a context bank, and it is skipped. */
-        const uint32_t s2crNow = gSmmu.r(0xc00 + 4 * slot);
-        const uint32_t typeNow = s2crNow & kS2crTypeMask;
-        if (typeNow == 0) continue;
-        gSmmu.w(0xc00 + 4 * slot, kS2crBypass | exid);
-        __asm__ volatile("dsb sy" ::: "memory");
-        const uint32_t s2cr = gSmmu.r(0xc00 + 4 * slot);
-        if (s2cr != (kS2crBypass | exid)) {
-            wifiLog("S2CR at slot %u did not take bypass: wrote %#x read %#x\n", slot, kS2crBypass | exid, s2cr);
-            continue;
+    bool primary = false;
+    for (uint32_t sid : kEndpointSids) {
+        unsigned slot = 0; uint32_t s2cr = 0, smr = 0;
+        const bool ok = claimSid(sid, bank, groups, exids, &slot, &s2cr, &smr);
+        wifiLog("SID %#x %s: slot=%u bank=%u smr=%#x s2cr=%#x", sid, ok ? "claimed" : "FAILED", slot, bank, smr, s2cr);
+        if (!ok) continue;
+        if (sid == kPrimarySid) {
+            primary = true;
+            gStreamClaim[3] = slot; gStreamClaim[4] = s2cr; gStreamClaim[5] = smr;
         }
-        gSmmu.w(0x800 + 4 * slot, smrValue);
-        __asm__ volatile("dsb sy" ::: "memory");
-        const uint32_t back = gSmmu.r(0x800 + 4 * slot);
-        gStreamClaim[3] = slot; gStreamClaim[4] = s2cr; gStreamClaim[5] = back;
-        const bool ok = back == smrValue;
-        if (ok) {
-            const uint32_t gfsrAfter = gSmmu.r(0x48);
-            gStreamClaim[6] = gfsrAfter;
-            wifiLog("SID %#x claimed at SMR slot %u: SMR %#x, S2CR %#x (BYPASS%s), GFSR %#x -> %#x\n",
-                    kEndpointSid, slot, back, s2cr, exids ? "|EXID" : "", gfsrBefore, gfsrAfter);
-        } else {
-            wifiLog("SMR at slot %u did not take %#x: read %#x\n", slot, smrValue, back);
-            gSmmu.w(0xc00 + 4 * slot, kS2crFault);   /* put the slot back to FAULT */
-            __asm__ volatile("dsb sy" ::: "memory");
-        }
-        return ok;
     }
-    wifiLog("no free SMR slot for SID %#x (ID0 %#x, sCR0 %#x): %u slots, %u SMR valid, "
-            "%u free (FAULT), %u TRANSLATE, %u BYPASS\n", kEndpointSid, id0, scr0, count,
-            smrValidCount, faultCount, translateCount, bypassCount);
-    return false;
+    if (!primary) return false;
+    /* The S2CR/SMR table is cached by the SMMU just like a translation. Linux invalidates the
+     * non-secure global TLB and waits on sTLBGSTATUS after installing a stream mapping
+     * (arm-smmu.c: arm_smmu_master_alloc_smes), and a stale unmatched-stream fault is exactly one
+     * of the entries this one has to displace. Bounded: the status bit normally clears at once. */
+    const uint32_t gsyncBefore = gSmmu.r(0x74);
+    gSmmu.w(0x68, 0);                           /* sTLBIALLNSNH */
+    gSmmu.w(0x70, 0);                           /* sTLBGSYNC */
+    unsigned spins = 0;
+    while ((gSmmu.r(0x74) & 1u) && spins < 10000) ++spins;
+    /* sCR0.USFCFG (bit 10) makes an unmatched stream fault instead of bypassing. Any requester
+     * this table still does not name would otherwise hang on its first read; clear it and report
+     * whether the write landed. */
+    const uint32_t scr0Before = gSmmu.r(0x0);
+    gSmmu.w(0x0, scr0Before & ~(1u << 10));
+    const uint32_t scr0After = gSmmu.r(0x0);
+    const uint32_t gfsrAfter = gSmmu.r(0x48);
+    gStreamClaim[6] = gfsrAfter;
+    wifiLog("SMMU sync: gsync=%#x spins=%u scr0=%#x->%#x usfcfg=%u gfsr=%#x->%#x bank=%u refs=%u",
+            gsyncBefore, spins, scr0Before, scr0After, (scr0After >> 10) & 1u, gfsrBefore, gfsrAfter,
+            bank, refs[bank]);
+    return true;
 }
 
 /* ---- DMA: one physically contiguous arena --------------------------------------------------- */
@@ -291,7 +370,10 @@ uint64_t arenaPhys(const void *p) {
 
 void *dmaAlloc(size_t n, uint64_t *bus) {
     if (!arenaOpen() || !n) return nullptr;
-    const size_t aligned = (n + 63) & ~(size_t)63;
+    /* dma_alloc_coherent is page aligned. MHI's BHI buffer and its transfer rings are handed to
+     * the endpoint as addresses; the BHI image the endpoint fetches during boot is the first of
+     * them, so the slices carry that same alignment instead of a 64-byte one. */
+    const size_t aligned = (n + 4095) & ~(size_t)4095;
     if (gArenaUsed + aligned > kArenaBytes) { wifiLog("arena exhausted (%zu + %zu)\n", gArenaUsed, aligned); return nullptr; }
     void *p = gArenaVa + gArenaUsed;
     const uint64_t pa = arenaPhys(p);
@@ -456,6 +538,7 @@ extern "C" int alioth_wifi_board_open(void) {
     };
     if (!voteWlanRails()) return -1;
     wifiLog("rails voted");
+    resumePcieTbu();
     if (!claimStream()) return -1;
     wifiLog("stream claimed: ID0 %#x sCR0 %#x slot %u S2CR %#x SMR %#x GFSR %#x->%#x",
             gStreamClaim[0], gStreamClaim[1], gStreamClaim[3], gStreamClaim[4], gStreamClaim[5],
@@ -597,6 +680,15 @@ done:
  * boot argument alioth-wifi=1 is set. Failure is logged and leaves the rest of the boot alone. */
 extern "C" void alioth_wifi_start(void) {
     const int r = alioth_wifi_board_start();
+    unsigned mode = 0;
+    PE_parse_boot_argn("alioth-wifi", &mode, sizeof mode);
+    /* alioth-wifi=2 stops after the board setup: rails, PCIe windows, TBU, SMMU stream, arena and
+     * the endpoint's identity reads. It measures the whole path that can wedge the NoC without
+     * ringing the MHI doorbell, whose first non-posted read is what stops the boot. */
+    if (r == 0 && mode >= 2) {
+        wifiLog("setup only (alioth-wifi=%u); the runtime is not started", mode);
+        return;
+    }
     wifiLog("start returned %d; the runtime starts on its own thread once the firmware is there", r);
     if (r != 0) return;
     thread_t thread = nullptr;

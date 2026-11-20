@@ -55,6 +55,8 @@ static const char *const diag_roots[] = {
   // whichever one it resolved.
   "/private/var/mobile/Library/Preferences/com.apple.datamigrator.plist",
   "/private/var/root/Library/Preferences/com.apple.datamigrator.plist",
+  "/private/var/ngpu/lsinit.log",
+  "/private/var/ngpu/lsfix.log",
   "/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/prime.log",
   "/private/var/mobile/Library/Caches/com.apple.backboardd/m2v/prime-bad",
   "/private/var/root/Library/Caches/com.apple.backboardd/m2v/prime.log",
@@ -172,6 +174,8 @@ static int diag_mi_state(const char *path) {
          !strncmp(path, "/private/var/containers/Data/System", 35) ||
          !strncmp(path, "/private/var/db/datamigrator", 28) ||
          !strncmp(path, "/private/var/mobile/Containers/Data/InternalDaemon", 51) ||
+         !strncmp(path, "/private/var/ngpu/lsinit.log", 29) ||
+         !strncmp(path, "/private/var/ngpu/lsfix.log", 28) ||
          !strncmp(path, "/private/var/mobile/Library/Preferences/com.apple.datamigrator", 60) ||
          !strncmp(path, "/private/var/root/Library/Preferences/com.apple.datamigrator", 58);
 }
@@ -565,14 +569,13 @@ void boot_diag_ls_dump_ms(unsigned now_ms) {
 }
 
 
-// lsfix=<seconds>: print the owner daemon's LaunchServices repair log
-// (/private/var/ngpu/lsfix.log). The daemon is the only userland process this image adds; it runs
-// as root outside every sandbox through the addon's launchd overlay, and this row is how its result
-// reaches the host without a shell. Lines print as they are, 200 bytes each, first 16 KiB.
-// Which processes carry a bootstrap port: the owner helper has to copy one because it was forked
-// before launchd ran, and task_for_pid plus task_get_special_port could not find it from userland
-// (in6). Read here from the task itself, so the next round knows whether the port exists at all or
-// only the copy is blocked.
+// lsfix=<seconds>: print the owner repair logs (lsfix.log) and the trampoline/pkd-shim log
+// (lsinit.log). The timed checkpoints are counted from the first touch publish(), not from the
+// platform SUPER clock. The owner helper, pkd shim and unified WIDGET row are all written by
+// AdrenoMetal. Lines print as they are, 200 bytes each, last 16 KiB per file.
+// Which processes carry a bootstrap port: the old pre-launchd lsfixd helper has to be given one,
+// while the pkd-shim child inherits launchd's bootstrap at fork. Read here from each task so the
+// round can tell whether the port exists at all or only the adoption is blocked.
 static void ls_bootstraps(void) {
   int shown = 0;
   for (int pid = 1; pid <= 300 && shown < 24; ++pid) {
@@ -637,39 +640,49 @@ static void ls_bootstrap_gift(unsigned now_ms) {
   proc_rele(worker);
 }
 
-// Print a text file line by line, tag first, the first 16 KiB. Used for the logs a launchd cache
-// question is decided by: the trampoline's own log, launchd_cache_loader's log (it names the CDHash
-// it validated or the failure), and launchd's job log (a spawn refusal is written there, not in the
-// exec observer, because posix_spawn never creates the process).
+// Print a text file line by line, tag first, from the last 16 KiB. Owner logs append across boots;
+// printing their head would show an old repair result while the current one is past the cut. Skip
+// the partial line at the tail window's start. Used for the trampoline, pkd shim and repair logs.
 static void ls_dump_text(const char *path, const char *tag) {
   vfs_context_t ctx = vfs_context_kernel();
   vnode_t vp = NULLVP;
   const int error = vnode_open(path, FREAD, 0, 0, &vp, ctx);
   if (error) {ls_reset_note(path, error); return;}
+  struct vnode_attr va;
+  VATTR_INIT(&va);
+  VATTR_WANTED(&va, va_data_size);
+  off_t off = 0;
+  if (vnode_getattr(vp, &va, ctx) == 0 && va.va_data_size > (off_t)(16 * 1024)) {
+    off = va.va_data_size - (off_t)(16 * 1024);
+  }
   char *buf = IOMallocData(4096);
   if (!buf) {vnode_close(vp, FREAD, ctx); return;}
-  off_t off = 0;
-  while (off < (off_t)(16 * 1024) && &qcom_usb_debug_write) {
+  const off_t end = off + (off_t)(16 * 1024);
+  int dropped = off > 0;
+  while (off < end && &qcom_usb_debug_write) {
+    const size_t wanted = (size_t)(end - off) < 4096 ? (size_t)(end - off) : 4096;
     uio_t uio = uio_create(1, off, UIO_SYSSPACE, UIO_READ);
     if (!uio) break;
-    uio_addiov(uio, CAST_USER_ADDR_T(buf), 4096);
+    uio_addiov(uio, CAST_USER_ADDR_T(buf), wanted);
     const int read_error = VNOP_READ(vp, uio, 0, ctx);
-    const size_t got = 4096 - (size_t)uio_resid(uio);
+    const size_t got = wanted - (size_t)uio_resid(uio);
     uio_free(uio);
     if (read_error || !got) break;
     for (size_t i = 0; i < got;) {
-      size_t end = i;
-      while (end < got && buf[end] != '\n') ++end;
-      char line[240];
-      size_t n = end - i;
-      if (n > 200) n = 200;
-      const int prefix = snprintf(line, sizeof line, "%s ", tag);
-      memcpy(line + prefix, buf + i, n);
-      line[prefix + n] = 0;
-      qcom_usb_debug_write(line, (size_t)prefix + n);
-      qcom_usb_debug_write("\n", 1);
-      i = end + 1;
-      if ((off + (off_t)i) >= (off_t)(16 * 1024)) break;
+      size_t stop = i;
+      while (stop < got && buf[stop] != '\n') ++stop;
+      if (stop < got && !dropped) {
+        char line[240];
+        size_t n = stop - i;
+        if (n > 200) n = 200;
+        const int prefix = snprintf(line, sizeof line, "%s ", tag);
+        memcpy(line + prefix, buf + i, n);
+        line[prefix + n] = 0;
+        qcom_usb_debug_write(line, (size_t)prefix + n);
+        qcom_usb_debug_write("\n", 1);
+      }
+      i = stop + 1;
+      dropped = 0;
     }
     off += (off_t)got;
   }
@@ -826,6 +839,10 @@ void boot_diag_lsfix_ms(unsigned now_ms) {
   ls_dump_text("/var/log/com.apple.xpc.launchd/launchd_cache_loader.log", "LSCACHELOG");
   ls_view_size("/var/log/com.apple.xpc.launchd/launchd.log");
   ls_grep_text("/var/log/com.apple.xpc.launchd/launchd.log", "adrenoprobed", "LSJOB", 40);
+  /* The pkd shim and widget diagnostics go to lsinit.log, whose last 16 KiB the dump above prints.
+   * Unified-log facts are exported as /private/var/db/diagnostics and decoded on the host; grep
+   * those plain launchd job lines only when they are also mirrored there. */
+  ls_grep_text("/var/log/com.apple.xpc.launchd/launchd.log", "pkd", "LSPKD", 40);
   display_scale_row();
 }
 

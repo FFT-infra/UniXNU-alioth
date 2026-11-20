@@ -42,7 +42,7 @@ static inline uint32_t bl_short_write(uint8_t command) {
 // (the vendor's dsi_set_max_return_size clears LASTCOMMAND, dsi_ctrl.c:1574-1576, and copy_and_pad
 // sets the payload bit only when there is a payload, :1088). Sending it as a long packet — the old
 // BL_FLAG_PAYLOAD|BL_FLAG_LAST form — makes the panel eat the trailing zero word and the read
-// desynchronises. For size 2 the correct word is 0x00370202.
+// desynchronises. For size 2 the correct word is 0x00370002.
 static inline uint32_t bl_max_return_header(uint32_t size) {
   return (0x37u << 16) | (size & 0xffu) | ((size >> 8) << 8);
 }

@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 // alioth (Redmi K40, SM8250-AC) panel brightness through DSI0's command FIFO.
 // Boot argument alioth-bl=<n>:
-//   1  read-only: map DSI0, record its registers, and read the panel's DCS 0x52 brightness.
-//      No brightness level is written.
-//   2  mode 1, then the visible test: maximum, low, then alioth-bl-level=<1..0x7ff>
-//      (default 0x218), two seconds apart, and a read-back of the panel's brightness after each
+//   1  map DSI0, record its registers, write alioth-bl-level=<1..0x7ff> (default 0x300), and read
+//      the panel's DCS 0x52 brightness. Since c92cf37 this mode writes; it is not read-only.
+//   2  mode 1, then the visible test: maximum, low, then alioth-bl-level, two seconds apart, and a
+//      read-back of the panel's brightness after each
 //   3  mode 1, then the iOS brightness service (AliothBacklight): iOS sets the level
+//   4  the service only: no blink and no brightness write, and begin() does not issue the DCS read.
+//      After build-gop-legacy-display.py stages this object as a late object, this mode separates
+//      the IOKit half (preModLoad, impersonate, registerService) from DCS traffic. Before that
+//      staging, its manual constructor re-registers a class the kernel already registered.
+//   5  mode 4 plus the DCS read in begin(), on the service's work loop. btn6 already ran both
+//      DCS kinds without hanging (panelBlink and writeBrightness, mode 2), so the untested half
+//      is the service construction these two modes isolate.
 //
 // Why DCS over DSI and not an I2C backlight controller. The phone's own device tree selects
 // qcom,mdss_dsi_k11a_38_08_0a_dsc_cmd as this board's panel (the stock bootargs carry
@@ -35,7 +42,7 @@
 //   payload: 0x51 | high << 8 | low << 16 | 0xff << 24   (big endian, per bl-dcs-big-endian-type;
 //            the 0xff is copy_and_pad_cmd's pad byte, because 7 bytes round up to 8)
 //   DCS short write 0x05, no parameter: 0x80050000 | command   (vendor: 0x00050000 | command)
-//   SET_MAXIMUM_RETURN_PACKET_SIZE 0x37 with one byte: 0x80150000 | high << 8 | low
+//   SET_MAXIMUM_RETURN_PACKET_SIZE 0x37 short write: 0x00370000 | high << 8 | low
 //   DCS read 0x06: 0xA0060000 | command   (bit 5 turns the lane around for the read-back)
 // Bit 7 is the one place this file departs from the vendor driver: the vendor sets the
 // last-command flag only when a command set says so (dsi_panel.c:615), while the
@@ -61,12 +68,11 @@
 
 // BootLog.c already composes two rows from these, in sheng's wording. On this board the same
 // slots carry one DSI controller, documented here so the row can be read:
-//   [0] stage (1 mapped, 2 discovery done, 3 published, negative: the step that failed)
+//   [0] stage (1 mapped, 2 discovery done, 3 service registered; negative: the failed step)
 //   [1] brightness requests taken          [2] last level written
-//   [3] DCS 0x52 read-back at start        [4] DCS 0x52 read-back after the last write
-//   [5] transfers that failed              [6] last INT_CTRL of a failed transfer
-//   [7] DSI_CTRL at start (bit 0 DSI_EN, bit 1 video engine, bit 2 command engine)
-//   [8] DSI_STATUS at start (bit 2 command-mode MDP busy)
+//   [3] DCS 0x52 read-back at start        [4] read-back bit mask, or -1 in service-only modes
+//   [5] read-back after maximum            [6] read-back after the configured level
+//   [7] command count before the sweep     [8] DSI_STATUS at start (bit 2 command-mode MDP busy)
 //   [9] last error                         [10] commands sent
 //   [11] commands timed out                [12] last command's time in microseconds
 //   [13] HW_VERSION                        [14] TPG_CTRL at start
@@ -274,6 +280,10 @@ void snapshot() {
 }
 }  // namespace
 
+// The probe's mode dispatch sets this before the service starts; begin() reads it. It lives here,
+// ahead of the class, because the class below is defined before the probe's own namespace.
+static bool gInitialRead = true;
+
 // The iOS-facing service, shaped after the two ports that already answer CoreBrightness
 // (asteroids' AsteroidsBacklight.cpp and sheng's AppleARMBacklight.cpp): publish
 // IODisplayParameters with min/max, accept brightness and FadePeriod in setProperties, step the
@@ -361,29 +371,36 @@ class AliothBacklight : public IOService {
         AliothBacklight *self = static_cast<AliothBacklight *>(owner);
         if (!self) return kIOReturnBadArgument;
         IOLockLock(gLock);
-        const int32_t read = readBrightness();
+        const int32_t read = gInitialRead ? readBrightness() : -2;
         IOLockUnlock(gLock);
         if (read > 0 && (uint32_t)read <= kMaxLevel) {self->level = (uint32_t)read; native_backlight_stats[3] = read;}
-        else {self->level = kDefaultLevel; native_backlight_stats[3] = -1;}
-        self->publish(self->level);
+        else {self->level = kDefaultLevel; native_backlight_stats[3] = read < 0 ? read : -1;}
         // Only the built-in display gets backlight-control, and only with the conformance above:
         // sheng measured (int-236) that publishing it without the AppleARMBacklight conformance
-        // stops the libEDR server from starting and freezes the screen.
-        if (self->impersonate()) {
-            self->setProperty("NativeSandboxGrantProcess", "backboardd");
-            self->setProperty("backlight-control", true);
+        // stops the libEDR server from starting and freezes the screen. Do not publish the service
+        // or its properties until impersonate() has succeeded.
+        if (!self->impersonate()) {
+            native_backlight_stats[0] = -7;
+            native_backlight_stats[9] = -7;
+            return kIOReturnError;
         }
-        self->registerService();
-        native_backlight_stats[0] = 3;
+        self->setProperty("NativeSandboxGrantProcess", "backboardd");
+        self->setProperty("backlight-control", true);
+        self->publish(self->level);
         return kIOReturnSuccess;
     }
 public:
-    bool startService() {
+    IOReturn startService() {
         loop = IOWorkLoop::workLoop();
         fade = IOTimerEventSource::timerEventSource(this, &AliothBacklight::fadeStep);
-        if (!loop || !fade || loop->addEventSource(fade)) return false;
-        loop->runAction(&AliothBacklight::begin, this);
-        return true;
+        if (!loop || !fade || loop->addEventSource(fade)) return kIOReturnError;
+        const IOReturn status = loop->runAction(&AliothBacklight::begin, this);
+        if (status != kIOReturnSuccess) return status;
+        // Register after begin() has left the work loop. registerService() can match clients and
+        // re-enter this service; calling it under the work-loop gate inverts that arbitration.
+        registerService();
+        native_backlight_stats[0] = 3;
+        return kIOReturnSuccess;
     }
     IOReturn setProperties(OSObject *properties) override {
         OSDictionary *dictionary = OSDynamicCast(OSDictionary, properties);
@@ -435,6 +452,13 @@ void panelThread(void *, wait_result_t) {
         native_backlight_stats[0] = 2;
         return;
     }
+    // Modes 4 and 5 skip every DCS write and the blink, so this thread reaches the service with
+    // the panel exactly as the boot left it. Mode 4 also tells begin() not to read brightness.
+    gInitialRead = (gMode == 5);
+    if (gMode == 4 || gMode == 5) {
+        native_backlight_stats[0] = 2;
+        native_backlight_stats[4] = -1;     // -1: the three-step sweep did not run
+    } else {
     // The visible test: maximum, low, then the configured level, two seconds apart. On this
     // board the picture is the judge, because the command DMA's completion is not observable
     // here (see readBrightness), so a read-back cannot confirm a write reached the panel.
@@ -476,6 +500,7 @@ void panelThread(void *, wait_result_t) {
     native_backlight_stats[6] = afterSet;
     native_backlight_stats[0] = 2;
     if (gMode == 2) return;
+    }
     // The service.
     void *handle = OSMetaClass::preModLoad(g_kernel_kmod_info.name);
     if (!handle) {fail(5, -12); return;}
@@ -483,9 +508,12 @@ void panelThread(void *, wait_result_t) {
     const OSReturn status = OSMetaClass::postModLoad(handle);
     if (status) {fail(5, status); return;}
     AliothBacklight *backlight = OSTypeAlloc(AliothBacklight);
-    if (!backlight || !backlight->init() || !backlight->attach(IOService::getPlatform()) || !backlight->startService()) {
+    const bool initialized = backlight && backlight->init();
+    const bool attached = initialized && backlight->attach(IOService::getPlatform());
+    const IOReturn serviceStatus = attached ? backlight->startService() : kIOReturnError;
+    if (serviceStatus != kIOReturnSuccess) {
         if (backlight) backlight->release();
-        fail(6, -19);
+        fail(6, serviceStatus != kIOReturnError ? (int)serviceStatus : -19);
         return;
     }
     backlight->release();
@@ -494,7 +522,7 @@ void panelThread(void *, wait_result_t) {
 
 extern "C" void alioth_backlight_probe(void) {
     unsigned mode = 0;
-    if (!PE_parse_boot_argn("alioth-bl", &mode, sizeof mode) || !mode || mode > 3 || native_backlight_stats[0]) return;
+    if (!PE_parse_boot_argn("alioth-bl", &mode, sizeof mode) || !mode || mode > 5 || native_backlight_stats[0]) return;
     PE_parse_boot_argn("alioth-bl-level", &gLevel, sizeof gLevel);
     if (gLevel > kMaxLevel) gLevel = kMaxLevel;
     gLock = IOLockAlloc();

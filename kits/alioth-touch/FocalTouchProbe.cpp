@@ -322,7 +322,8 @@ extern "C" size_t qcom_usb_debug_write(const void *, size_t) __attribute__((weak
 extern "C" void boot_diag_ls_report_ms(unsigned) __attribute__((weak_import));
 /* sheng-ls-dump=<s>: the same readout plus the store's own strings, on the same thread. */
 extern "C" void boot_diag_ls_dump_ms(unsigned) __attribute__((weak_import));
-/* sheng-lsfix-report=<s>: the owner daemon's LaunchServices repair log, same thread. */
+/* lsfix=<seconds>: dump the owner repair logs on this thread. The clock is the first
+ * publish() call's mach_absolute_time(), not BootLog's SUPER t=. */
 extern "C" void boot_diag_lsfix_ms(unsigned) __attribute__((weak_import));
 
 /* Synthetic tap, for unattended rounds. The compositor draws when something asks it to, so a

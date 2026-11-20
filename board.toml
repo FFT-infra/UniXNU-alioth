@@ -323,11 +323,12 @@ skip_setup_tool = "scripts/seed-data-skip-setup.py"
 # StaticTrustCache entries and is absent from the 76-entry SystemTrustCache.
 # Since the Metal staging it is the three-module owner bundle that
 # scripts/make-owner-trust-bundle.py builds: one owner module carrying the Adreno Metal
-# plugin, probe-daemon and Turnip CDHashes (2026-11-13 build: acc3eeee, 33d85f3c, 1b1b2978)
-# plus the same two original modules byte for byte, which the script verifies against
-# build/original-static-system-trust before writing.
+# plugin, probe-daemon, Turnip, trampoline and pkd-shim CDHashes (2026-11-16 build:
+# 2355b611, 982ab999, 1b1b2978, 3f9d2072, 01be8074), plus the same two original modules
+# byte for byte, which the script verifies against build/original-static-system-trust
+# before writing.
 trust_cache_sha256 = [
-  "687d21c7bf6d7580cded52dbf1a8f9206f3ffcb7ffd631ebeef462b680e4760a",
+  "cc4a45ee85d3757bab71d9715ae7aea6cf01e2f0b79cfb7f1d62e68fb6f9a9f9",
 ]
 # The panic screen and the reset probe share the zero padding after _start, and there is room for
 # only one of them: two probe caves plus the 0xa0f-byte panic screen end at 0x...8fcf, 0x21 bytes
@@ -466,9 +467,9 @@ kernel_args = [
   "pmgr=2",
   "-no_slto_panic",
   # ml-timeout-lock-panic-scale=40 is dropped for now: it only scales how long a lock
-  # timeout waits before panicking, nothing in this tree reads it, and the command line
-  # is at 1018 bytes against a 1000-byte limit. It comes back when something else frees
-  # the room.
+  # timeout waits before panicking, nothing in this tree reads it, and the official joined
+  # command-line limit is 1000 bytes. The current 51 args join to 927 bytes. It comes back
+  # when something else frees the room.
   # NativeUfs defaults to stream 0x60, which is sheng's board. SM8250 routes the
   # UFS host through 0x0e0 and 0x4e0.
   "native-ufs-stream=0xe0",
@@ -633,22 +634,21 @@ kernel_args = [
   # stayed alive to 260 s with own=0). The 400 rounds before it read askers 5-8 with sw climbing. One variable
   # changed against sy5, so this round measures the reset deadline and nothing else.
   "sheng-autoreset=240",
-  # The physical keys and the panel brightness are both compiled in and both called from
-  # LegacyDisplayProbe (alioth_buttons_probe and alioth_backlight_probe, :951-954), but each
-  # returns on its first line unless its own boot argument is present, so until these two
-  # lines existed neither driver did anything and the keys were dead.
+  # The physical keys and the panel brightness are both compiled in. LegacyDisplayProbe.cpp calls
+  # both through weak symbols. Each returns on its first line unless its own boot argument is
+  # present. Only alioth-bl=1 is active in this list; the historical key argument and boot-ui-trace
+  # are not present here.
   #   alioth-bt=1   read the SMBus keys: PM8150 PON for power and vol down, PM8150 GPIO 6
   #                 for vol up. Modes 2 and 3 add the arbiter dump and the raw level rows.
-  #   alioth-bl=1   drive the panel's DCS 0x51 register over DSI0's TPG command FIFO.
-  #                 alioth-bl-level sets the level; mode 2 and 3 add readback and sweep.
-  # Both are read-only probes until a mode above 1 is asked for.
-  # Restored 2026-11-07 after a same-day removal that did not hold. of11 ran with these two plus
-  # boot-ui-trace=1 and read `deaf=00`, every core counting, sw=231, desktop. of12 and of12b ran
-  # with all three removed (to make room for sheng-diag-export, sheng-wallpaper-db and sheng-wp)
-  # and both read `deaf=1e` with c4 frozen at 15143/2295 from t=10 s on, the touch poller stopped
-  # at frames=99, calls=6, sw=0, no desktop. That is one variable group and two rounds, so it does
-  # not say which of the three matters; it says the group does. Do not trade these away for
-  # command-line bytes again without a round that adds them back one at a time.
+  #   alioth-bl=1   writes DCS 0x51 over DSI0's TPG command FIFO and reads DCS 0x52; it is not
+  #                 read-only. Modes 2-5 add the visible sweep, service construction and service
+  #                 work-loop read-back. Mode 3 froze four cores and is not a release default.
+  # The 2026-11-07 evidence below concerns a historical argument group. of11 ran with
+  # alioth-bl=1, alioth-bt=1 and boot-ui-trace=1 and read `deaf=00`, every core counting,
+  # sw=231, desktop. of12 and of12b ran with all three removed and both read `deaf=1e` with
+  # c4 frozen at 15143/2295 from t=10 s on, the touch poller stopped at frames=99, calls=6,
+  # sw=0, no desktop. That is one variable group and two rounds; it does not identify which
+  # argument matters. Do not trade the current bytes away without a round that adds them back.
   "alioth-bl=1",
   # sheng-data-persist=2 opens the Data store read-write. Without it the seed is what the kernel
   # calls a big volume (3 GiB) and the ram-block driver has no volatile mode for one: it serves
@@ -916,7 +916,8 @@ kernel_args = [
   # GPU busy-counter poll off (see sheng-gpu-dynfreq) the CPU path presents.
   # The argument itself is gone, not the choice: NativeLegacyDisplay.cpp:341 parses it into
   # `unsigned mode = 0`, so absent and =0 are the same CPU-copy path this file selects above.
-  # 2026-11-07 it was dropped to make room for sheng-touch-synth-swipe=1 on a 1023-byte command line.
+  # 2026-11-07 it was dropped to make room for sheng-touch-synth-swipe=1. The official joined
+  # command-line limit is 1000 bytes, not 1023.
   # pipa-metal-withhold=none was tried on 2026-10-29: SpringBoard stops trapping but the
   # compositor then sends swaps with no surface (reason 1), so nothing draws. The default
   # withholds the Apple GPU families, which is the configuration where the desktop appears.
@@ -1030,9 +1031,9 @@ kernel_args = [
   # "sheng-autoreset=180",
   #
   # The per-process render summary (what each Metal process completes, draws, dispatches, blits and
-  # the largest surface it stores) has no boot argument. 2026-11-07: the line is 1006 bytes of the
-  # 1023-byte limit, and a tagged build adds "sheng-build-tag=<tag>" on top, so a switch of its own
-  # does not fit. The frontend therefore sends that row always, and only while the process has
+  # the largest surface it stores) has no boot argument. A 2026-11-07 line was 1006 bytes.
+  # The official joined limit is 1000 bytes; the current 51 arguments join to 927 bytes. A tagged
+  # build adds "sheng-build-tag=<tag>" on top, so a switch of its own does not fit. The frontend therefore sends that row always, and only while the process has
   # reported no real problem, so a client's failure text still wins its own row.
 ]
 
